@@ -1,0 +1,54 @@
+
+[package]
+name = "regalloc2-fuzz"
+version = "0.0.0"
+authors = ["Chris Fallin <chris@cfallin.org>"]
+license = "MPL-2.0 AND Apache-2.0 WITH LLVM-exception"
+publish = false
+edition = "2018"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.3"
+arbitrary = { version = "^0.4.6", features = ["derive"] }
+log = { version = "0.4.8", default-features = false }
+env_logger = "0.8.3"
+
+[dependencies.regalloc2]
+path = ".."
+
+# Prevent this from interfering with workspaces
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "domtree"
+path = "fuzz_targets/domtree.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "ssagen"
+path = "fuzz_targets/ssagen.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "ion"
+path = "fuzz_targets/ion.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "moves"
+path = "fuzz_targets/moves.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "ion_checker"
+path = "fuzz_targets/ion_checker.rs"
+test = false
+doc = false
