@@ -2570,6 +2570,17 @@ impl<'a, F: Function> Env<'a, F> {
                     } else {
                         n_regs
                     };
+                    // Heuristic: start the scan for an available
+                    // register at an offset influenced both by our
+                    // location in the code and by the bundle we're
+                    // considering. This has the effect of spreading
+                    // demand more evenly across registers.
+                    let scan_offset = self.ranges[self.bundles[bundle.index()].first_range.index()]
+                        .range
+                        .from
+                        .inst
+                        .index()
+                        + bundle.index();
                     for i in 0..loop_count {
                         // The order in which we try registers is somewhat complex:
                         // - First, if there is a hint, we try that.
@@ -2587,7 +2598,7 @@ impl<'a, F: Function> Env<'a, F> {
                             (0, Some(hint_reg)) => hint_reg,
                             (i, Some(hint_reg)) => {
                                 let reg = self.env.regs_by_class[class as u8 as usize]
-                                    [(i - 1 + bundle.index()) % n_regs];
+                                    [(i - 1 + scan_offset) % n_regs];
                                 if reg == hint_reg {
                                     continue;
                                 }
@@ -2595,7 +2606,7 @@ impl<'a, F: Function> Env<'a, F> {
                             }
                             (i, None) => {
                                 self.env.regs_by_class[class as u8 as usize]
-                                    [(i + bundle.index()) % n_regs]
+                                    [(i + scan_offset) % n_regs]
                             }
                         };
 

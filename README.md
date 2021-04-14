@@ -111,27 +111,21 @@ benches/0               time:   [365.68 us 367.36 us 369.04 us]
 ```
 
 I then measured three different fuzztest-SSA-generator test cases in
-this allocator, `regalloc2`, measuring between 1.05M and 2.3M
+this allocator, `regalloc2`, measuring between 1.1M and 2.3M
 instructions per second (closer to the former for larger functions):
 
 ```plain
 ==== 459 instructions
-benches/0               time:   [424.46 us 425.65 us 426.59 us]
-                        thrpt:  [1.0760 Melem/s 1.0784 Melem/s 1.0814 Melem/s]
+benches/0               time:   [377.91 us 378.09 us 378.27 us]
+                        thrpt:  [1.2134 Melem/s 1.2140 Melem/s 1.2146 Melem/s]
 
 ==== 225 instructions
-benches/1               time:   [213.05 us 213.28 us 213.54 us]
-                        thrpt:  [1.0537 Melem/s 1.0549 Melem/s 1.0561 Melem/s]
+benches/1               time:   [202.03 us 202.14 us 202.27 us]
+                        thrpt:  [1.1124 Melem/s 1.1131 Melem/s 1.1137 Melem/s]
 
-Found 1 outliers among 100 measurements (1.00%)
-  1 (1.00%) high mild
 ==== 21 instructions
-benches/2               time:   [9.0495 us 9.0571 us 9.0641 us]
-                        thrpt:  [2.3168 Melem/s 2.3186 Melem/s 2.3206 Melem/s]
-
-Found 4 outliers among 100 measurements (4.00%)
-  2 (2.00%) high mild
-  2 (2.00%) high severe
+benches/2               time:   [9.5605 us 9.5655 us 9.5702 us]
+                        thrpt:  [2.1943 Melem/s 2.1954 Melem/s 2.1965 Melem/s]
 ```
 
 Though not apples-to-apples (SSA vs. non-SSA, completely different
