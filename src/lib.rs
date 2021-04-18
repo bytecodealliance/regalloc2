@@ -25,6 +25,8 @@ pub mod index;
 pub use index::{Block, Inst, InstRange, InstRangeIter};
 
 pub mod checker;
+
+#[cfg(feature = "fuzzing")]
 pub mod fuzzing;
 
 /// Register classes.
