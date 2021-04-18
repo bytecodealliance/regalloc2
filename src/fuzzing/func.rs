@@ -20,6 +20,7 @@ pub struct InstData {
     op: InstOpcode,
     operands: Vec<Operand>,
     clobbers: Vec<PReg>,
+    is_safepoint: bool,
 }
 
 impl InstData {
@@ -32,6 +33,7 @@ impl InstData {
             op: InstOpcode::Op,
             operands,
             clobbers: vec![],
+            is_safepoint: false,
         }
     }
     pub fn branch(uses: &[usize]) -> InstData {
@@ -43,6 +45,7 @@ impl InstData {
             op: InstOpcode::Branch,
             operands,
             clobbers: vec![],
+            is_safepoint: false,
         }
     }
     pub fn ret() -> InstData {
@@ -50,6 +53,7 @@ impl InstData {
             op: InstOpcode::Ret,
             operands: vec![],
             clobbers: vec![],
+            is_safepoint: false,
         }
     }
 }
@@ -62,6 +66,7 @@ pub struct Func {
     block_succs: Vec<Vec<Block>>,
     block_params: Vec<Vec<VReg>>,
     num_vregs: usize,
+    reftype_vregs: Vec<VReg>,
 }
 
 impl Function for Func {
@@ -106,8 +111,12 @@ impl Function for Func {
         self.insts[insn.index()].op == InstOpcode::Branch
     }
 
-    fn is_safepoint(&self, _: Inst) -> bool {
-        false
+    fn is_safepoint(&self, insn: Inst) -> bool {
+        self.insts[insn.index()].is_safepoint
+    }
+
+    fn reftype_vregs(&self) -> &[VReg] {
+        &self.reftype_vregs[..]
     }
 
     fn is_move(&self, _: Inst) -> Option<(VReg, VReg)> {
@@ -153,6 +162,7 @@ impl FuncBuilder {
                 insts: vec![],
                 blocks: vec![],
                 num_vregs: 0,
+                reftype_vregs: vec![],
             },
             insts_per_block: vec![],
         }
@@ -250,6 +260,7 @@ pub struct Options {
     pub reducible: bool,
     pub block_params: bool,
     pub always_local_uses: bool,
+    pub reftypes: bool,
 }
 
 impl std::default::Default for Options {
@@ -262,6 +273,7 @@ impl std::default::Default for Options {
             reducible: false,
             block_params: true,
             always_local_uses: false,
+            reftypes: false,
         }
     }
 }
@@ -355,6 +367,9 @@ impl Func {
                 let vreg = VReg::new(builder.f.num_vregs, RegClass::Int);
                 builder.f.num_vregs += 1;
                 vregs.push(vreg);
+                if opts.reftypes && bool::arbitrary(u)? {
+                    builder.f.reftype_vregs.push(vreg);
+                }
             }
             vregs_by_block.push(vregs.clone());
             vregs_by_block_to_be_defined.push(vec![]);
@@ -428,17 +443,28 @@ impl Func {
                         op.kind(),
                         OperandPos::After,
                     );
+                    // Make sure reused input is a Reg.
+                    let op = operands[reused];
+                    operands[reused] =
+                        Operand::new(op.vreg(), OperandPolicy::Reg, op.kind(), OperandPos::Before);
                 } else if opts.fixed_regs && bool::arbitrary(u)? {
-                    // Pick an operand and make it a fixed reg.
-                    let fixed_reg = PReg::new(u.int_in_range(0..=30)?, RegClass::Int);
-                    let i = u.int_in_range(0..=(operands.len() - 1))?;
-                    let op = operands[i];
-                    operands[i] = Operand::new(
-                        op.vreg(),
-                        OperandPolicy::FixedReg(fixed_reg),
-                        op.kind(),
-                        op.pos(),
-                    );
+                    let mut fixed = vec![];
+                    for _ in 0..u.int_in_range(0..=operands.len() - 1)? {
+                        // Pick an operand and make it a fixed reg.
+                        let fixed_reg = PReg::new(u.int_in_range(0..=30)?, RegClass::Int);
+                        if fixed.contains(&fixed_reg) {
+                            break;
+                        }
+                        fixed.push(fixed_reg);
+                        let i = u.int_in_range(0..=(operands.len() - 1))?;
+                        let op = operands[i];
+                        operands[i] = Operand::new(
+                            op.vreg(),
+                            OperandPolicy::FixedReg(fixed_reg),
+                            op.kind(),
+                            op.pos(),
+                        );
+                    }
                 } else if opts.clobbers && bool::arbitrary(u)? {
                     for _ in 0..u.int_in_range(0..=5)? {
                         let reg = u.int_in_range(0..=30)?;
@@ -448,6 +474,13 @@ impl Func {
                         clobbers.push(PReg::new(reg, RegClass::Int));
                     }
                 }
+
+                let is_safepoint = opts.reftypes
+                    && operands
+                        .iter()
+                        .all(|op| !builder.f.reftype_vregs.contains(&op.vreg()))
+                    && bool::arbitrary(u)?;
+
                 let op = *u.choose(&[InstOpcode::Op, InstOpcode::Call])?;
                 builder.add_inst(
                     Block::new(block),
@@ -455,6 +488,7 @@ impl Func {
                         op,
                         operands,
                         clobbers,
+                        is_safepoint,
                     },
                 );
                 avail.push(vreg);
@@ -493,6 +527,9 @@ impl Func {
 impl std::fmt::Debug for Func {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "{{\n")?;
+        for vreg in self.reftype_vregs() {
+            write!(f, "  REF: {}\n", vreg)?;
+        }
         for (i, blockrange) in self.blocks.iter().enumerate() {
             let succs = self.block_succs[i]
                 .iter()
@@ -513,6 +550,9 @@ impl std::fmt::Debug for Func {
                 i, params, succs, preds
             )?;
             for inst in blockrange.iter() {
+                if self.is_safepoint(inst) {
+                    write!(f, "    -- SAFEPOINT --\n")?;
+                }
                 write!(
                     f,
                     "    inst{}: {:?} ops:{:?} clobber:{:?}\n",

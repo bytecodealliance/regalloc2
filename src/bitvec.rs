@@ -48,6 +48,18 @@ impl BitVec {
         }
     }
 
+    pub fn assign(&mut self, other: &Self) {
+        if other.bits.len() > 0 {
+            self.ensure_idx(other.bits.len() - 1);
+        }
+        for i in 0..other.bits.len() {
+            self.bits[i] = other.bits[i];
+        }
+        for i in other.bits.len()..self.bits.len() {
+            self.bits[i] = 0;
+        }
+    }
+
     #[inline(always)]
     pub fn get(&mut self, idx: usize) -> bool {
         let word = idx / BITS_PER_WORD;
@@ -59,16 +71,21 @@ impl BitVec {
         }
     }
 
-    pub fn or(&mut self, other: &Self) {
+    pub fn or(&mut self, other: &Self) -> bool {
         if other.bits.is_empty() {
-            return;
+            return false;
         }
         let last_idx = other.bits.len() - 1;
         self.ensure_idx(last_idx);
 
+        let mut changed = false;
         for (self_word, other_word) in self.bits.iter_mut().zip(other.bits.iter()) {
+            if *other_word & !*self_word != 0 {
+                changed = true;
+            }
             *self_word |= *other_word;
         }
+        changed
     }
 
     pub fn and(&mut self, other: &Self) {
@@ -90,6 +107,29 @@ impl BitVec {
         }
     }
 }
+
+impl std::cmp::PartialEq for BitVec {
+    fn eq(&self, other: &Self) -> bool {
+        let limit = std::cmp::min(self.bits.len(), other.bits.len());
+        for i in 0..limit {
+            if self.bits[i] != other.bits[i] {
+                return false;
+            }
+        }
+        for i in limit..self.bits.len() {
+            if self.bits[i] != 0 {
+                return false;
+            }
+        }
+        for i in limit..other.bits.len() {
+            if other.bits[i] != 0 {
+                return false;
+            }
+        }
+        true
+    }
+}
+impl std::cmp::Eq for BitVec {}
 
 pub struct SetBitsIter<'a> {
     words: &'a [u64],

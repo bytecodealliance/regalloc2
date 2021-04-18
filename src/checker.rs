@@ -67,10 +67,10 @@
 
 use crate::{
     Allocation, AllocationKind, Block, Edit, Function, Inst, InstPosition, Operand, OperandKind,
-    OperandPolicy, OperandPos, Output, ProgPoint, VReg,
+    OperandPolicy, OperandPos, Output, PReg, ProgPoint, SpillSlot, VReg,
 };
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::default::Default;
 use std::hash::Hash;
 use std::result::Result;
@@ -127,6 +127,20 @@ pub enum CheckerError {
         alloc: Allocation,
         expected_alloc: Allocation,
     },
+    AllocationIsNotStack {
+        inst: Inst,
+        op: Operand,
+        alloc: Allocation,
+    },
+    ConflictedValueInStackmap {
+        inst: Inst,
+        slot: SpillSlot,
+    },
+    NonRefValueInStackmap {
+        inst: Inst,
+        slot: SpillSlot,
+        vreg: VReg,
+    },
 }
 
 /// Abstract state for an allocation.
@@ -162,8 +176,10 @@ impl CheckerValue {
             (_, &CheckerValue::Unknown) => *self,
             (&CheckerValue::Conflicted, _) => *self,
             (_, &CheckerValue::Conflicted) => *other,
-            (&CheckerValue::Reg(r1, ref1), &CheckerValue::Reg(r2, ref2)) if r1 == r2 => {
-                CheckerValue::Reg(r1, ref1 || ref2)
+            (&CheckerValue::Reg(r1, ref1), &CheckerValue::Reg(r2, ref2))
+                if r1 == r2 && ref1 == ref2 =>
+            {
+                CheckerValue::Reg(r1, ref1)
             }
             _ => {
                 log::debug!("{:?} and {:?} meet to Conflicted", self, other);
@@ -192,7 +208,8 @@ impl std::fmt::Display for CheckerValue {
         match self {
             CheckerValue::Unknown => write!(f, "?"),
             CheckerValue::Conflicted => write!(f, "!"),
-            CheckerValue::Reg(r, _) => write!(f, "{}", r),
+            CheckerValue::Reg(r, false) => write!(f, "{}", r),
+            CheckerValue::Reg(r, true) => write!(f, "{}/ref", r),
         }
     }
 }
@@ -305,13 +322,38 @@ impl CheckerState {
                     self.check_val(inst, *op, *alloc, val, allocs)?;
                 }
             }
+            &CheckerInst::Safepoint { inst, ref slots } => {
+                for &slot in slots {
+                    let alloc = Allocation::stack(slot);
+                    let val = self
+                        .allocations
+                        .get(&alloc)
+                        .cloned()
+                        .unwrap_or(Default::default());
+                    debug!(
+                        "checker: checkinst {:?}: safepoint slot {}, checker value {:?}",
+                        checkinst, slot, val
+                    );
+
+                    match val {
+                        CheckerValue::Unknown => {}
+                        CheckerValue::Conflicted => {
+                            return Err(CheckerError::ConflictedValueInStackmap { inst, slot });
+                        }
+                        CheckerValue::Reg(vreg, false) => {
+                            return Err(CheckerError::NonRefValueInStackmap { inst, slot, vreg });
+                        }
+                        CheckerValue::Reg(_, true) => {}
+                    }
+                }
+            }
             _ => {}
         }
         Ok(())
     }
 
     /// Update according to instruction.
-    fn update(&mut self, checkinst: &CheckerInst) {
+    fn update<'a, F: Function>(&mut self, checkinst: &CheckerInst, checker: &Checker<'a, F>) {
         match checkinst {
             &CheckerInst::Move { into, from } => {
                 let val = self
@@ -328,14 +370,19 @@ impl CheckerState {
             &CheckerInst::Op {
                 ref operands,
                 ref allocs,
+                ref clobbers,
                 ..
             } => {
                 for (op, alloc) in operands.iter().zip(allocs.iter()) {
                     if op.kind() != OperandKind::Def {
                         continue;
                     }
+                    let reftyped = checker.reftyped_vregs.contains(&op.vreg());
                     self.allocations
-                        .insert(*alloc, CheckerValue::Reg(op.vreg(), false));
+                        .insert(*alloc, CheckerValue::Reg(op.vreg(), reftyped));
+                }
+                for clobber in clobbers {
+                    self.allocations.remove(&Allocation::reg(*clobber));
                 }
             }
             &CheckerInst::BlockParams {
@@ -344,8 +391,20 @@ impl CheckerState {
                 ..
             } => {
                 for (vreg, alloc) in vregs.iter().zip(allocs.iter()) {
+                    let reftyped = checker.reftyped_vregs.contains(vreg);
                     self.allocations
-                        .insert(*alloc, CheckerValue::Reg(*vreg, false));
+                        .insert(*alloc, CheckerValue::Reg(*vreg, reftyped));
+                }
+            }
+            &CheckerInst::Safepoint { ref slots, .. } => {
+                for (alloc, value) in &mut self.allocations {
+                    if let CheckerValue::Reg(_, true) = *value {
+                        if alloc.is_reg() {
+                            *value = CheckerValue::Conflicted;
+                        } else if alloc.is_stack() && !slots.contains(&alloc.as_stack().unwrap()) {
+                            *value = CheckerValue::Conflicted;
+                        }
+                    }
                 }
             }
         }
@@ -363,6 +422,11 @@ impl CheckerState {
             OperandPolicy::Reg => {
                 if alloc.kind() != AllocationKind::Reg {
                     return Err(CheckerError::AllocationIsNotReg { inst, op, alloc });
+                }
+            }
+            OperandPolicy::Stack => {
+                if alloc.kind() != AllocationKind::Stack {
+                    return Err(CheckerError::AllocationIsNotStack { inst, op, alloc });
                 }
             }
             OperandPolicy::FixedReg(preg) => {
@@ -402,6 +466,7 @@ pub(crate) enum CheckerInst {
         inst: Inst,
         operands: Vec<Operand>,
         allocs: Vec<Allocation>,
+        clobbers: Vec<PReg>,
     },
 
     /// The top of a block with blockparams. We define the given vregs
@@ -411,6 +476,10 @@ pub(crate) enum CheckerInst {
         vregs: Vec<VReg>,
         allocs: Vec<Allocation>,
     },
+
+    /// A safepoint, with the given SpillSlots specified as containing
+    /// reftyped values. All other reftyped values become invalid.
+    Safepoint { inst: Inst, slots: Vec<SpillSlot> },
 }
 
 #[derive(Debug)]
@@ -418,6 +487,7 @@ pub struct Checker<'a, F: Function> {
     f: &'a F,
     bb_in: HashMap<Block, CheckerState>,
     bb_insts: HashMap<Block, Vec<CheckerInst>>,
+    reftyped_vregs: HashSet<VReg>,
 }
 
 impl<'a, F: Function> Checker<'a, F> {
@@ -428,6 +498,7 @@ impl<'a, F: Function> Checker<'a, F> {
     pub fn new(f: &'a F) -> Checker<'a, F> {
         let mut bb_in = HashMap::new();
         let mut bb_insts = HashMap::new();
+        let mut reftyped_vregs = HashSet::new();
 
         for block in 0..f.blocks() {
             let block = Block::new(block);
@@ -435,13 +506,31 @@ impl<'a, F: Function> Checker<'a, F> {
             bb_insts.insert(block, vec![]);
         }
 
-        Checker { f, bb_in, bb_insts }
+        for &vreg in f.reftype_vregs() {
+            reftyped_vregs.insert(vreg);
+        }
+
+        Checker {
+            f,
+            bb_in,
+            bb_insts,
+            reftyped_vregs,
+        }
     }
 
     /// Build the list of checker instructions based on the given func
     /// and allocation results.
     pub fn prepare(&mut self, out: &Output) {
         debug!("checker: out = {:?}", out);
+        // Preprocess safepoint stack-maps into per-inst vecs.
+        let mut safepoint_slots: HashMap<Inst, Vec<SpillSlot>> = HashMap::new();
+        for &(progpoint, slot) in &out.safepoint_slots {
+            safepoint_slots
+                .entry(progpoint.inst)
+                .or_insert_with(|| vec![])
+                .push(slot);
+        }
+
         // For each original instruction, create an `Op`.
         let mut last_inst = None;
         let mut insert_idx = 0;
@@ -454,13 +543,23 @@ impl<'a, F: Function> Checker<'a, F> {
                 // Any inserted edits before instruction.
                 self.handle_edits(block, out, &mut insert_idx, ProgPoint::before(inst));
 
+                // If this is a safepoint, then check the spillslots at this point.
+                if self.f.is_safepoint(inst) {
+                    let slots = safepoint_slots.remove(&inst).unwrap_or_else(|| vec![]);
+
+                    let checkinst = CheckerInst::Safepoint { inst, slots };
+                    self.bb_insts.get_mut(&block).unwrap().push(checkinst);
+                }
+
                 // Instruction itself.
                 let operands: Vec<_> = self.f.inst_operands(inst).iter().cloned().collect();
                 let allocs: Vec<_> = out.inst_allocs(inst).iter().cloned().collect();
+                let clobbers: Vec<_> = self.f.inst_clobbers(inst).iter().cloned().collect();
                 let checkinst = CheckerInst::Op {
                     inst,
                     operands,
                     allocs,
+                    clobbers,
                 };
                 debug!("checker: adding inst {:?}", checkinst);
                 self.bb_insts.get_mut(&block).unwrap().push(checkinst);
@@ -511,7 +610,7 @@ impl<'a, F: Function> Checker<'a, F> {
             let mut state = self.bb_in.get(&block).cloned().unwrap();
             debug!("analyze: block {} has state {:?}", block.index(), state);
             for inst in self.bb_insts.get(&block).unwrap() {
-                state.update(inst);
+                state.update(inst, self);
                 debug!("analyze: inst {:?} -> state {:?}", inst, state);
             }
 
@@ -546,7 +645,7 @@ impl<'a, F: Function> Checker<'a, F> {
                     debug!("Checker error: {:?}", e);
                     errors.push(e);
                 }
-                state.update(inst);
+                state.update(inst, self);
                 if let Err(e) = state.check(InstPosition::After, inst) {
                     debug!("Checker error: {:?}", e);
                     errors.push(e);
@@ -575,6 +674,9 @@ impl<'a, F: Function> Checker<'a, F> {
             }
             debug!("    {{ {} }}", s.join(", "))
         }
+        for vreg in self.f.reftype_vregs() {
+            debug!("  REF: {}", vreg);
+        }
         for bb in 0..self.f.blocks() {
             let bb = Block::new(bb);
             debug!("block{}:", bb.index());
@@ -587,8 +689,15 @@ impl<'a, F: Function> Checker<'a, F> {
                         inst,
                         ref operands,
                         ref allocs,
+                        ref clobbers,
                     } => {
-                        debug!("  inst{}: {:?} ({:?})", inst.index(), operands, allocs);
+                        debug!(
+                            "  inst{}: {:?} ({:?}) clobbers:{:?}",
+                            inst.index(),
+                            operands,
+                            allocs,
+                            clobbers
+                        );
                     }
                     &CheckerInst::Move { from, into } => {
                         debug!("    {} -> {}", from, into);
@@ -604,8 +713,15 @@ impl<'a, F: Function> Checker<'a, F> {
                         }
                         debug!("    blockparams: {}", args.join(", "));
                     }
+                    &CheckerInst::Safepoint { ref slots, .. } => {
+                        let mut slotargs = vec![];
+                        for &slot in slots {
+                            slotargs.push(format!("{}", slot));
+                        }
+                        debug!("    safepoint: {}", slotargs.join(", "));
+                    }
                 }
-                state.update(inst);
+                state.update(inst, &self);
                 print_state(&state);
             }
         }

@@ -21,6 +21,7 @@ impl Arbitrary for TestCase {
                 reducible: false,
                 block_params: true,
                 always_local_uses: false,
+                reftypes: true,
             })?,
         })
     }

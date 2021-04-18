@@ -26,18 +26,13 @@
  *
  * - reused-input reg: don't allocate register for input that is reused.
  *
- * - more fuzzing:
- *   - test with *multiple* fixed-reg constraints on one vreg (same
- *     inst, different insts)
- *
  * - modify CL to generate SSA VCode
  *   - lower blockparams to blockparams directly
  *   - use temps properly (`alloc_tmp()` vs `alloc_reg()`)
  *
- * - produce stackmaps
- *   - stack constraint (also: unify this with stack-args? spillslot vs user stackslot?)
- *   - vreg reffyness
- *   - if reffy vreg, add to stackmap lists during reification scan
+ * - "Fixed-stack location": negative spillslot numbers?
+ *
+ * - Rematerialization
  */
 
 #![allow(dead_code, unused_imports)]
@@ -54,7 +49,7 @@ use crate::{
 use log::debug;
 use smallvec::{smallvec, SmallVec};
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BinaryHeap};
+use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet, VecDeque};
 use std::fmt::Debug;
 
 #[cfg(not(debug))]
@@ -185,6 +180,8 @@ struct Use {
     next_use: UseIndex,
 }
 
+const SLOT_NONE: usize = usize::MAX;
+
 #[derive(Clone, Debug)]
 struct Def {
     operand: Operand,
@@ -241,6 +238,7 @@ struct VRegData {
     def: DefIndex,
     blockparam: Block,
     first_range: LiveRangeIndex,
+    is_ref: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -307,7 +305,8 @@ struct Env<'a, F: Function> {
     pregs: Vec<PRegData>,
     allocation_queue: PrioQueue,
     hot_code: LiveRangeSet,
-    clobbers: Vec<Inst>, // Sorted list of insts with clobbers.
+    clobbers: Vec<Inst>,   // Sorted list of insts with clobbers.
+    safepoints: Vec<Inst>, // Sorted list of safepoint insts.
 
     spilled_bundles: Vec<LiveBundleIndex>,
     spillslots: Vec<SpillSlotData>,
@@ -322,8 +321,8 @@ struct Env<'a, F: Function> {
     // will insert a copy from wherever the VReg's primary allocation
     // was to the approprate PReg.
     //
-    // (progpoint, copy-from-preg, copy-to-preg)
-    multi_fixed_reg_fixups: Vec<(ProgPoint, PRegIndex, PRegIndex)>,
+    // (progpoint, copy-from-preg, copy-to-preg, to-slot)
+    multi_fixed_reg_fixups: Vec<(ProgPoint, PRegIndex, PRegIndex, usize)>,
 
     inserted_moves: Vec<InsertedMove>,
 
@@ -332,6 +331,7 @@ struct Env<'a, F: Function> {
     allocs: Vec<Allocation>,
     inst_alloc_offsets: Vec<u32>,
     num_spillslots: u32,
+    safepoint_slots: Vec<(ProgPoint, SpillSlot)>,
 
     stats: Stats,
 
@@ -462,13 +462,16 @@ fn spill_weight_from_policy(policy: OperandPolicy) -> u32 {
 enum Requirement {
     Fixed(PReg),
     Register(RegClass),
+    Stack(RegClass),
     Any(RegClass),
 }
 impl Requirement {
     fn class(self) -> RegClass {
         match self {
             Requirement::Fixed(preg) => preg.class(),
-            Requirement::Register(class) | Requirement::Any(class) => class,
+            Requirement::Register(class) | Requirement::Any(class) | Requirement::Stack(class) => {
+                class
+            }
         }
     }
 
@@ -478,6 +481,7 @@ impl Requirement {
         }
         match (self, other) {
             (other, Requirement::Any(_)) | (Requirement::Any(_), other) => Some(other),
+            (Requirement::Stack(_), Requirement::Stack(_)) => Some(self),
             (Requirement::Register(_), Requirement::Fixed(preg))
             | (Requirement::Fixed(preg), Requirement::Register(_)) => {
                 Some(Requirement::Fixed(preg))
@@ -491,6 +495,7 @@ impl Requirement {
         match op.policy() {
             OperandPolicy::FixedReg(preg) => Requirement::Fixed(preg),
             OperandPolicy::Reg | OperandPolicy::Reuse(_) => Requirement::Register(op.class()),
+            OperandPolicy::Stack => Requirement::Stack(op.class()),
             _ => Requirement::Any(op.class()),
         }
     }
@@ -575,6 +580,7 @@ impl<'a, F: Function> Env<'a, F> {
             pregs: vec![],
             allocation_queue: PrioQueue::new(),
             clobbers: vec![],
+            safepoints: vec![],
             hot_code: LiveRangeSet::new(),
             spilled_bundles: vec![],
             spillslots: vec![],
@@ -586,6 +592,7 @@ impl<'a, F: Function> Env<'a, F> {
             allocs: vec![],
             inst_alloc_offsets: vec![],
             num_spillslots: 0,
+            safepoint_slots: vec![],
 
             stats: Stats::default(),
 
@@ -610,7 +617,11 @@ impl<'a, F: Function> Env<'a, F> {
                 def: DefIndex::invalid(),
                 first_range: LiveRangeIndex::invalid(),
                 blockparam: Block::invalid(),
+                is_ref: false,
             });
+        }
+        for v in self.func.reftype_vregs() {
+            self.vregs[v.vreg()].is_ref = true;
         }
         // Create allocations too.
         for inst in 0..self.func.insts() {
@@ -994,12 +1005,20 @@ impl<'a, F: Function> Env<'a, F> {
                 if self.func.inst_clobbers(inst).len() > 0 {
                     self.clobbers.push(inst);
                 }
+                if self.func.is_safepoint(inst) {
+                    self.safepoints.push(inst);
+                }
                 // Mark clobbers with CodeRanges on PRegs.
                 for i in 0..self.func.inst_clobbers(inst).len() {
                     // don't borrow `self`
                     let clobber = self.func.inst_clobbers(inst)[i];
+                    // Clobber range is at After point only: an
+                    // instruction can still take an input in a reg
+                    // that it later clobbers. (In other words, the
+                    // clobber is like a normal def that never gets
+                    // used.)
                     let range = CodeRange {
-                        from: ProgPoint::before(inst),
+                        from: ProgPoint::after(inst),
                         to: ProgPoint::before(inst.next()),
                     };
                     self.add_liverange_to_preg(range, clobber);
@@ -1089,7 +1108,7 @@ impl<'a, F: Function> Env<'a, F> {
                             // If this is a branch, extend `pos` to
                             // the end of the block. (Branch uses are
                             // blockparams and need to be live at the
-                            // end of the block.
+                            // end of the block.)
                             if self.func.is_branch(inst) {
                                 pos = self.cfginfo.block_exit[block.index()];
                             }
@@ -1242,7 +1261,73 @@ impl<'a, F: Function> Env<'a, F> {
             self.liveins[block.index()] = live;
         }
 
-        // Do a cleanup pass: if there are any LiveRanges with
+        self.safepoints.sort();
+
+        // Insert safepoint virtual stack uses, if needed.
+        for vreg in self.func.reftype_vregs() {
+            let vreg = VRegIndex::new(vreg.vreg());
+            let mut iter = self.vregs[vreg.index()].first_range;
+            let mut safepoint_idx = 0;
+            while iter.is_valid() {
+                let rangedata = &self.ranges[iter.index()];
+                let range = rangedata.range;
+                while safepoint_idx < self.safepoints.len()
+                    && ProgPoint::before(self.safepoints[safepoint_idx]) < range.from
+                {
+                    safepoint_idx += 1;
+                }
+                while safepoint_idx < self.safepoints.len()
+                    && range.contains_point(ProgPoint::before(self.safepoints[safepoint_idx]))
+                {
+                    // Create a virtual use.
+                    let pos = ProgPoint::before(self.safepoints[safepoint_idx]);
+                    let operand = Operand::new(
+                        self.vregs[vreg.index()].reg,
+                        OperandPolicy::Stack,
+                        OperandKind::Use,
+                        OperandPos::Before,
+                    );
+
+                    // Create the actual use object.
+                    let u = UseIndex(self.uses.len() as u32);
+                    self.uses.push(Use {
+                        operand,
+                        pos,
+                        slot: SLOT_NONE,
+                        next_use: UseIndex::invalid(),
+                    });
+
+                    // Create/extend the LiveRange and add the use to the range.
+                    let range = CodeRange {
+                        from: pos,
+                        to: pos.next(),
+                    };
+                    let lr = self.add_liverange_to_vreg(
+                        VRegIndex::new(operand.vreg().vreg()),
+                        range,
+                        &mut num_ranges,
+                    );
+                    vreg_ranges[operand.vreg().vreg()] = lr;
+
+                    log::debug!(
+                        "Safepoint-induced stack use of {:?} at {:?} -> {:?} -> {:?}",
+                        operand,
+                        pos,
+                        u,
+                        lr
+                    );
+
+                    self.insert_use_into_liverange_and_update_stats(lr, u);
+                    safepoint_idx += 1;
+                }
+                if safepoint_idx >= self.safepoints.len() {
+                    break;
+                }
+                iter = self.ranges[iter.index()].next_in_reg;
+            }
+        }
+
+        // Do a fixed-reg cleanup pass: if there are any LiveRanges with
         // multiple uses (or defs) at the same ProgPoint and there is
         // more than one FixedReg constraint at that ProgPoint, we
         // need to record all but one of them in a special fixup list
@@ -1264,11 +1349,13 @@ impl<'a, F: Function> Env<'a, F> {
                 let mut first_preg: SmallVec<[PRegIndex; 16]> = smallvec![];
                 let mut extra_clobbers: SmallVec<[(PReg, Inst); 8]> = smallvec![];
                 let mut fixup_multi_fixed_vregs = |pos: ProgPoint,
+                                                   slot: usize,
                                                    op: &mut Operand,
                                                    fixups: &mut Vec<(
                     ProgPoint,
                     PRegIndex,
                     PRegIndex,
+                    usize,
                 )>| {
                     if last_point.is_some() && Some(pos) != last_point {
                         seen_fixed_for_vreg.clear();
@@ -1289,7 +1376,7 @@ impl<'a, F: Function> Env<'a, F> {
                         {
                             let orig_preg = first_preg[idx];
                             log::debug!(" -> duplicate; switching to policy Reg");
-                            fixups.push((pos, orig_preg, preg_idx));
+                            fixups.push((pos, orig_preg, preg_idx, slot));
                             *op = Operand::new(op.vreg(), OperandPolicy::Reg, op.kind(), op.pos());
                             extra_clobbers.push((preg, pos.inst));
                         } else {
@@ -1302,8 +1389,10 @@ impl<'a, F: Function> Env<'a, F> {
                 if self.ranges[iter.index()].def.is_valid() {
                     let def_idx = self.vregs[vreg].def;
                     let pos = self.defs[def_idx.index()].pos;
+                    let slot = self.defs[def_idx.index()].slot;
                     fixup_multi_fixed_vregs(
                         pos,
+                        slot,
                         &mut self.defs[def_idx.index()].operand,
                         &mut self.multi_fixed_reg_fixups,
                     );
@@ -1312,8 +1401,10 @@ impl<'a, F: Function> Env<'a, F> {
                 let mut use_iter = self.ranges[iter.index()].first_use;
                 while use_iter.is_valid() {
                     let pos = self.uses[use_iter.index()].pos;
+                    let slot = self.uses[use_iter.index()].slot;
                     fixup_multi_fixed_vregs(
                         pos,
+                        slot,
                         &mut self.uses[use_iter.index()].operand,
                         &mut self.multi_fixed_reg_fixups,
                     );
@@ -1916,13 +2007,17 @@ impl<'a, F: Function> Env<'a, F> {
         let bundledata = &self.bundles[bundle.index()];
         let first_range = &self.ranges[bundledata.first_range.index()];
 
+        log::debug!("recompute bundle properties: bundle {:?}", bundle);
+
         if first_range.vreg.is_invalid() {
+            log::debug!("  -> no vreg; minimal and fixed");
             minimal = true;
             fixed = true;
         } else {
             if first_range.def.is_valid() {
                 let def_data = &self.defs[first_range.def.index()];
                 if let OperandPolicy::FixedReg(_) = def_data.operand.policy() {
+                    log::debug!("  -> fixed def {:?}", first_range.def);
                     fixed = true;
                 }
             }
@@ -1930,6 +2025,7 @@ impl<'a, F: Function> Env<'a, F> {
             while use_iter.is_valid() {
                 let use_data = &self.uses[use_iter.index()];
                 if let OperandPolicy::FixedReg(_) = use_data.operand.policy() {
+                    log::debug!("  -> fixed use {:?}", use_iter);
                     fixed = true;
                     break;
                 }
@@ -1939,16 +2035,22 @@ impl<'a, F: Function> Env<'a, F> {
             // the range covers only one instruction. Note that it
             // could cover just one ProgPoint, i.e. X.Before..X.After,
             // or two ProgPoints, i.e. X.Before..X+1.Before.
+            log::debug!("  -> first range has range {:?}", first_range.range);
+            log::debug!(
+                "  -> first range has next in bundle {:?}",
+                first_range.next_in_bundle
+            );
             minimal = first_range.next_in_bundle.is_invalid()
                 && first_range.range.from.inst == first_range.range.to.prev().inst;
+            log::debug!("  -> minimal: {}", minimal);
         }
 
         let spill_weight = if minimal {
             if fixed {
-                log::debug!("  -> fixed and minimal: 2000000");
+                log::debug!("  -> fixed and minimal: spill weight 2000000");
                 2_000_000
             } else {
-                log::debug!("  -> non-fixed and minimal: 1000000");
+                log::debug!("  -> non-fixed and minimal: spill weight 1000000");
                 1_000_000
             }
         } else {
@@ -1957,15 +2059,20 @@ impl<'a, F: Function> Env<'a, F> {
             while range.is_valid() {
                 let range_data = &self.ranges[range.index()];
                 if range_data.def.is_valid() {
-                    log::debug!("  -> has def (2000)");
+                    log::debug!("  -> has def (spill weight +2000)");
                     total += 2000;
                 }
-                log::debug!("  -> uses spill weight: {}", range_data.uses_spill_weight);
+                log::debug!("  -> uses spill weight: +{}", range_data.uses_spill_weight);
                 total += range_data.uses_spill_weight;
                 range = range_data.next_in_bundle;
             }
 
             if self.bundles[bundle.index()].prio > 0 {
+                log::debug!(
+                    " -> dividing by prio {}; final weight {}",
+                    self.bundles[bundle.index()].prio,
+                    total / self.bundles[bundle.index()].prio
+                );
                 total / self.bundles[bundle.index()].prio
             } else {
                 total
@@ -2646,6 +2753,15 @@ impl<'a, F: Function> Env<'a, F> {
                     lowest_cost_conflict_set.unwrap_or(smallvec![])
                 }
 
+                Requirement::Stack(_) => {
+                    // If we must be on the stack, put ourselves on
+                    // the spillset's list immediately.
+                    self.spillsets[self.bundles[bundle.index()].spillset.index()]
+                        .bundles
+                        .push(bundle);
+                    return;
+                }
+
                 Requirement::Any(_) => {
                     // If a register is not *required*, spill now (we'll retry
                     // allocation on spilled bundles later).
@@ -2657,8 +2773,9 @@ impl<'a, F: Function> Env<'a, F> {
 
             log::debug!(" -> conflict set {:?}", conflicting_bundles);
 
-            // If we have already tried evictions once before and are still unsuccessful, give up
-            // and move on to splitting as long as this is not a minimal bundle.
+            // If we have already tried evictions once before and are
+            // still unsuccessful, give up and move on to splitting as
+            // long as this is not a minimal bundle.
             if attempts >= 2 && !self.minimal_bundle(bundle) {
                 break;
             }
@@ -3324,7 +3441,11 @@ impl<'a, F: Function> Env<'a, F> {
                     debug_assert!(range.contains_point(usedata.pos));
                     let inst = usedata.pos.inst;
                     let slot = usedata.slot;
-                    self.set_alloc(inst, slot, alloc);
+                    // Safepoints add virtual uses with no slots;
+                    // avoid these.
+                    if slot != SLOT_NONE {
+                        self.set_alloc(inst, slot, alloc);
+                    }
                     use_iter = self.uses[use_iter.index()].next_use;
                 }
 
@@ -3425,7 +3546,7 @@ impl<'a, F: Function> Env<'a, F> {
         }
 
         // Handle multi-fixed-reg constraints by copying.
-        for (progpoint, from_preg, to_preg) in
+        for (progpoint, from_preg, to_preg, slot) in
             std::mem::replace(&mut self.multi_fixed_reg_fixups, vec![])
         {
             log::debug!(
@@ -3438,6 +3559,11 @@ impl<'a, F: Function> Env<'a, F> {
                 progpoint,
                 InsertMovePrio::MultiFixedReg,
                 Allocation::reg(self.pregs[from_preg.index()].reg),
+                Allocation::reg(self.pregs[to_preg.index()].reg),
+            );
+            self.set_alloc(
+                progpoint.inst,
+                slot,
                 Allocation::reg(self.pregs[to_preg.index()].reg),
             );
         }
@@ -3633,7 +3759,155 @@ impl<'a, F: Function> Env<'a, F> {
         self.edits.push((pos.to_index(), prio, edit));
     }
 
-    fn compute_stackmaps(&mut self) {}
+    fn compute_stackmaps(&mut self) {
+        // For each ref-typed vreg, iterate through ranges and find
+        // safepoints in-range. Add the SpillSlot to the stackmap.
+        //
+        // Note that unlike in the rest of the allocator, we cannot
+        // overapproximate here: we cannot list a vreg's alloc at a
+        // certain program point in the metadata if it is not yet
+        // live. Because arbitrary block order and irreducible control
+        // flow could result in us encountering an (overapproximated,
+        // not actually live) vreg range for a reftyped value when
+        // scanning in block order, we need to do a fixpoint liveness
+        // analysis here for reftyped vregs only. We only perform this
+        // analysis if there are reftyped vregs present, so it will
+        // not add to allocation runtime otherwise.
+
+        if self.func.reftype_vregs().is_empty() {
+            return;
+        }
+
+        let mut reftype_vreg_map = BitVec::new();
+        for vreg in self.func.reftype_vregs() {
+            reftype_vreg_map.set(vreg.vreg(), true);
+        }
+
+        let mut live_reftypes_block_start: Vec<BitVec> = vec![];
+        let mut live_reftypes_block_end: Vec<BitVec> = vec![];
+        for _ in 0..self.func.blocks() {
+            live_reftypes_block_start.push(BitVec::new());
+            live_reftypes_block_end.push(BitVec::new());
+        }
+
+        let mut safepoints_per_vreg: HashMap<usize, HashSet<Inst>> = HashMap::new();
+        for &vreg in self.func.reftype_vregs() {
+            safepoints_per_vreg.insert(vreg.vreg(), HashSet::new());
+        }
+
+        let mut workqueue = VecDeque::new();
+        let mut workqueue_set = HashSet::new();
+        let mut visited = HashSet::new();
+
+        // Backward analysis: start at return blocks.
+        for block in 0..self.func.blocks() {
+            let block = Block::new(block);
+            if self.func.is_ret(self.func.block_insns(block).last()) {
+                workqueue.push_back(block);
+                workqueue_set.insert(block);
+            }
+        }
+
+        // While workqueue is not empty, scan a block backward.
+        while !workqueue.is_empty() {
+            let block = workqueue.pop_back().unwrap();
+            workqueue_set.remove(&block);
+            visited.insert(block);
+
+            let live = &mut live_reftypes_block_start[block.index()];
+            live.assign(&live_reftypes_block_end[block.index()]);
+
+            for inst in self.func.block_insns(block).rev().iter() {
+                for pos in &[OperandPos::After, OperandPos::Before] {
+                    for op in self.func.inst_operands(inst) {
+                        if !reftype_vreg_map.get(op.vreg().vreg()) {
+                            continue;
+                        }
+                        if op.pos() != OperandPos::Both && op.pos() != *pos {
+                            continue;
+                        }
+                        match op.kind() {
+                            OperandKind::Def => {
+                                live.set(op.vreg().vreg(), false);
+                            }
+                            OperandKind::Use => {
+                                live.set(op.vreg().vreg(), true);
+                            }
+                        }
+                    }
+                }
+
+                if self.func.is_safepoint(inst) {
+                    for vreg in live.iter() {
+                        let safepoints = safepoints_per_vreg.get_mut(&vreg).unwrap();
+                        safepoints.insert(inst);
+                    }
+                }
+            }
+            for blockparam in self.func.block_params(block) {
+                if !reftype_vreg_map.get(blockparam.vreg()) {
+                    continue;
+                }
+                live.set(blockparam.vreg(), false);
+            }
+
+            for &pred in self.func.block_preds(block) {
+                if live_reftypes_block_end[pred.index()].or(live) || !visited.contains(&pred) {
+                    if !workqueue_set.contains(&pred) {
+                        workqueue.push_back(pred);
+                        workqueue_set.insert(pred);
+                    }
+                }
+            }
+        }
+
+        // Now we have `safepoints_per_vreg`. All we have to do is,
+        // for each vreg in this map, step through the LiveRanges
+        // along with a sorted list of safepoints; and for each
+        // safepoint in the current range, emit the allocation into
+        // the `safepoint_slots` list.
+
+        log::debug!("safepoints_per_vreg = {:?}", safepoints_per_vreg);
+
+        for vreg in self.func.reftype_vregs() {
+            log::debug!("generating safepoint info for vreg {}", vreg);
+            let vreg = VRegIndex::new(vreg.vreg());
+            let mut safepoints: Vec<ProgPoint> = safepoints_per_vreg
+                .get(&vreg.index())
+                .unwrap()
+                .iter()
+                .map(|&inst| ProgPoint::before(inst))
+                .collect();
+            safepoints.sort();
+            log::debug!(" -> live over safepoints: {:?}", safepoints);
+
+            let mut safepoint_idx = 0;
+            let mut iter = self.vregs[vreg.index()].first_range;
+            while iter.is_valid() {
+                let rangedata = &self.ranges[iter.index()];
+                let range = rangedata.range;
+                let alloc = self.get_alloc_for_range(iter);
+                log::debug!(" -> range {:?}: alloc {}", range, alloc);
+                while safepoint_idx < safepoints.len() && safepoints[safepoint_idx] < range.to {
+                    if safepoints[safepoint_idx] < range.from {
+                        safepoint_idx += 1;
+                        continue;
+                    }
+                    log::debug!("    -> covers safepoint {:?}", safepoints[safepoint_idx]);
+
+                    let slot = alloc
+                        .as_stack()
+                        .expect("Reference-typed value not in spillslot at safepoint");
+                    self.safepoint_slots.push((safepoints[safepoint_idx], slot));
+                    safepoint_idx += 1;
+                }
+                iter = rangedata.next_in_reg;
+            }
+        }
+
+        self.safepoint_slots.sort();
+        log::debug!("final safepoint slots info: {:?}", self.safepoint_slots);
+    }
 
     pub(crate) fn init(&mut self) -> Result<(), RegAllocError> {
         self.create_pregs_and_vregs();
@@ -3769,6 +4043,8 @@ pub fn run<F: Function>(func: &F, mach_env: &MachineEnv) -> Result<Output, RegAl
         allocs: env.allocs,
         inst_alloc_offsets: env.inst_alloc_offsets,
         num_spillslots: env.num_spillslots as usize,
+        debug_locations: vec![],
+        safepoint_slots: env.safepoint_slots,
         stats: env.stats,
     })
 }

@@ -201,10 +201,12 @@ impl std::fmt::Display for SpillSlot {
 /// `LAllocation` in Ion).
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Operand {
-    /// Bit-pack into 31 bits. This allows a `Reg` to encode an
-    /// `Operand` or an `Allocation` in 32 bits.
+    /// Bit-pack into 32 bits. Note that `policy` overlaps with `kind`
+    /// in `Allocation` and we use mutually disjoint tag-value ranges
+    /// so that clients, if they wish, can track just one `u32` per
+    /// register slot and edit it in-place after allocation.
     ///
-    /// op-or-alloc:1 pos:2 kind:1 policy:2 class:1 preg:5 vreg:20
+    /// policy:3 kind:1 pos:2 class:1 preg:5 vreg:20
     bits: u32,
 }
 
@@ -214,13 +216,14 @@ impl Operand {
         let (preg_field, policy_field): (u32, u32) = match policy {
             OperandPolicy::Any => (0, 0),
             OperandPolicy::Reg => (0, 1),
+            OperandPolicy::Stack => (0, 2),
             OperandPolicy::FixedReg(preg) => {
                 assert_eq!(preg.class(), vreg.class());
-                (preg.hw_enc() as u32, 2)
+                (preg.hw_enc() as u32, 3)
             }
             OperandPolicy::Reuse(which) => {
                 assert!(which <= PReg::MAX);
-                (which as u32, 3)
+                (which as u32, 4)
             }
         };
         let class_field = vreg.class() as u8 as u32;
@@ -230,9 +233,9 @@ impl Operand {
             bits: vreg.vreg() as u32
                 | (preg_field << 20)
                 | (class_field << 25)
-                | (policy_field << 26)
+                | (pos_field << 26)
                 | (kind_field << 28)
-                | (pos_field << 29),
+                | (policy_field << 29),
         }
     }
 
@@ -322,7 +325,7 @@ impl Operand {
 
     #[inline(always)]
     pub fn pos(self) -> OperandPos {
-        let pos_field = (self.bits >> 29) & 3;
+        let pos_field = (self.bits >> 26) & 3;
         match pos_field {
             0 => OperandPos::Before,
             1 => OperandPos::After,
@@ -333,13 +336,14 @@ impl Operand {
 
     #[inline(always)]
     pub fn policy(self) -> OperandPolicy {
-        let policy_field = (self.bits >> 26) & 3;
+        let policy_field = (self.bits >> 29) & 7;
         let preg_field = ((self.bits >> 20) as usize) & PReg::MAX;
         match policy_field {
             0 => OperandPolicy::Any,
             1 => OperandPolicy::Reg,
-            2 => OperandPolicy::FixedReg(PReg::new(preg_field, self.class())),
-            3 => OperandPolicy::Reuse(preg_field),
+            2 => OperandPolicy::Stack,
+            3 => OperandPolicy::FixedReg(PReg::new(preg_field, self.class())),
+            4 => OperandPolicy::Reuse(preg_field),
             _ => unreachable!(),
         }
     }
@@ -357,15 +361,7 @@ impl Operand {
 
 impl std::fmt::Debug for Operand {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(
-            f,
-            "Operand(vreg = {:?}, class = {:?}, kind = {:?}, pos = {:?}, policy = {:?})",
-            self.vreg().vreg(),
-            self.class(),
-            self.kind(),
-            self.pos(),
-            self.policy()
-        )
+        std::fmt::Display::fmt(self, f)
     }
 }
 
@@ -373,10 +369,14 @@ impl std::fmt::Display for Operand {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(
             f,
-            "{:?}@{:?}: {} {}",
+            "{:?}@{:?}: {}{} {}",
             self.kind(),
             self.pos(),
             self.vreg(),
+            match self.class() {
+                RegClass::Int => "i",
+                RegClass::Float => "f",
+            },
             self.policy()
         )
     }
@@ -388,6 +388,8 @@ pub enum OperandPolicy {
     Any,
     /// Operand must be in a register. Register is read-only for Uses.
     Reg,
+    /// Operand must be on the stack.
+    Stack,
     /// Operand must be in a fixed register.
     FixedReg(PReg),
     /// On defs only: reuse a use's register. Which use is given by `preg` field.
@@ -399,6 +401,7 @@ impl std::fmt::Display for OperandPolicy {
         match self {
             Self::Any => write!(f, "any"),
             Self::Reg => write!(f, "reg"),
+            Self::Stack => write!(f, "stack"),
             Self::FixedReg(preg) => write!(f, "fixed({})", preg),
             Self::Reuse(idx) => write!(f, "reuse({})", idx),
         }
@@ -422,20 +425,21 @@ pub enum OperandPos {
 /// Operand.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Allocation {
-    /// Bit-pack in 31 bits:
+    /// Bit-pack in 32 bits. Note that `kind` overlaps with the
+    /// `policy` field in `Operand`, and we are careful to use
+    /// disjoint ranges of values in this field for each type. We also
+    /// leave the def-or-use bit (`kind` for `Operand`) unused here so
+    /// that the client may use it to mark `Allocation`s on
+    /// instructions as read or write when it edits instructions
+    /// (which is sometimes useful for post-allocation analyses).
     ///
-    /// op-or-alloc:1 kind:2  index:29
+    /// kind:3 unused:1 index:28
     bits: u32,
 }
 
 impl std::fmt::Debug for Allocation {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(
-            f,
-            "Allocation(kind = {:?}, index = {})",
-            self.kind(),
-            self.index()
-        )
+        std::fmt::Display::fmt(self, f)
     }
 }
 
@@ -452,6 +456,7 @@ impl std::fmt::Display for Allocation {
 impl Allocation {
     #[inline(always)]
     pub(crate) fn new(kind: AllocationKind, index: usize) -> Self {
+        assert!(index < (1 << 28));
         Self {
             bits: ((kind as u8 as u32) << 29) | (index as u32),
         }
@@ -474,17 +479,32 @@ impl Allocation {
 
     #[inline(always)]
     pub fn kind(self) -> AllocationKind {
-        match (self.bits >> 29) & 3 {
-            0 => AllocationKind::None,
-            1 => AllocationKind::Reg,
-            2 => AllocationKind::Stack,
+        match (self.bits >> 29) & 7 {
+            5 => AllocationKind::None,
+            6 => AllocationKind::Reg,
+            7 => AllocationKind::Stack,
             _ => unreachable!(),
         }
     }
 
     #[inline(always)]
+    pub fn is_none(self) -> bool {
+        self.kind() == AllocationKind::None
+    }
+
+    #[inline(always)]
+    pub fn is_reg(self) -> bool {
+        self.kind() == AllocationKind::Reg
+    }
+
+    #[inline(always)]
+    pub fn is_stack(self) -> bool {
+        self.kind() == AllocationKind::Stack
+    }
+
+    #[inline(always)]
     pub fn index(self) -> usize {
-        (self.bits & ((1 << 29) - 1)) as usize
+        (self.bits & ((1 << 28) - 1)) as usize
     }
 
     #[inline(always)]
@@ -516,12 +536,14 @@ impl Allocation {
     }
 }
 
+// N.B.: These values must be *disjoint* with the values used to
+// encode `OperandPolicy`, because they share a 3-bit field.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
 pub enum AllocationKind {
-    None = 0,
-    Reg = 1,
-    Stack = 2,
+    None = 5,
+    Reg = 6,
+    Stack = 7,
 }
 
 impl Allocation {
@@ -532,6 +554,59 @@ impl Allocation {
             AllocationKind::Reg => self.as_reg().unwrap().class(),
             AllocationKind::Stack => self.as_stack().unwrap().class(),
         }
+    }
+}
+
+/// A helper that wraps either an `Operand` or an `Allocation` and is
+/// able to tell which it is based on the tag bits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OperandOrAllocation {
+    bits: u32,
+}
+
+impl OperandOrAllocation {
+    pub fn from_operand(operand: Operand) -> Self {
+        Self {
+            bits: operand.bits(),
+        }
+    }
+    pub fn from_alloc(alloc: Allocation) -> Self {
+        Self { bits: alloc.bits() }
+    }
+    pub fn is_operand(&self) -> bool {
+        (self.bits >> 29) <= 4
+    }
+    pub fn is_allocation(&self) -> bool {
+        (self.bits >> 29) >= 5
+    }
+    pub fn as_operand(&self) -> Option<Operand> {
+        if self.is_operand() {
+            Some(Operand::from_bits(self.bits))
+        } else {
+            None
+        }
+    }
+    pub fn as_allocation(&self) -> Option<Allocation> {
+        if self.is_allocation() {
+            Some(Allocation::from_bits(self.bits & !(1 << 28)))
+        } else {
+            None
+        }
+    }
+
+    pub fn kind(&self) -> OperandKind {
+        let kind_field = (self.bits >> 28) & 1;
+        match kind_field {
+            0 => OperandKind::Def,
+            1 => OperandKind::Use,
+            _ => unreachable!(),
+        }
+    }
+
+    /// Replaces the Operand with an Allocation, keeping the def/use bit.
+    pub fn replace_with_alloc(&mut self, alloc: Allocation) {
+        self.bits &= 1 << 28;
+        self.bits |= alloc.bits;
     }
 }
 
@@ -576,7 +651,9 @@ pub trait Function {
     fn is_branch(&self, insn: Inst) -> bool;
 
     /// Determine whether an instruction is a safepoint and requires a stackmap.
-    fn is_safepoint(&self, insn: Inst) -> bool;
+    fn is_safepoint(&self, _: Inst) -> bool {
+        false
+    }
 
     /// Determine whether an instruction is a move; if so, return the
     /// vregs for (src, dst).
@@ -597,6 +674,40 @@ pub trait Function {
     /// lower-bound, otherwise invalid index failures may happen; it is of
     /// course better if it is exact.
     fn num_vregs(&self) -> usize;
+
+    /// Get the VRegs that are pointer/reference types. This has the
+    /// following effects for each such vreg:
+    ///
+    /// - At all safepoint instructions, the vreg will be in a
+    ///   SpillSlot, not in a register.
+    /// - The vreg *may not* be used as a register operand on
+    ///   safepoint instructions: this is because a vreg can only live
+    ///   in one place at a time. The client should copy the value to an
+    ///   integer-typed vreg and use this to pass a pointer as an input
+    ///   to a safepoint instruction (such as a function call).
+    /// - At all safepoint instructions, all live vregs' locations
+    ///   will be included in a list in the `Output` below, so that
+    ///   pointer-inspecting/updating functionality (such as a moving
+    ///   garbage collector) may observe and edit their values.
+    fn reftype_vregs(&self) -> &[VReg] {
+        &[]
+    }
+
+    /// Get the VRegs for which we should generate value-location
+    /// metadata for debugging purposes. This can be used to generate
+    /// e.g. DWARF with valid prgram-point ranges for each value
+    /// expression in a way that is more efficient than a post-hoc
+    /// analysis of the allocator's output.
+    ///
+    /// Each tuple is (vreg, inclusive_start, exclusive_end,
+    /// label). In the `Output` there will be (label, inclusive_start,
+    /// exclusive_end, alloc)` tuples. The ranges may not exactly
+    /// match -- specifically, the returned metadata may cover only a
+    /// subset of the requested ranges -- if the value is not live for
+    /// the entire requested ranges.
+    fn debug_value_labels(&self) -> &[(Inst, Inst, VReg, u32)] {
+        &[]
+    }
 
     // --------------
     // Spills/reloads
@@ -735,6 +846,17 @@ pub struct Output {
     pub allocs: Vec<Allocation>,
     /// Allocation offset in `allocs` for each instruction.
     pub inst_alloc_offsets: Vec<u32>,
+
+    /// Safepoint records: at a given program point, a reference-typed value lives in the given SpillSlot.
+    pub safepoint_slots: Vec<(ProgPoint, SpillSlot)>,
+
+    /// Debug info: a labeled value (as applied to vregs by
+    /// `Function::debug_value_labels()` on the input side) is located
+    /// in the given allocation from the first program point
+    /// (inclusive) to the second (exclusive). Guaranteed to be sorted
+    /// by label and program point, and the ranges are guaranteed to
+    /// be disjoint.
+    pub debug_locations: Vec<(u32, ProgPoint, ProgPoint, Allocation)>,
 
     /// Internal stats from the allocator.
     pub stats: ion::Stats,
