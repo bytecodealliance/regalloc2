@@ -1,3 +1,8 @@
+/*
+ * Released under the terms of the Apache 2.0 license with LLVM
+ * exception. See `LICENSE` for details.
+ */
+
 //! SSA-related utilities.
 
 use crate::cfg::CFGInfo;

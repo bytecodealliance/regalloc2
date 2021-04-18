@@ -1,3 +1,8 @@
+/*
+ * Released under the terms of the Apache 2.0 license with LLVM
+ * exception. See `LICENSE` for details.
+ */
+
 #![no_main]
 use libfuzzer_sys::fuzz_target;
 use libfuzzer_sys::arbitrary::{Arbitrary, Unstructured, Result};

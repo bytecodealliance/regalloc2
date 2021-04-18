@@ -355,6 +355,7 @@ impl Operand {
 
     #[inline(always)]
     pub fn from_bits(bits: u32) -> Self {
+        debug_assert!(bits >> 29 <= 4);
         Operand { bits }
     }
 }
@@ -429,9 +430,9 @@ pub struct Allocation {
     /// `policy` field in `Operand`, and we are careful to use
     /// disjoint ranges of values in this field for each type. We also
     /// leave the def-or-use bit (`kind` for `Operand`) unused here so
-    /// that the client may use it to mark `Allocation`s on
-    /// instructions as read or write when it edits instructions
-    /// (which is sometimes useful for post-allocation analyses).
+    /// that we can use it below in `OperandOrAllocation` to record
+    /// whether `Allocation`s are defs or uses (which is often useful
+    /// to know).
     ///
     /// kind:3 unused:1 index:28
     bits: u32,
@@ -532,6 +533,7 @@ impl Allocation {
 
     #[inline(always)]
     pub fn from_bits(bits: u32) -> Self {
+        debug_assert!(bits >> 29 >= 5);
         Self { bits }
     }
 }
@@ -566,11 +568,13 @@ pub struct OperandOrAllocation {
 
 impl OperandOrAllocation {
     pub fn from_operand(operand: Operand) -> Self {
+        debug_assert!(operand.bits() >> 29 <= 4);
         Self {
             bits: operand.bits(),
         }
     }
     pub fn from_alloc(alloc: Allocation) -> Self {
+        debug_assert!(alloc.bits() >> 29 >= 5);
         Self { bits: alloc.bits() }
     }
     pub fn is_operand(&self) -> bool {
@@ -588,6 +592,10 @@ impl OperandOrAllocation {
     }
     pub fn as_allocation(&self) -> Option<Allocation> {
         if self.is_allocation() {
+            // Remove the def/use bit -- the canonical `Allocation`
+            // does not have this, and we want allocs to continue to
+            // be comparable whether they are used for reads or
+            // writes.
             Some(Allocation::from_bits(self.bits & !(1 << 28)))
         } else {
             None
@@ -612,6 +620,9 @@ impl OperandOrAllocation {
 
 /// A trait defined by the regalloc client to provide access to its
 /// machine-instruction / CFG representation.
+///
+/// (This trait's design is inspired by, and derives heavily from, the
+/// trait of the same name in regalloc.rs.)
 pub trait Function {
     // -------------
     // CFG traversal
@@ -669,10 +680,7 @@ pub trait Function {
     /// Get the clobbers for an instruction.
     fn inst_clobbers(&self, insn: Inst) -> &[PReg];
 
-    /// Get the precise number of `VReg` in use in this function, to allow
-    /// preallocating data structures. This number *must* be a correct
-    /// lower-bound, otherwise invalid index failures may happen; it is of
-    /// course better if it is exact.
+    /// Get the number of `VReg` in use in this function.
     fn num_vregs(&self) -> usize;
 
     /// Get the VRegs that are pointer/reference types. This has the
@@ -724,6 +732,9 @@ pub trait Function {
     /// but we also use them for F32 and F64 values, we may use a different
     /// store-slot size and smaller-operand store/load instructions for an F64
     /// than for a true V128.
+    ///
+    /// (This trait method's design and doc text derives from
+    /// regalloc.rs' trait of the same name.)
     fn spillslot_size(&self, regclass: RegClass, for_vreg: VReg) -> usize;
 
     /// When providing a spillslot number for a multi-slot spillslot,

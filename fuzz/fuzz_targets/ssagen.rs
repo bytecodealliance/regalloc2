@@ -1,3 +1,8 @@
+/*
+ * Released under the terms of the Apache 2.0 license with LLVM
+ * exception. See `LICENSE` for details.
+ */
+
 #![no_main]
 use libfuzzer_sys::arbitrary::{Arbitrary, Result, Unstructured};
 use libfuzzer_sys::fuzz_target;
@@ -23,6 +28,8 @@ impl Arbitrary for TestCase {
                     control_flow: true,
                     reducible: false,
                     always_local_uses: false,
+                    block_params: true,
+                    reftypes: true,
                 },
             )?,
         })

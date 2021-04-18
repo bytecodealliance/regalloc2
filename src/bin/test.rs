@@ -1,3 +1,8 @@
+/*
+ * Released under the terms of the Apache 2.0 license with LLVM
+ * exception. See `LICENSE` for details.
+ */
+
 use arbitrary::{Arbitrary, Unstructured};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
