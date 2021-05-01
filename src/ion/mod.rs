@@ -560,6 +560,69 @@ pub struct Stats {
     edits_count: usize,
 }
 
+/// This iterator represents a traversal through all allocatable
+/// registers of a given class, in a certain order designed to
+/// minimize allocation contention.
+///
+/// The order in which we try registers is somewhat complex:
+/// - First, if there is a hint, we try that.
+/// - Then, we try registers in a traversal order that is based on an
+///   "offset" (usually the bundle index) spreading pressure evenly
+///   among registers to reduce commitment-map contention.
+/// - Within that scan, we try registers in two groups: first,
+///   prferred registers; then, non-preferred registers. (In normal
+///   usage, these consist of caller-save and callee-save registers
+///   respectively, to minimize clobber-saves; but they need not.)
+struct RegTraversalIter<'a> {
+    env: &'a MachineEnv,
+    class: usize,
+    hint_reg: Option<PReg>,
+    pref_idx: usize,
+    non_pref_idx: usize,
+    offset: usize,
+}
+
+impl<'a> RegTraversalIter<'a> {
+    pub fn new(
+        env: &'a MachineEnv,
+        class: RegClass,
+        hint_reg: Option<PReg>,
+        offset: usize,
+    ) -> Self {
+        Self {
+            env,
+            class: class as u8 as usize,
+            hint_reg,
+            pref_idx: 0,
+            non_pref_idx: 0,
+            offset,
+        }
+    }
+}
+
+impl<'a> std::iter::Iterator for RegTraversalIter<'a> {
+    type Item = PReg;
+
+    fn next(&mut self) -> Option<PReg> {
+        if let Some(preg) = self.hint_reg.take() {
+            return Some(preg);
+        }
+        if self.pref_idx < self.env.preferred_regs_by_class[self.class].len() {
+            let arr = &self.env.preferred_regs_by_class[self.class][..];
+            let r = arr[(self.pref_idx + self.offset) % arr.len()];
+            self.pref_idx += 1;
+            return Some(r);
+        }
+        if self.non_pref_idx < self.env.non_preferred_regs_by_class[self.class].len() {
+            let arr = &self.env.non_preferred_regs_by_class[self.class][..];
+            let r = arr[(self.non_pref_idx + self.offset) % arr.len()];
+            self.non_pref_idx += 1;
+            return Some(r);
+        }
+        None
+    }
+}
+
 impl<'a, F: Function> Env<'a, F> {
     pub(crate) fn new(func: &'a F, env: &'a MachineEnv, cfginfo: CFGInfo) -> Self {
         Self {
@@ -987,7 +1050,7 @@ impl<'a, F: Function> Env<'a, F> {
             // return), create blockparam_out entries.
             if self.func.is_branch(insns.last()) {
                 let operands = self.func.inst_operands(insns.last());
-                let mut i = 0;
+                let mut i = self.func.branch_blockparam_arg_offset(block, insns.last());
                 for &succ in self.func.block_succs(block) {
                     for &blockparam in self.func.block_params(succ) {
                         let from_vreg = VRegIndex::new(operands[i].vreg().vreg());
@@ -2671,12 +2734,7 @@ impl<'a, F: Function> Env<'a, F> {
                 Requirement::Register(class) => {
                     // Scan all pregs and attempt to allocate.
                     let mut lowest_cost_conflict_set: Option<LiveBundleVec> = None;
-                    let n_regs = self.env.regs_by_class[class as u8 as usize].len();
-                    let loop_count = if hint_reg.is_some() {
-                        n_regs + 1
-                    } else {
-                        n_regs
-                    };
+
                     // Heuristic: start the scan for an available
                     // register at an offset influenced both by our
                     // location in the code and by the bundle we're
@@ -2688,35 +2746,8 @@ impl<'a, F: Function> Env<'a, F> {
                         .inst
                         .index()
                         + bundle.index();
-                    for i in 0..loop_count {
-                        // The order in which we try registers is somewhat complex:
-                        // - First, if there is a hint, we try that.
-                        // - Then, we try registers in a traversal
-                        //   order that is based on the bundle index,
-                        //   spreading pressure evenly among registers
-                        //   to reduce commitment-map
-                        //   contention. (TODO: account for
-                        //   caller-save vs. callee-saves here too.)
-                        //   Note that we avoid retrying the hint_reg;
-                        //   this is why the loop count is n_regs + 1
-                        //   if there is a hint reg, because we always
-                        //   skip one iteration.
-                        let preg = match (i, hint_reg) {
-                            (0, Some(hint_reg)) => hint_reg,
-                            (i, Some(hint_reg)) => {
-                                let reg = self.env.regs_by_class[class as u8 as usize]
-                                    [(i - 1 + scan_offset) % n_regs];
-                                if reg == hint_reg {
-                                    continue;
-                                }
-                                reg
-                            }
-                            (i, None) => {
-                                self.env.regs_by_class[class as u8 as usize]
-                                    [(i + scan_offset) % n_regs]
-                            }
-                        };
 
+                    for preg in RegTraversalIter::new(self.env, class, hint_reg, scan_offset) {
                         self.stats.process_bundle_reg_probes_any += 1;
                         let preg_idx = PRegIndex::new(preg.index());
                         match self.try_to_allocate_bundle_to_reg(bundle, preg_idx) {
@@ -2828,10 +2859,7 @@ impl<'a, F: Function> Env<'a, F> {
             let class = any_vreg.class();
             let mut success = false;
             self.stats.spill_bundle_reg_probes += 1;
-            let nregs = self.env.regs_by_class[class as u8 as usize].len();
-            for i in 0..nregs {
-                let i = (i + bundle.index()) % nregs;
-                let preg = self.env.regs_by_class[class as u8 as usize][i]; // don't borrow self
+            for preg in RegTraversalIter::new(self.env, class, None, bundle.index()) {
                 let preg_idx = PRegIndex::new(preg.index());
                 if let AllocRegResult::Allocated(_) =
                     self.try_to_allocate_bundle_to_reg(bundle, preg_idx)

@@ -116,6 +116,12 @@ impl Function for Func {
         self.insts[insn.index()].op == InstOpcode::Branch
     }
 
+    fn branch_blockparam_arg_offset(&self, _: Block, _: Inst) -> usize {
+        // Branch blockparam args always start at zero for this
+        // Function implementation.
+        0
+    }
+
     fn is_safepoint(&self, insn: Inst) -> bool {
         self.insts[insn.index()].is_safepoint
     }
@@ -576,12 +582,16 @@ impl std::fmt::Debug for Func {
 pub fn machine_env() -> MachineEnv {
     // Reg 31 is the scratch reg.
     let regs: Vec<PReg> = (0..31).map(|i| PReg::new(i, RegClass::Int)).collect();
-    let regs_by_class: Vec<Vec<PReg>> = vec![regs.clone(), vec![]];
+    let preferred_regs_by_class: Vec<Vec<PReg>> =
+        vec![regs.iter().cloned().take(24).collect(), vec![]];
+    let non_preferred_regs_by_class: Vec<Vec<PReg>> =
+        vec![regs.iter().cloned().skip(24).collect(), vec![]];
     let scratch_by_class: Vec<PReg> =
         vec![PReg::new(31, RegClass::Int), PReg::new(0, RegClass::Float)];
     MachineEnv {
         regs,
-        regs_by_class,
+        preferred_regs_by_class,
+        non_preferred_regs_by_class,
         scratch_by_class,
     }
 }

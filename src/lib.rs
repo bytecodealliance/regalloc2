@@ -579,6 +579,15 @@ impl OperandOrAllocation {
         debug_assert!(alloc.bits() >> 29 >= 5);
         Self { bits: alloc.bits() }
     }
+    pub fn from_alloc_and_kind(alloc: Allocation, kind: OperandKind) -> Self {
+        debug_assert!(alloc.bits() >> 29 >= 5);
+        let bits = alloc.bits()
+            | match kind {
+                OperandKind::Def => 0,
+                OperandKind::Use => 1 << 28,
+            };
+        Self { bits }
+    }
     pub fn is_operand(&self) -> bool {
         (self.bits >> 29) <= 4
     }
@@ -659,9 +668,21 @@ pub trait Function {
     fn is_ret(&self, insn: Inst) -> bool;
 
     /// Determine whether an instruction is the end-of-block
-    /// branch. If so, its operands *must* be the block parameters for
-    /// each of its block's `block_succs` successor blocks, in order.
+    /// branch. If so, its operands at the indices given by
+    /// `branch_blockparam_arg_offset()` below *must* be the block
+    /// parameters for each of its block's `block_succs` successor
+    /// blocks, in order.
     fn is_branch(&self, insn: Inst) -> bool;
+
+    /// If `insn` is a branch at the end of `block`, returns the
+    /// operand index at which outgoing blockparam arguments are
+    /// found. Starting at this index, blockparam arguments for each
+    /// successor block's blockparams, in order, must be found.
+    ///
+    /// It is an error if `self.inst_operands(insn).len() -
+    /// self.branch_blockparam_arg_offset(insn)` is not exactly equal
+    /// to the sum of blockparam counts for all successor blocks.
+    fn branch_blockparam_arg_offset(&self, block: Block, insn: Inst) -> usize;
 
     /// Determine whether an instruction is a safepoint and requires a stackmap.
     fn is_safepoint(&self, _: Inst) -> bool {
@@ -842,7 +863,8 @@ pub enum Edit {
 #[derive(Clone, Debug)]
 pub struct MachineEnv {
     regs: Vec<PReg>,
-    regs_by_class: Vec<Vec<PReg>>,
+    preferred_regs_by_class: Vec<Vec<PReg>>,
+    non_preferred_regs_by_class: Vec<Vec<PReg>>,
     scratch_by_class: Vec<PReg>,
 }
 
