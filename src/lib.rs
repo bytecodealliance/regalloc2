@@ -563,7 +563,7 @@ impl Allocation {
 
 /// A helper that wraps either an `Operand` or an `Allocation` and is
 /// able to tell which it is based on the tag bits.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct OperandOrAllocation {
     bits: u32,
 }
