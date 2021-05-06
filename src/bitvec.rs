@@ -66,7 +66,7 @@ impl BitVec {
     }
 
     #[inline(always)]
-    pub fn get(&mut self, idx: usize) -> bool {
+    pub fn get(&self, idx: usize) -> bool {
         let word = idx / BITS_PER_WORD;
         let bit = idx % BITS_PER_WORD;
         if word >= self.bits.len() {
