@@ -83,14 +83,16 @@ impl BitVec {
         let last_idx = other.bits.len() - 1;
         self.ensure_idx(last_idx);
 
-        let mut changed = false;
+        let mut changed = 0;
         for (self_word, other_word) in self.bits.iter_mut().zip(other.bits.iter()) {
-            if *other_word & !*self_word != 0 {
-                changed = true;
+            if *other_word == 0 {
+                // Avoid cache misses in `self` if `other` is zeroes.
+                continue;
             }
+            changed |= *other_word & !*self_word;
             *self_word |= *other_word;
         }
-        changed
+        changed != 0
     }
 
     pub fn and(&mut self, other: &Self) {
