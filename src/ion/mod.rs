@@ -944,6 +944,7 @@ impl<'a, F: Function> Env<'a, F> {
     }
 
     fn add_liverange_to_preg(&mut self, range: CodeRange, reg: PReg) {
+        log::debug!("adding liverange to preg: {:?} to {}", range, reg);
         let preg_idx = PRegIndex::new(reg.index());
         let lr = self.create_liverange(range);
         self.pregs[preg_idx.index()]
@@ -1413,10 +1414,22 @@ impl<'a, F: Function> Env<'a, F> {
                         if let Some(idx) = seen_fixed_for_vreg.iter().position(|r| *r == op.vreg())
                         {
                             let orig_preg = first_preg[idx];
-                            log::debug!(" -> duplicate; switching to policy Reg");
-                            fixups.push((pos, orig_preg, preg_idx, slot));
-                            *op = Operand::new(op.vreg(), OperandPolicy::Reg, op.kind(), op.pos());
-                            extra_clobbers.push((preg, pos.inst));
+                            if orig_preg != preg_idx {
+                                log::debug!(" -> duplicate; switching to policy Reg");
+                                fixups.push((pos, orig_preg, preg_idx, slot));
+                                *op = Operand::new(
+                                    op.vreg(),
+                                    OperandPolicy::Reg,
+                                    op.kind(),
+                                    op.pos(),
+                                );
+                                log::debug!(
+                                    " -> extra clobber {} at inst{}",
+                                    preg,
+                                    pos.inst.index()
+                                );
+                                extra_clobbers.push((preg, pos.inst));
+                            }
                         } else {
                             seen_fixed_for_vreg.push(op.vreg());
                             first_preg.push(preg_idx);
@@ -2716,7 +2729,7 @@ impl<'a, F: Function> Env<'a, F> {
         if self.minimal_bundle(bundle) {
             self.dump_state();
         }
-        debug_assert!(!self.minimal_bundle(bundle));
+        assert!(!self.minimal_bundle(bundle));
 
         self.split_and_requeue_bundle(
             bundle,
