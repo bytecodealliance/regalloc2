@@ -863,10 +863,23 @@ pub enum Edit {
 /// as well.
 #[derive(Clone, Debug)]
 pub struct MachineEnv {
-    regs: Vec<PReg>,
-    preferred_regs_by_class: Vec<Vec<PReg>>,
-    non_preferred_regs_by_class: Vec<Vec<PReg>>,
-    scratch_by_class: Vec<PReg>,
+    /// Physical registers. Every register that might be mentioned in
+    /// any constraint must be listed here, even if it is not
+    /// allocatable under normal conditions.
+    pub regs: Vec<PReg>,
+    /// Preferred physical registers for each class. These are the
+    /// registers that will be allocated first, if free.
+    pub preferred_regs_by_class: Vec<Vec<PReg>>,
+    /// Non-preferred physical registers for each class. These are the
+    /// registers that will be allocated if a preferred register is
+    /// not available; using one of these is considered suboptimal,
+    /// but still better than spilling.
+    pub non_preferred_regs_by_class: Vec<Vec<PReg>>,
+    /// One scratch register per class. This is needed to perform
+    /// moves between registers when cyclic move patterns occur. The
+    /// register should not be placed in either the preferred or
+    /// non-preferred list (i.e., it is not otherwise allocatable).
+    pub scratch_by_class: Vec<PReg>,
 }
 
 /// The output of the register allocator.
