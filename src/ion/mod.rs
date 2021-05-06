@@ -52,16 +52,6 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet, VecDeque};
 use std::fmt::Debug;
 
-#[cfg(not(debug))]
-fn validate_ssa<F: Function>(_: &F, _: &CFGInfo) -> Result<(), RegAllocError> {
-    Ok(())
-}
-
-#[cfg(debug)]
-fn validate_ssa<F: Function>(f: &F, cfginfo: &CFGInfo) -> Result<(), RegAllocError> {
-    crate::validate_ssa(f, cfginfo)
-}
-
 /// A range from `from` (inclusive) to `to` (exclusive).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CodeRange {
@@ -125,7 +115,6 @@ struct LiveRange {
 
     first_use: UseIndex,
     last_use: UseIndex,
-    def: DefIndex,
 
     next_in_bundle: LiveRangeIndex,
     next_in_reg: LiveRangeIndex,
@@ -178,16 +167,10 @@ struct Use {
     pos: ProgPoint,
     slot: usize,
     next_use: UseIndex,
+    is_def: bool,
 }
 
 const SLOT_NONE: usize = usize::MAX;
-
-#[derive(Clone, Debug)]
-struct Def {
-    operand: Operand,
-    pos: ProgPoint,
-    slot: usize,
-}
 
 #[derive(Clone, Debug)]
 struct LiveBundle {
@@ -300,7 +283,6 @@ struct Env<'a, F: Function> {
     bundles: Vec<LiveBundle>,
     spillsets: Vec<SpillSet>,
     uses: Vec<Use>,
-    defs: Vec<Def>,
     vregs: Vec<VRegData>,
     pregs: Vec<PRegData>,
     allocation_queue: PrioQueue,
@@ -638,7 +620,6 @@ impl<'a, F: Function> Env<'a, F> {
             ranges: vec![],
             spillsets: vec![],
             uses: vec![],
-            defs: vec![],
             vregs: vec![],
             pregs: vec![],
             allocation_queue: PrioQueue::new(),
@@ -664,12 +645,16 @@ impl<'a, F: Function> Env<'a, F> {
     }
 
     fn create_pregs_and_vregs(&mut self) {
-        // Create RRegs from the RealRegUniverse.
-        for &preg in &self.env.regs {
-            self.pregs.push(PRegData {
-                reg: preg,
+        // Create PRegs from the env.
+        self.pregs.resize(
+            PReg::MAX_INDEX,
+            PRegData {
+                reg: PReg::invalid(),
                 allocations: LiveRangeSet::new(),
-            });
+            },
+        );
+        for &preg in &self.env.regs {
+            self.pregs[preg.index()].reg = preg;
         }
         // Create VRegs from the vreg count.
         for idx in 0..self.func.num_vregs() {
@@ -712,7 +697,6 @@ impl<'a, F: Function> Env<'a, F> {
             num_fixed_uses_and_flags: 0,
             first_use: UseIndex::invalid(),
             last_use: UseIndex::invalid(),
-            def: DefIndex::invalid(),
             next_in_bundle: LiveRangeIndex::invalid(),
             next_in_reg: LiveRangeIndex::invalid(),
         });
@@ -790,10 +774,7 @@ impl<'a, F: Function> Env<'a, F> {
             if self.ranges[iter.index()].range.to > self.ranges[merged.index()].range.to {
                 self.ranges[merged.index()].range.to = self.ranges[iter.index()].range.to;
             }
-            if self.ranges[iter.index()].def.is_valid() {
-                self.ranges[merged.index()].def = self.ranges[iter.index()].def;
-            }
-            self.distribute_liverange_uses(vreg, iter, merged);
+            self.distribute_liverange_uses(iter, merged);
             log::debug!(
                 "    -> after: merged {:?}: {:?}",
                 merged,
@@ -831,18 +812,12 @@ impl<'a, F: Function> Env<'a, F> {
         }
     }
 
-    fn distribute_liverange_uses(
-        &mut self,
-        vreg: VRegIndex,
-        from: LiveRangeIndex,
-        into: LiveRangeIndex,
-    ) {
+    fn distribute_liverange_uses(&mut self, from: LiveRangeIndex, into: LiveRangeIndex) {
         log::debug!("distribute from {:?} to {:?}", from, into);
         assert_eq!(
             self.ranges[from.index()].vreg,
             self.ranges[into.index()].vreg
         );
-        let from_range = self.ranges[from.index()].range;
         let into_range = self.ranges[into.index()].range;
         // For every use in `from`...
         let mut prev = UseIndex::invalid();
@@ -877,14 +852,6 @@ impl<'a, F: Function> Env<'a, F> {
                 iter = usedata.next_use;
             }
         }
-
-        // Distribute def too if `from` has a def and the def is in range of `into_range`.
-        if self.ranges[from.index()].def.is_valid() {
-            let def_idx = self.vregs[vreg.index()].def;
-            if from_range.contains_point(self.defs[def_idx.index()].pos) {
-                self.ranges[into.index()].def = def_idx;
-            }
-        }
     }
 
     fn update_liverange_stats_on_remove_use(&mut self, from: LiveRangeIndex, u: UseIndex) {
@@ -903,6 +870,9 @@ impl<'a, F: Function> Env<'a, F> {
         );
 
         lrdata.uses_spill_weight -= spill_weight_from_policy(usedata.operand.policy());
+        if usedata.is_def {
+            lrdata.uses_spill_weight -= 2000;
+        }
     }
 
     fn insert_use_into_liverange_and_update_stats(&mut self, into: LiveRangeIndex, u: UseIndex) {
@@ -952,6 +922,9 @@ impl<'a, F: Function> Env<'a, F> {
             spill_weight_from_policy(policy)
         );
         self.ranges[into.index()].uses_spill_weight += spill_weight_from_policy(policy);
+        if self.uses[u.index()].is_def {
+            self.ranges[into.index()].uses_spill_weight += 2000;
+        }
         log::debug!("  -> now {}", self.ranges[into.index()].uses_spill_weight);
     }
 
@@ -1109,19 +1082,19 @@ impl<'a, F: Function> Env<'a, F> {
                                 OperandPos::Before | OperandPos::Both => ProgPoint::before(inst),
                                 OperandPos::After => ProgPoint::after(inst),
                             };
-                            let def = DefIndex(self.defs.len() as u32);
-                            self.defs.push(Def {
+                            let u = UseIndex(self.uses.len() as u32);
+                            self.uses.push(Use {
                                 operand,
                                 pos,
                                 slot: i,
+                                next_use: UseIndex::invalid(),
+                                is_def: true,
                             });
 
                             log::debug!("Def of {} at {:?}", operand.vreg(), pos);
 
                             // Fill in vreg's actual data.
-                            debug_assert!(self.vregs[operand.vreg().vreg()].def.is_invalid());
                             self.vregs[operand.vreg().vreg()].reg = operand.vreg();
-                            self.vregs[operand.vreg().vreg()].def = def;
 
                             // Trim the range for this vreg to start
                             // at `pos` if it previously ended at the
@@ -1148,9 +1121,9 @@ impl<'a, F: Function> Env<'a, F> {
                                 log::debug!(" -> started at block start; trimming to {:?}", pos);
                                 self.ranges[lr.index()].range.from = pos;
                             }
-                            // Note that the liverange contains a def.
-                            self.ranges[lr.index()].def = def;
+                            self.insert_use_into_liverange_and_update_stats(lr, u);
                             // Remove from live-set.
+                            // TODO-cranelift: here is where we keep it live if it's a mod, not def.
                             live.set(operand.vreg().vreg(), false);
                             vreg_ranges[operand.vreg().vreg()] = LiveRangeIndex::invalid();
                         }
@@ -1183,6 +1156,7 @@ impl<'a, F: Function> Env<'a, F> {
                                 pos,
                                 slot: i,
                                 next_use: UseIndex::invalid(),
+                                is_def: false,
                             });
 
                             // Create/extend the LiveRange and add the use to the range.
@@ -1358,6 +1332,7 @@ impl<'a, F: Function> Env<'a, F> {
                         pos,
                         slot: SLOT_NONE,
                         next_use: UseIndex::invalid(),
+                        is_def: false,
                     });
 
                     // Create/extend the LiveRange and add the use to the range.
@@ -1449,18 +1424,6 @@ impl<'a, F: Function> Env<'a, F> {
                     }
                 };
 
-                if self.ranges[iter.index()].def.is_valid() {
-                    let def_idx = self.vregs[vreg].def;
-                    let pos = self.defs[def_idx.index()].pos;
-                    let slot = self.defs[def_idx.index()].slot;
-                    fixup_multi_fixed_vregs(
-                        pos,
-                        slot,
-                        &mut self.defs[def_idx.index()].operand,
-                        &mut self.multi_fixed_reg_fixups,
-                    );
-                }
-
                 let mut use_iter = self.ranges[iter.index()].first_use;
                 while use_iter.is_valid() {
                     let pos = self.uses[use_iter.index()].pos;
@@ -1538,45 +1501,6 @@ impl<'a, F: Function> Env<'a, F> {
         LiveBundleIndex::new(bundle)
     }
 
-    fn try_merge_reused_register(&mut self, from: VRegIndex, to: VRegIndex) {
-        log::debug!("try_merge_reused_register: from {:?} to {:?}", from, to);
-        let def_idx = self.vregs[to.index()].def;
-        log::debug!(" -> def_idx = {:?}", def_idx);
-        debug_assert!(def_idx.is_valid());
-        let def = &mut self.defs[def_idx.index()];
-        let def_point = def.pos;
-        log::debug!(" -> def_point = {:?}", def_point);
-
-        // Can't merge if def happens at use-point.
-        if def_point.pos == InstPosition::Before {
-            return;
-        }
-
-        // Find the corresponding liverange for the use at the def-point.
-        let use_lr_at_def = self.find_vreg_liverange_for_pos(from, def_point);
-        log::debug!(" -> use_lr_at_def = {:?}", use_lr_at_def);
-
-        // If the use is not live at the def (i.e. this inst is its last use), we can merge.
-        if use_lr_at_def.is_none() {
-            // Find the bundles and merge. Note that bundles have not been split
-            // yet so every liverange in the vreg will have the same bundle (so
-            // no need to look up the proper liverange here).
-            let from_bundle = self.ranges[self.vregs[from.index()].first_range.index()].bundle;
-            let to_bundle = self.ranges[self.vregs[to.index()].first_range.index()].bundle;
-            log::debug!(" -> merging from {:?} to {:?}", from_bundle, to_bundle);
-            self.merge_bundles(from_bundle, to_bundle);
-            return;
-        }
-
-        log::debug!(" -> no merge");
-
-        // Note: there may be other cases where it would benefit us to split the
-        // LiveRange and bundle for the input at the def-point, allowing us to
-        // avoid a copy. However, the cases where this helps in IonMonkey (only
-        // memory uses after the definition, seemingly) appear to be marginal at
-        // best.
-    }
-
     fn merge_bundles(&mut self, from: LiveBundleIndex, to: LiveBundleIndex) -> bool {
         if from == to {
             // Merge bundle into self -- trivial merge.
@@ -1594,7 +1518,8 @@ impl<'a, F: Function> Env<'a, F> {
         // have to have the same regclass (because bundles start with one vreg
         // and all merging happens here) so we can just sample the first vreg of
         // each bundle.
-        if self.vregs[vreg_from.index()].reg.class() != self.vregs[vreg_to.index()].reg.class() {
+        let rc = self.vregs[vreg_from.index()].reg.class();
+        if rc != self.vregs[vreg_to.index()].reg.class() {
             return false;
         }
 
@@ -1684,6 +1609,11 @@ impl<'a, F: Function> Env<'a, F> {
     }
 
     fn insert_liverange_into_bundle(&mut self, bundle: LiveBundleIndex, lr: LiveRangeIndex) {
+        log::debug!(
+            "insert_liverange_into_bundle: lr {:?} bundle {:?}",
+            lr,
+            bundle
+        );
         self.ranges[lr.index()].next_in_bundle = LiveRangeIndex::invalid();
         self.ranges[lr.index()].bundle = bundle;
         if self.bundles[bundle.index()].first_range.is_invalid() {
@@ -1745,26 +1675,9 @@ impl<'a, F: Function> Env<'a, F> {
         for inst in 0..self.func.insts() {
             let inst = Inst::new(inst);
 
-            // Attempt to merge Reuse-policy operand outputs with the corresponding
-            // inputs.
-            for operand_idx in 0..self.func.inst_operands(inst).len() {
-                let operand = self.func.inst_operands(inst)[operand_idx];
-                if let OperandPolicy::Reuse(input_idx) = operand.policy() {
-                    log::debug!(
-                        "trying to merge use and def at reused-op {} on inst{}",
-                        operand_idx,
-                        inst.index()
-                    );
-                    assert_eq!(operand.kind(), OperandKind::Def);
-                    assert_eq!(operand.pos(), OperandPos::After);
-                    let input_vreg =
-                        VRegIndex::new(self.func.inst_operands(inst)[input_idx].vreg().vreg());
-                    let output_vreg = VRegIndex::new(operand.vreg().vreg());
-                    self.try_merge_reused_register(input_vreg, output_vreg);
-                }
-            }
-
-            // Attempt to merge move srcs and dests.
+            // Attempt to merge move srcs and dests, and attempt to
+            // merge Reuse-policy operand outputs with the
+            // corresponding inputs.
             if let Some((src_vreg, dst_vreg)) = self.func.is_move(inst) {
                 log::debug!("trying to merge move src {} to dst {}", src_vreg, dst_vreg);
                 let src_bundle =
@@ -1774,6 +1687,24 @@ impl<'a, F: Function> Env<'a, F> {
                     self.ranges[self.vregs[dst_vreg.vreg()].first_range.index()].bundle;
                 assert!(dest_bundle.is_valid());
                 self.merge_bundles(/* from */ dest_bundle, /* to */ src_bundle);
+            }
+            for op in self.func.inst_operands(inst) {
+                if let OperandPolicy::Reuse(reuse_idx) = op.policy() {
+                    let src_vreg = op.vreg();
+                    let dst_vreg = self.func.inst_operands(inst)[reuse_idx].vreg();
+                    log::debug!(
+                        "trying to merge reused-input def: src {} to dst {}",
+                        src_vreg,
+                        dst_vreg
+                    );
+                    let src_bundle =
+                        self.ranges[self.vregs[src_vreg.vreg()].first_range.index()].bundle;
+                    assert!(src_bundle.is_valid());
+                    let dest_bundle =
+                        self.ranges[self.vregs[dst_vreg.vreg()].first_range.index()].bundle;
+                    assert!(dest_bundle.is_valid());
+                    self.merge_bundles(/* from */ dest_bundle, /* to */ src_bundle);
+                }
             }
         }
 
@@ -1878,7 +1809,7 @@ impl<'a, F: Function> Env<'a, F> {
         }
         log::debug!("VRegs:");
         for (i, v) in self.vregs.iter().enumerate() {
-            log::debug!("vreg{}: def={:?} first_range={:?}", i, v.def, v.first_range,);
+            log::debug!("vreg{}: first_range={:?}", i, v.first_range,);
         }
         log::debug!("Ranges:");
         for (i, r) in self.ranges.iter().enumerate() {
@@ -1886,7 +1817,7 @@ impl<'a, F: Function> Env<'a, F> {
                 concat!(
                     "range{}: range={:?} vreg={:?} bundle={:?} ",
                     "weight={} fixed={} first_use={:?} last_use={:?} ",
-                    "def={:?} next_in_bundle={:?} next_in_reg={:?}"
+                    "next_in_bundle={:?} next_in_reg={:?}"
                 ),
                 i,
                 r.range,
@@ -1896,7 +1827,6 @@ impl<'a, F: Function> Env<'a, F> {
                 r.num_fixed_uses(),
                 r.first_use,
                 r.last_use,
-                r.def,
                 r.next_in_bundle,
                 r.next_in_reg
             );
@@ -1904,17 +1834,14 @@ impl<'a, F: Function> Env<'a, F> {
         log::debug!("Uses:");
         for (i, u) in self.uses.iter().enumerate() {
             log::debug!(
-                "use{}: op={:?} pos={:?} slot={} next_use={:?}",
+                "use{}: op={:?} pos={:?} slot={} next_use={:?} is_def={:?}",
                 i,
                 u.operand,
                 u.pos,
                 u.slot,
-                u.next_use
+                u.next_use,
+                u.is_def,
             );
-        }
-        log::debug!("Defs:");
-        for (i, d) in self.defs.iter().enumerate() {
-            log::debug!("def{}: op={:?} pos={:?}", i, d.operand, d.pos,);
         }
     }
 
@@ -1932,18 +1859,6 @@ impl<'a, F: Function> Env<'a, F> {
         while iter.is_valid() {
             let range = &self.ranges[iter.index()];
             log::debug!(" -> range {:?}", range.range);
-            if range.def.is_valid() {
-                let def_op = self.defs[range.def.index()].operand;
-                let def_req = Requirement::from_operand(def_op);
-                log::debug!(
-                    " -> def {:?} op {:?} req {:?}",
-                    range.def.index(),
-                    def_op,
-                    def_req
-                );
-                needed = needed.merge(def_req)?;
-                log::debug!("   -> needed {:?}", needed);
-            }
             let mut use_iter = range.first_use;
             while use_iter.is_valid() {
                 let usedata = &self.uses[use_iter.index()];
@@ -2077,13 +1992,6 @@ impl<'a, F: Function> Env<'a, F> {
             minimal = true;
             fixed = true;
         } else {
-            if first_range.def.is_valid() {
-                let def_data = &self.defs[first_range.def.index()];
-                if let OperandPolicy::FixedReg(_) = def_data.operand.policy() {
-                    log::debug!("  -> fixed def {:?}", first_range.def);
-                    fixed = true;
-                }
-            }
             let mut use_iter = first_range.first_use;
             while use_iter.is_valid() {
                 let use_data = &self.uses[use_iter.index()];
@@ -2121,10 +2029,6 @@ impl<'a, F: Function> Env<'a, F> {
             let mut range = self.bundles[bundle.index()].first_range;
             while range.is_valid() {
                 let range_data = &self.ranges[range.index()];
-                if range_data.def.is_valid() {
-                    log::debug!("  -> has def (spill weight +2000)");
-                    total += 2000;
-                }
                 log::debug!("  -> uses spill weight: +{}", range_data.uses_spill_weight);
                 total += range_data.uses_spill_weight;
                 range = range_data.next_in_bundle;
@@ -2300,11 +2204,6 @@ impl<'a, F: Function> Env<'a, F> {
                 }
             };
 
-            if self.ranges[our_iter.index()].def.is_valid() {
-                let def_data = &self.defs[self.ranges[our_iter.index()].def.index()];
-                log::debug!("   -> range has def at {:?}", def_data.pos);
-                update_with_pos(def_data.pos);
-            }
             let mut use_idx = self.ranges[our_iter.index()].first_use;
             while use_idx.is_valid() {
                 let use_data = &self.uses[use_idx.index()];
@@ -2361,18 +2260,10 @@ impl<'a, F: Function> Env<'a, F> {
         let mut splits = smallvec![];
         let mut iter = self.bundles[bundle.index()].first_range;
         log::debug!("finding all use/def splits for {:?}", bundle);
-        let (bundle_start, bundle_end) = if iter.is_valid() {
-            (
-                self.ranges[iter.index()].range.from,
-                self.ranges[self.bundles[bundle.index()].last_range.index()]
-                    .range
-                    .to,
-            )
+        let bundle_start = if iter.is_valid() {
+            self.ranges[iter.index()].range.from
         } else {
-            (
-                ProgPoint::before(Inst::new(0)),
-                ProgPoint::after(Inst::new(self.func.insts() - 1)),
-            )
+            ProgPoint::before(Inst::new(0))
         };
         // N.B.: a minimal bundle must include only ProgPoints in a
         // single instruction, but can include both (can include two
@@ -2382,27 +2273,21 @@ impl<'a, F: Function> Env<'a, F> {
         while iter.is_valid() {
             let rangedata = &self.ranges[iter.index()];
             log::debug!(" -> range {:?}: {:?}", iter, rangedata.range);
-            if rangedata.def.is_valid() {
-                // Split both before and after def (make it a minimal bundle).
-                let def_pos = self.defs[rangedata.def.index()].pos;
-                let def_end = ProgPoint::before(def_pos.inst.next());
-                log::debug!(
-                    "  -> splitting before and after def: {:?} and {:?}",
-                    def_pos,
-                    def_end,
-                );
-                if def_pos > bundle_start {
-                    splits.push(def_pos);
-                }
-                if def_end < bundle_end {
-                    splits.push(def_end);
-                }
-            }
             let mut use_idx = rangedata.first_use;
             while use_idx.is_valid() {
                 let use_data = &self.uses[use_idx.index()];
-                let before_use_inst = ProgPoint::before(use_data.pos.inst);
-                let after_use_inst = before_use_inst.next().next();
+                log::debug!("  -> use: {:?}", use_data);
+                let before_use_inst = if use_data.is_def {
+                    // For a def, split *at* the def -- this may be an
+                    // After point, but the value cannot be live into
+                    // the def so we don't need to insert a move.
+                    use_data.pos
+                } else {
+                    // For an use, split before the instruction --
+                    // this allows us to insert a move if necessary.
+                    ProgPoint::before(use_data.pos.inst)
+                };
+                let after_use_inst = ProgPoint::before(use_data.pos.inst.next());
                 log::debug!(
                     "  -> splitting before and after use: {:?} and {:?}",
                     before_use_inst,
@@ -2507,8 +2392,11 @@ impl<'a, F: Function> Env<'a, F> {
             // bundle, then advance to the first split within the
             // range.
             if split_idx < split_points.len() && split_points[split_idx] <= range.from {
-                log::debug!("  -> split before a range; creating new bundle");
                 cur_bundle = self.create_bundle();
+                log::debug!(
+                    "  -> split before a range; creating new bundle {:?}",
+                    cur_bundle
+                );
                 self.bundles[cur_bundle.index()].spillset = self.bundles[bundle.index()].spillset;
                 new_bundles.push(cur_bundle);
                 split_idx += 1;
@@ -2635,18 +2523,6 @@ impl<'a, F: Function> Env<'a, F> {
                         self.ranges[iter.index()].uses_spill_weight - uses_spill_weight;
                     self.ranges[iter.index()].set_num_fixed_uses(num_fixed_uses);
                     self.ranges[iter.index()].uses_spill_weight = uses_spill_weight;
-                }
-
-                // Move over def, if appropriate.
-                if self.ranges[iter.index()].def.is_valid() {
-                    let def_idx = self.ranges[iter.index()].def;
-                    let def_pos = self.defs[def_idx.index()].pos;
-                    log::debug!(" -> range {:?} has def at {:?}", iter, def_pos);
-                    if def_pos >= split_point {
-                        log::debug!(" -> transferring def bit to {:?}", rest_lr);
-                        self.ranges[iter.index()].def = DefIndex::invalid();
-                        self.ranges[rest_lr.index()].def = def_idx;
-                    }
                 }
 
                 log::debug!(
@@ -3157,14 +3033,6 @@ impl<'a, F: Function> Env<'a, F> {
         let mut blockparam_out_idx = 0;
         for vreg in 0..self.vregs.len() {
             let vreg = VRegIndex::new(vreg);
-            let defidx = self.vregs[vreg.index()].def;
-            let defining_block = if defidx.is_valid() {
-                self.cfginfo.insn_block[self.defs[defidx.index()].pos.inst.index()]
-            } else if self.vregs[vreg.index()].blockparam.is_valid() {
-                self.vregs[vreg.index()].blockparam
-            } else {
-                Block::invalid()
-            };
 
             // For each range in each vreg, insert moves or
             // half-moves.  We also scan over `blockparam_ins` and
@@ -3212,12 +3080,12 @@ impl<'a, F: Function> Env<'a, F> {
                 // inter-block transfers).
                 //
                 // Note that we do *not* do this if there is also a
-                // def exactly at `range.from`: it's possible that an
-                // old liverange covers the Before pos of an inst, a
-                // new liverange covers the After pos, and the def
-                // also happens at After. In this case we don't want
-                // to an insert a move after the instruction copying
-                // the old liverange.
+                // def as the first use in the new range: it's
+                // possible that an old liverange covers the Before
+                // pos of an inst, a new liverange covers the After
+                // pos, and the def also happens at After. In this
+                // case we don't want to an insert a move after the
+                // instruction copying the old liverange.
                 //
                 // Note also that we assert that the new range has to
                 // start at the Before-point of an instruction; we
@@ -3227,16 +3095,16 @@ impl<'a, F: Function> Env<'a, F> {
                 if prev.is_valid() {
                     let prev_alloc = self.get_alloc_for_range(prev);
                     let prev_range = self.ranges[prev.index()].range;
-                    let def_idx = self.ranges[iter.index()].def;
-                    let def_pos = if def_idx.is_valid() {
-                        Some(self.defs[def_idx.index()].pos)
+                    let first_use = self.ranges[iter.index()].first_use;
+                    let first_is_def = if first_use.is_valid() {
+                        self.uses[first_use.index()].is_def
                     } else {
-                        None
+                        false
                     };
                     debug_assert!(prev_alloc != Allocation::none());
                     if prev_range.to == range.from
                         && !self.is_start_of_block(range.from)
-                        && def_pos != Some(range.from)
+                        && !first_is_def
                     {
                         log::debug!(
                             "prev LR {} abuts LR {} in same block; moving {} -> {} for v{}",
@@ -3335,21 +3203,8 @@ impl<'a, F: Function> Env<'a, F> {
 
                 // Scan over blocks whose beginnings are covered by
                 // this range and for which the vreg is live at the
-                // start of the block, and for which the def of the
-                // vreg is not in this block. For each, for each
-                // predecessor, add a Dest half-move.
-                //
-                // N.B.: why "def of this vreg is not in this block"?
-                // Because live-range computation can over-approximate
-                // (due to the way that we handle loops in a single
-                // pass), especially if the program has irreducible
-                // control flow and/or if blocks are not in RPO, it
-                // may be the case that (i) the vreg is not *actually*
-                // live into this block, but is *defined* in this
-                // block. If the value is defined in this block,
-                // because this is SSA, the value cannot be used
-                // before the def and so we are not concerned about
-                // any incoming allocation for it.
+                // start of the block. For each, for each predecessor,
+                // add a Dest half-move.
                 let mut block = self.cfginfo.insn_block[range.from.inst.index()];
                 if self.cfginfo.block_entry[block.index()] < range.from {
                     block = block.next();
@@ -3405,10 +3260,7 @@ impl<'a, F: Function> Env<'a, F> {
                         blockparam_in_idx += 1;
                     }
 
-                    // The below (range incoming into block) must be
-                    // skipped if the def is in this block, as noted
-                    // above.
-                    if block == defining_block || !self.liveins[block.index()].get(vreg.index()) {
+                    if !self.liveins[block.index()].get(vreg.index()) {
                         block = block.next();
                         continue;
                     }
@@ -3452,27 +3304,20 @@ impl<'a, F: Function> Env<'a, F> {
                 }
 
                 // Scan over def/uses and apply allocations.
-                if self.ranges[iter.index()].def.is_valid() {
-                    let defdata = &self.defs[self.ranges[iter.index()].def.index()];
-                    debug_assert!(range.contains_point(defdata.pos));
-                    let operand = defdata.operand;
-                    let inst = defdata.pos.inst;
-                    let slot = defdata.slot;
-                    self.set_alloc(inst, slot, alloc);
-                    if let OperandPolicy::Reuse(_) = operand.policy() {
-                        reuse_input_insts.push(inst);
-                    }
-                }
                 let mut use_iter = self.ranges[iter.index()].first_use;
                 while use_iter.is_valid() {
                     let usedata = &self.uses[use_iter.index()];
                     debug_assert!(range.contains_point(usedata.pos));
                     let inst = usedata.pos.inst;
                     let slot = usedata.slot;
+                    let operand = usedata.operand;
                     // Safepoints add virtual uses with no slots;
                     // avoid these.
                     if slot != SLOT_NONE {
                         self.set_alloc(inst, slot, alloc);
+                    }
+                    if let OperandPolicy::Reuse(_) = operand.policy() {
+                        reuse_input_insts.push(inst);
                     }
                     use_iter = self.uses[use_iter.index()].next_use;
                 }
@@ -3567,7 +3412,9 @@ impl<'a, F: Function> Env<'a, F> {
             let mut last = None;
             for dest in first_dest..last_dest {
                 let dest = &half_moves[dest];
-                debug_assert!(last != Some(dest.alloc));
+                if last == Some(dest.alloc) {
+                    continue;
+                }
                 self.insert_move(insertion_point, prio, src.alloc, dest.alloc);
                 last = Some(dest.alloc);
             }
@@ -4051,7 +3898,6 @@ impl<'a, F: Function> Env<'a, F> {
 
 pub fn run<F: Function>(func: &F, mach_env: &MachineEnv) -> Result<Output, RegAllocError> {
     let cfginfo = CFGInfo::new(func);
-    validate_ssa(func, &cfginfo)?;
 
     let mut env = Env::new(func, mach_env, cfginfo);
     env.init()?;

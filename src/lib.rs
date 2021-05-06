@@ -43,6 +43,7 @@ pub struct PReg(u8, RegClass);
 impl PReg {
     pub const MAX_BITS: usize = 5;
     pub const MAX: usize = (1 << Self::MAX_BITS) - 1;
+    pub const MAX_INDEX: usize = 2 * Self::MAX; // including RegClass bit
 
     /// Create a new PReg. The `hw_enc` range is 6 bits.
     #[inline(always)]
@@ -68,12 +69,12 @@ impl PReg {
     /// all PRegs and index it efficiently.
     #[inline(always)]
     pub fn index(self) -> usize {
-        ((self.1 as u8 as usize) << 6) | (self.0 as usize)
+        ((self.1 as u8 as usize) << 5) | (self.0 as usize)
     }
 
     #[inline(always)]
     pub fn from_index(index: usize) -> Self {
-        let class = (index >> 6) & 1;
+        let class = (index >> 5) & 1;
         let class = match class {
             0 => RegClass::Int,
             1 => RegClass::Float,
