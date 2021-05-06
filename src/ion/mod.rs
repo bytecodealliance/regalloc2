@@ -35,6 +35,26 @@
  * - Rematerialization
  */
 
+/*
+   Performance ideas:
+
+   - moves: don't consider as normal inst with uses/defs
+     - explicit list of src/dst pairs? elide completely if
+       remain in same bundle; otherwise only should appear
+       when generating halfmoves
+       - sorted list of (inst, src-vreg, dst-vreg) and
+                        (vreg, inst)
+       - ignore inst during all passes over code
+       - when same bundle at both ends, ignore during resolution
+       - otherwise, fill in move-list alloc slots during scans
+
+   - conflict hints? (note on one bundle that it definitely conflicts
+     with another, so avoid probing the other's alloc)
+
+   - partial allocation -- place one LR, split rest off into separate
+     bundle, in one pass?
+ */
+
 #![allow(dead_code, unused_imports)]
 
 use crate::bitvec::BitVec;
@@ -118,6 +138,9 @@ struct LiveRange {
 
     next_in_bundle: LiveRangeIndex,
     next_in_reg: LiveRangeIndex,
+
+    reg_hint: Option<PReg>, // if a bundle partly fits, this is used to
+                            // record LRs that do fit
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -202,7 +225,7 @@ impl LiveBundle {
 
     #[inline(always)]
     fn cached_spill_weight(&self) -> u32 {
-        self.spill_weight_and_props & !((1 << 30) - 1)
+        self.spill_weight_and_props & ((1 << 30) - 1)
     }
 }
 
@@ -521,6 +544,8 @@ pub struct Stats {
     process_bundle_count: usize,
     process_bundle_reg_probes_fixed: usize,
     process_bundle_reg_success_fixed: usize,
+    process_bundle_bounding_range_probes_any: usize,
+    process_bundle_bounding_range_success_any: usize,
     process_bundle_reg_probes_any: usize,
     process_bundle_reg_success_any: usize,
     evict_bundle_event: usize,
@@ -558,7 +583,8 @@ pub struct Stats {
 struct RegTraversalIter<'a> {
     env: &'a MachineEnv,
     class: usize,
-    hint_reg: Option<PReg>,
+    hints: [Option<PReg>; 2],
+    hint_idx: usize,
     pref_idx: usize,
     non_pref_idx: usize,
     offset: usize,
@@ -568,13 +594,20 @@ impl<'a> RegTraversalIter<'a> {
     pub fn new(
         env: &'a MachineEnv,
         class: RegClass,
-        hint_reg: Option<PReg>,
+        mut hint_reg: Option<PReg>,
+        mut hint2_reg: Option<PReg>,
         offset: usize,
     ) -> Self {
+        if hint_reg.is_none() {
+            hint_reg = hint2_reg;
+            hint2_reg = None;
+        }
+        let hints = [hint_reg, hint2_reg];
         Self {
             env,
             class: class as u8 as usize,
-            hint_reg,
+            hints,
+            hint_idx: 0,
             pref_idx: 0,
             non_pref_idx: 0,
             offset,
@@ -586,19 +619,27 @@ impl<'a> std::iter::Iterator for RegTraversalIter<'a> {
     type Item = PReg;
 
     fn next(&mut self) -> Option<PReg> {
-        if let Some(preg) = self.hint_reg.take() {
-            return Some(preg);
+        if self.hint_idx < 2 && self.hints[self.hint_idx].is_some() {
+            let h = self.hints[self.hint_idx];
+            self.hint_idx += 1;
+            return h;
         }
-        if self.pref_idx < self.env.preferred_regs_by_class[self.class].len() {
+        while self.pref_idx < self.env.preferred_regs_by_class[self.class].len() {
             let arr = &self.env.preferred_regs_by_class[self.class][..];
             let r = arr[(self.pref_idx + self.offset) % arr.len()];
             self.pref_idx += 1;
+            if Some(r) == self.hints[0] || Some(r) == self.hints[1] {
+                continue;
+            }
             return Some(r);
         }
-        if self.non_pref_idx < self.env.non_preferred_regs_by_class[self.class].len() {
+        while self.non_pref_idx < self.env.non_preferred_regs_by_class[self.class].len() {
             let arr = &self.env.non_preferred_regs_by_class[self.class][..];
             let r = arr[(self.non_pref_idx + self.offset) % arr.len()];
             self.non_pref_idx += 1;
+            if Some(r) == self.hints[0] || Some(r) == self.hints[1] {
+                continue;
+            }
             return Some(r);
         }
         None
@@ -699,6 +740,7 @@ impl<'a, F: Function> Env<'a, F> {
             last_use: UseIndex::invalid(),
             next_in_bundle: LiveRangeIndex::invalid(),
             next_in_reg: LiveRangeIndex::invalid(),
+            reg_hint: None,
         });
         LiveRangeIndex::new(idx)
     }
@@ -1889,6 +1931,26 @@ impl<'a, F: Function> Env<'a, F> {
         Some(needed)
     }
 
+    fn bundle_bounding_range_if_multiple(&self, bundle: LiveBundleIndex) -> Option<CodeRange> {
+        let first_range = self.bundles[bundle.index()].first_range;
+        let last_range = self.bundles[bundle.index()].last_range;
+        if first_range.is_invalid() || first_range == last_range {
+            return None;
+        }
+        Some(CodeRange {
+            from: self.ranges[first_range.index()].range.from,
+            to: self.ranges[last_range.index()].range.to,
+        })
+    }
+
+    fn range_definitely_fits_in_reg(&self, range: CodeRange, reg: PRegIndex) -> bool {
+        self.pregs[reg.index()]
+            .allocations
+            .btree
+            .get(&LiveRangeKey::from_range(&range))
+            .is_none()
+    }
+
     fn try_to_allocate_bundle_to_reg(
         &mut self,
         bundle: LiveBundleIndex,
@@ -1899,6 +1961,7 @@ impl<'a, F: Function> Env<'a, F> {
         let mut iter = self.bundles[bundle.index()].first_range;
         while iter.is_valid() {
             let range = &self.ranges[iter.index()];
+            let next = range.next_in_bundle;
             log::debug!(" -> range {:?}", range);
             // Note that the comparator function here tests for *overlap*, so we
             // are checking whether the BTree contains any preg range that
@@ -1923,8 +1986,10 @@ impl<'a, F: Function> Env<'a, F> {
                     // range from a direct use of the PReg (due to clobber).
                     return AllocRegResult::ConflictWithFixed;
                 }
+            } else {
+                self.ranges[iter.index()].reg_hint = Some(self.pregs[reg.index()].reg);
             }
-            iter = range.next_in_bundle;
+            iter = next;
         }
 
         if conflicts.len() > 0 {
@@ -1985,11 +2050,18 @@ impl<'a, F: Function> Env<'a, F> {
     }
 
     fn maximum_spill_weight_in_bundle_set(&self, bundles: &LiveBundleVec) -> u32 {
-        bundles
+        log::debug!("maximum_spill_weight_in_bundle_set: {:?}", bundles);
+        let m = bundles
             .iter()
-            .map(|&b| self.bundles[b.index()].cached_spill_weight())
+            .map(|&b| {
+                let w = self.bundles[b.index()].cached_spill_weight();
+                log::debug!("bundle{}: {}", b.index(), w);
+                w
+            })
             .max()
-            .unwrap_or(0)
+            .unwrap_or(0);
+        log::debug!(" -> max: {}", m);
+        m
     }
 
     fn recompute_bundle_properties(&mut self, bundle: LiveBundleIndex) {
@@ -2055,7 +2127,7 @@ impl<'a, F: Function> Env<'a, F> {
                 );
                 total / self.bundles[bundle.index()].prio
             } else {
-                total
+                0
             }
         };
 
@@ -2577,13 +2649,19 @@ impl<'a, F: Function> Env<'a, F> {
         // Find any requirements: for every LR, for every def/use, gather
         // requirements (fixed-reg, any-reg, any) and merge them.
         let req = self.compute_requirement(bundle);
-        // Grab a hint from our spillset, if any.
+        // Grab a hint from our spillset, if any, and from the first LR, if any.
         let hint_reg = self.spillsets[self.bundles[bundle.index()].spillset.index()].reg_hint;
+        let hint2_reg = if self.bundles[bundle.index()].first_range.is_valid() {
+            self.ranges[self.bundles[bundle.index()].first_range.index()].reg_hint
+        } else {
+            None
+        };
         log::debug!(
-            "process_bundle: bundle {:?} requirement {:?} hint {:?}",
+            "process_bundle: bundle {:?} requirement {:?} hint {:?} hint2 {:?}",
             bundle,
             req,
             hint_reg,
+            hint2_reg
         );
 
         // Try to allocate!
@@ -2636,7 +2714,35 @@ impl<'a, F: Function> Env<'a, F> {
                         .index()
                         + bundle.index();
 
-                    for preg in RegTraversalIter::new(self.env, class, hint_reg, scan_offset) {
+                    // If the bundle is more than one range, see if we
+                    // can find a reg that the bounding range fits
+                    // completely in first. Use that if so. Otherwise,
+                    // do a detailed (liverange-by-liverange) probe of
+                    // each reg in preference order.
+                    let bounding_range = self.bundle_bounding_range_if_multiple(bundle);
+                    if let Some(bounding_range) = bounding_range {
+                        for preg in
+                            RegTraversalIter::new(self.env, class, hint_reg, hint2_reg, scan_offset)
+                        {
+                            let preg_idx = PRegIndex::new(preg.index());
+                            self.stats.process_bundle_bounding_range_probes_any += 1;
+                            if self.range_definitely_fits_in_reg(bounding_range, preg_idx) {
+                                let result = self.try_to_allocate_bundle_to_reg(bundle, preg_idx);
+                                self.stats.process_bundle_bounding_range_success_any += 1;
+                                let alloc = match result {
+                                    AllocRegResult::Allocated(alloc) => alloc,
+                                    _ => panic!("Impossible result: {:?}", result),
+                                };
+                                self.spillsets[self.bundles[bundle.index()].spillset.index()]
+                                    .reg_hint = Some(alloc.as_reg().unwrap());
+                                return;
+                            }
+                        }
+                    }
+
+                    for preg in
+                        RegTraversalIter::new(self.env, class, hint_reg, hint2_reg, scan_offset)
+                    {
                         self.stats.process_bundle_reg_probes_any += 1;
                         let preg_idx = PRegIndex::new(preg.index());
                         match self.try_to_allocate_bundle_to_reg(bundle, preg_idx) {
@@ -2709,9 +2815,13 @@ impl<'a, F: Function> Env<'a, F> {
 
             // If the maximum spill weight in the conflicting-bundles set is >= this bundle's spill
             // weight, then don't evict.
-            if self.maximum_spill_weight_in_bundle_set(&conflicting_bundles)
-                >= self.bundle_spill_weight(bundle)
-            {
+            let max_spill_weight = self.maximum_spill_weight_in_bundle_set(&conflicting_bundles);
+            log::debug!(
+                " -> max_spill_weight = {}; our spill weight {}",
+                max_spill_weight,
+                self.bundle_spill_weight(bundle)
+            );
+            if max_spill_weight >= self.bundle_spill_weight(bundle) {
                 log::debug!(" -> we're already the cheapest bundle to spill -- going to split");
                 break;
             }
@@ -2748,7 +2858,7 @@ impl<'a, F: Function> Env<'a, F> {
             let class = any_vreg.class();
             let mut success = false;
             self.stats.spill_bundle_reg_probes += 1;
-            for preg in RegTraversalIter::new(self.env, class, None, bundle.index()) {
+            for preg in RegTraversalIter::new(self.env, class, None, None, bundle.index()) {
                 let preg_idx = PRegIndex::new(preg.index());
                 if let AllocRegResult::Allocated(_) =
                     self.try_to_allocate_bundle_to_reg(bundle, preg_idx)
