@@ -537,6 +537,10 @@ enum InsertMovePrio {
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Stats {
+    livein_blocks: usize,
+    livein_succ_unions: usize,
+    livein_loops: usize,
+    livein_loop_unions: usize,
     initial_liverange_count: usize,
     merged_bundle_count: usize,
     process_bundle_count: usize,
@@ -1052,6 +1056,8 @@ impl<'a, F: Function> Env<'a, F> {
             let block = self.cfginfo.postorder[i];
             block_to_postorder[block.index()] = Some(i as u32);
 
+            self.stats.livein_blocks += 1;
+
             // Init live-set to union of liveins from successors
             // (excluding backedges; those are handled below).
             let mut live = None;
@@ -1064,6 +1070,7 @@ impl<'a, F: Function> Env<'a, F> {
                 } else {
                     live.as_mut().unwrap().or(&self.liveins[succ.index()]);
                 }
+                self.stats.livein_succ_unions += 1;
             }
             let mut live = live.unwrap_or(BitVec::new());
 
@@ -1415,7 +1422,9 @@ impl<'a, F: Function> Env<'a, F> {
                     i
                 );
                 log::debug!(" -> loop range {:?}", loop_range);
+                self.stats.livein_loops += 1;
                 for &loopblock in loop_blocks {
+                    self.stats.livein_loop_unions += 1;
                     self.liveins[loopblock.index()].or(&live);
                 }
                 for vreg in live.iter() {
