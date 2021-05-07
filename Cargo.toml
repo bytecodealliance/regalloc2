@@ -10,6 +10,7 @@ repository = "https://github.com/bytecodealliance/regalloc2"
 [dependencies]
 log = { version = "0.4.8", default-features = false }
 smallvec = "1.6.1"
+fxhash = "0.2.1"
 
 # The below are only needed for fuzzing.
 # Keep this in sync with libfuzzer_sys's crate version:

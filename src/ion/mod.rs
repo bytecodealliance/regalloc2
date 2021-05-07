@@ -1007,8 +1007,6 @@ impl<'a, F: Function> Env<'a, F> {
             self.liveins.push(BitVec::new());
         }
 
-        let num_vregs = self.func.num_vregs();
-
         let mut num_ranges = 0;
 
         // Create Uses and Defs referring to VRegs, and place the Uses
@@ -1040,7 +1038,7 @@ impl<'a, F: Function> Env<'a, F> {
 
             // Init live-set to union of liveins from successors
             // (excluding backedges; those are handled below).
-            let mut live = BitVec::with_capacity(num_vregs);
+            let mut live = BitVec::new();
             for &succ in self.func.block_succs(block) {
                 live.or(&self.liveins[succ.index()]);
             }
@@ -1655,18 +1653,21 @@ impl<'a, F: Function> Env<'a, F> {
             return false;
         }
 
-        // Sanity check: both bundles should contain only ranges with appropriate VReg classes.
-        let mut iter = self.bundles[from.index()].first_range;
-        while iter.is_valid() {
-            let vreg = self.ranges[iter.index()].vreg;
-            assert_eq!(rc, self.vregs[vreg.index()].reg.class());
-            iter = self.ranges[iter.index()].next_in_bundle;
-        }
-        let mut iter = self.bundles[to.index()].first_range;
-        while iter.is_valid() {
-            let vreg = self.ranges[iter.index()].vreg;
-            assert_eq!(rc, self.vregs[vreg.index()].reg.class());
-            iter = self.ranges[iter.index()].next_in_bundle;
+        #[cfg(debug)]
+        {
+            // Sanity check: both bundles should contain only ranges with appropriate VReg classes.
+            let mut iter = self.bundles[from.index()].first_range;
+            while iter.is_valid() {
+                let vreg = self.ranges[iter.index()].vreg;
+                assert_eq!(rc, self.vregs[vreg.index()].reg.class());
+                iter = self.ranges[iter.index()].next_in_bundle;
+            }
+            let mut iter = self.bundles[to.index()].first_range;
+            while iter.is_valid() {
+                let vreg = self.ranges[iter.index()].vreg;
+                assert_eq!(rc, self.vregs[vreg.index()].reg.class());
+                iter = self.ranges[iter.index()].next_in_bundle;
+            }
         }
 
         // Check for overlap in LiveRanges.
