@@ -526,7 +526,7 @@ impl<'a, F: Function> Checker<'a, F> {
         let mut safepoint_slots: HashMap<Inst, Vec<SpillSlot>> = HashMap::new();
         for &(progpoint, slot) in &out.safepoint_slots {
             safepoint_slots
-                .entry(progpoint.inst)
+                .entry(progpoint.inst())
                 .or_insert_with(|| vec![])
                 .push(slot);
         }

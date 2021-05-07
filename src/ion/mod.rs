@@ -76,7 +76,7 @@ impl CodeRange {
         other.to > self.from && other.from < self.to
     }
     pub fn len(&self) -> usize {
-        self.to.inst.index() - self.from.inst.index()
+        self.to.inst().index() - self.from.inst().index()
     }
 }
 
@@ -123,7 +123,7 @@ struct LiveRange {
     next_in_reg: LiveRangeIndex,
 
     // if a bundle partly fits, this is used to record LRs that do fit
-    reg_hint: Option<PReg>,
+    reg_hint: PReg,
     merged_into: LiveRangeIndex,
 }
 
@@ -172,12 +172,12 @@ impl LiveRange {
 struct Use {
     operand: Operand,
     pos: ProgPoint,
-    slot: usize,
     next_use: UseIndex,
+    slot: u8,
     is_def: bool,
 }
 
-const SLOT_NONE: usize = usize::MAX;
+const SLOT_NONE: u8 = u8::MAX;
 
 #[derive(Clone, Debug)]
 struct LiveBundle {
@@ -216,10 +216,10 @@ impl LiveBundle {
 #[derive(Clone, Debug)]
 struct SpillSet {
     bundles: LiveBundleVec,
-    size: u32,
-    class: RegClass,
     slot: SpillSlotIndex,
-    reg_hint: Option<PReg>,
+    reg_hint: PReg,
+    class: RegClass,
+    size: u8,
 }
 
 #[derive(Clone, Debug)]
@@ -594,10 +594,21 @@ impl<'a> RegTraversalIter<'a> {
     pub fn new(
         env: &'a MachineEnv,
         class: RegClass,
-        mut hint_reg: Option<PReg>,
-        mut hint2_reg: Option<PReg>,
+        hint_reg: PReg,
+        hint2_reg: PReg,
         offset: usize,
     ) -> Self {
+        let mut hint_reg = if hint_reg != PReg::invalid() {
+            Some(hint_reg)
+        } else {
+            None
+        };
+        let mut hint2_reg = if hint2_reg != PReg::invalid() {
+            Some(hint2_reg)
+        } else {
+            None
+        };
+
         if hint_reg.is_none() {
             hint_reg = hint2_reg;
             hint2_reg = None;
@@ -744,7 +755,7 @@ impl<'a, F: Function> Env<'a, F> {
             last_use: UseIndex::invalid(),
             next_in_bundle: LiveRangeIndex::invalid(),
             next_in_reg: LiveRangeIndex::invalid(),
-            reg_hint: None,
+            reg_hint: PReg::invalid(),
             merged_into: LiveRangeIndex::invalid(),
         });
         LiveRangeIndex::new(idx)
@@ -1200,7 +1211,7 @@ impl<'a, F: Function> Env<'a, F> {
                             self.uses.push(Use {
                                 operand,
                                 pos,
-                                slot: i,
+                                slot: i as u8,
                                 next_use: UseIndex::invalid(),
                                 is_def: true,
                             });
@@ -1267,7 +1278,7 @@ impl<'a, F: Function> Env<'a, F> {
                             self.uses.push(Use {
                                 operand,
                                 pos,
-                                slot: i,
+                                slot: i as u8,
                                 next_use: UseIndex::invalid(),
                                 is_def: false,
                             });
@@ -1538,9 +1549,9 @@ impl<'a, F: Function> Env<'a, F> {
                                 log::debug!(
                                     " -> extra clobber {} at inst{}",
                                     preg,
-                                    pos.inst.index()
+                                    pos.inst().index()
                                 );
-                                extra_clobbers.push((preg, pos.inst));
+                                extra_clobbers.push((preg, pos.inst()));
                             }
                         } else {
                             seen_fixed_for_vreg.push(op.vreg());
@@ -1552,7 +1563,7 @@ impl<'a, F: Function> Env<'a, F> {
                 let mut use_iter = self.ranges[iter.index()].first_use;
                 while use_iter.is_valid() {
                     let pos = self.uses[use_iter.index()].pos;
-                    let slot = self.uses[use_iter.index()].slot;
+                    let slot = self.uses[use_iter.index()].slot as usize;
                     fixup_multi_fixed_vregs(
                         pos,
                         slot,
@@ -1917,13 +1928,13 @@ impl<'a, F: Function> Env<'a, F> {
                     // compute its priority, and enqueue it.
                     let ssidx = SpillSetIndex::new(self.spillsets.len());
                     let reg = self.vregs[vreg.index()].reg;
-                    let size = self.func.spillslot_size(reg.class(), reg) as u32;
+                    let size = self.func.spillslot_size(reg.class(), reg) as u8;
                     self.spillsets.push(SpillSet {
                         bundles: smallvec![],
                         slot: SpillSlotIndex::invalid(),
                         size,
                         class: reg.class(),
-                        reg_hint: None,
+                        reg_hint: PReg::invalid(),
                     });
                     self.bundles[bundle.index()].spillset = ssidx;
                     let prio = self.compute_bundle_prio(bundle);
@@ -2100,7 +2111,7 @@ impl<'a, F: Function> Env<'a, F> {
                     return AllocRegResult::ConflictWithFixed;
                 }
             } else {
-                self.ranges[iter.index()].reg_hint = Some(self.pregs[reg.index()].reg);
+                self.ranges[iter.index()].reg_hint = self.pregs[reg.index()].reg;
             }
             iter = next;
         }
@@ -2210,7 +2221,7 @@ impl<'a, F: Function> Env<'a, F> {
                 first_range.next_in_bundle
             );
             minimal = first_range.next_in_bundle.is_invalid()
-                && first_range.range.from.inst == first_range.range.to.prev().inst;
+                && first_range.range.from.inst() == first_range.range.to.prev().inst();
             log::debug!("  -> minimal: {}", minimal);
         }
 
@@ -2385,7 +2396,7 @@ impl<'a, F: Function> Env<'a, F> {
             // Update last-before-conflict and first-before-conflict positions.
 
             let mut update_with_pos = |pos: ProgPoint| {
-                let before_inst = ProgPoint::before(pos.inst);
+                let before_inst = ProgPoint::before(pos.inst());
                 let before_next_inst = before_inst.next().next();
                 if before_inst > bundle_start
                     && (conflict_from.is_none() || before_inst < conflict_from.unwrap())
@@ -2398,7 +2409,7 @@ impl<'a, F: Function> Env<'a, F> {
                     && (conflict_to.is_none() || pos >= conflict_to.unwrap())
                     && (first_after_conflict.is_none() || pos > first_after_conflict.unwrap())
                 {
-                    first_after_conflict = Some(ProgPoint::before(pos.inst.next()));
+                    first_after_conflict = Some(ProgPoint::before(pos.inst().next()));
                 }
             };
 
@@ -2483,9 +2494,9 @@ impl<'a, F: Function> Env<'a, F> {
                 } else {
                     // For an use, split before the instruction --
                     // this allows us to insert a move if necessary.
-                    ProgPoint::before(use_data.pos.inst)
+                    ProgPoint::before(use_data.pos.inst())
                 };
-                let after_use_inst = ProgPoint::before(use_data.pos.inst.next());
+                let after_use_inst = ProgPoint::before(use_data.pos.inst().next());
                 log::debug!(
                     "  -> splitting before and after use: {:?} and {:?}",
                     before_use_inst,
@@ -2767,7 +2778,7 @@ impl<'a, F: Function> Env<'a, F> {
         let hint2_reg = if self.bundles[bundle.index()].first_range.is_valid() {
             self.ranges[self.bundles[bundle.index()].first_range.index()].reg_hint
         } else {
-            None
+            PReg::invalid()
         };
         log::debug!(
             "process_bundle: bundle {:?} requirement {:?} hint {:?} hint2 {:?}",
@@ -2802,7 +2813,7 @@ impl<'a, F: Function> Env<'a, F> {
                             self.stats.process_bundle_reg_success_fixed += 1;
                             log::debug!(" -> allocated to fixed {:?}", preg_idx);
                             self.spillsets[self.bundles[bundle.index()].spillset.index()]
-                                .reg_hint = Some(alloc.as_reg().unwrap());
+                                .reg_hint = alloc.as_reg().unwrap();
                             return;
                         }
                         AllocRegResult::Conflict(bundles) => {
@@ -2829,7 +2840,7 @@ impl<'a, F: Function> Env<'a, F> {
                     let scan_offset = self.ranges[self.bundles[bundle.index()].first_range.index()]
                         .range
                         .from
-                        .inst
+                        .inst()
                         .index()
                         + bundle.index();
 
@@ -2855,7 +2866,7 @@ impl<'a, F: Function> Env<'a, F> {
                                     _ => panic!("Impossible result: {:?}", result),
                                 };
                                 self.spillsets[self.bundles[bundle.index()].spillset.index()]
-                                    .reg_hint = Some(alloc.as_reg().unwrap());
+                                    .reg_hint = alloc.as_reg().unwrap();
                                 log::debug!(" -> definitely fits; assigning");
                                 return;
                             }
@@ -2873,7 +2884,7 @@ impl<'a, F: Function> Env<'a, F> {
                                 self.stats.process_bundle_reg_success_any += 1;
                                 log::debug!(" -> allocated to any {:?}", preg_idx);
                                 self.spillsets[self.bundles[bundle.index()].spillset.index()]
-                                    .reg_hint = Some(alloc.as_reg().unwrap());
+                                    .reg_hint = alloc.as_reg().unwrap();
                                 return;
                             }
                             AllocRegResult::Conflict(bundles) => {
@@ -2983,7 +2994,13 @@ impl<'a, F: Function> Env<'a, F> {
             let class = any_vreg.class();
             let mut success = false;
             self.stats.spill_bundle_reg_probes += 1;
-            for preg in RegTraversalIter::new(self.env, class, None, None, bundle.index()) {
+            for preg in RegTraversalIter::new(
+                self.env,
+                class,
+                PReg::invalid(),
+                PReg::invalid(),
+                bundle.index(),
+            ) {
                 let preg_idx = PRegIndex::new(preg.index());
                 if let AllocRegResult::Allocated(_) =
                     self.try_to_allocate_bundle_to_reg(bundle, preg_idx)
@@ -3165,11 +3182,11 @@ impl<'a, F: Function> Env<'a, F> {
     }
 
     fn is_start_of_block(&self, pos: ProgPoint) -> bool {
-        let block = self.cfginfo.insn_block[pos.inst.index()];
+        let block = self.cfginfo.insn_block[pos.inst().index()];
         pos == self.cfginfo.block_entry[block.index()]
     }
     fn is_end_of_block(&self, pos: ProgPoint) -> bool {
-        let block = self.cfginfo.insn_block[pos.inst.index()];
+        let block = self.cfginfo.insn_block[pos.inst().index()];
         pos == self.cfginfo.block_exit[block.index()]
     }
 
@@ -3365,7 +3382,7 @@ impl<'a, F: Function> Env<'a, F> {
                             alloc,
                             vreg.index()
                         );
-                        assert_eq!(range.from.pos, InstPosition::Before);
+                        assert_eq!(range.from.pos(), InstPosition::Before);
                         self.insert_move(range.from, InsertMovePrio::Regular, prev_alloc, alloc);
                     }
                 }
@@ -3375,7 +3392,7 @@ impl<'a, F: Function> Env<'a, F> {
                 // already in this range (hence guaranteed to have the
                 // same allocation) and if the vreg is live, add a
                 // Source half-move.
-                let mut block = self.cfginfo.insn_block[range.from.inst.index()];
+                let mut block = self.cfginfo.insn_block[range.from.inst().index()];
                 while block.is_valid() && block.index() < self.func.blocks() {
                     if range.to < self.cfginfo.block_exit[block.index()].next() {
                         break;
@@ -3456,7 +3473,7 @@ impl<'a, F: Function> Env<'a, F> {
                 // this range and for which the vreg is live at the
                 // start of the block. For each, for each predecessor,
                 // add a Dest half-move.
-                let mut block = self.cfginfo.insn_block[range.from.inst.index()];
+                let mut block = self.cfginfo.insn_block[range.from.inst().index()];
                 if self.cfginfo.block_entry[block.index()] < range.from {
                     block = block.next();
                 }
@@ -3559,13 +3576,13 @@ impl<'a, F: Function> Env<'a, F> {
                 while use_iter.is_valid() {
                     let usedata = &self.uses[use_iter.index()];
                     debug_assert!(range.contains_point(usedata.pos));
-                    let inst = usedata.pos.inst;
+                    let inst = usedata.pos.inst();
                     let slot = usedata.slot;
                     let operand = usedata.operand;
                     // Safepoints add virtual uses with no slots;
                     // avoid these.
                     if slot != SLOT_NONE {
-                        self.set_alloc(inst, slot, alloc);
+                        self.set_alloc(inst, slot as usize, alloc);
                     }
                     if let OperandPolicy::Reuse(_) = operand.policy() {
                         reuse_input_insts.push(inst);
@@ -3574,15 +3591,15 @@ impl<'a, F: Function> Env<'a, F> {
                 }
 
                 // Scan over program move srcs/dsts to fill in allocations.
-                let move_src_start = if range.from.pos == InstPosition::Before {
-                    (vreg, range.from.inst)
+                let move_src_start = if range.from.pos() == InstPosition::Before {
+                    (vreg, range.from.inst())
                 } else {
-                    (vreg, range.from.inst.next())
+                    (vreg, range.from.inst().next())
                 };
-                let move_src_end = if range.to.pos == InstPosition::Before {
-                    (vreg, range.to.inst)
+                let move_src_end = if range.to.pos() == InstPosition::Before {
+                    (vreg, range.to.inst())
                 } else {
-                    (vreg, range.to.inst.next())
+                    (vreg, range.to.inst().next())
                 };
                 log::debug!(
                     "vreg {:?} range {:?}: looking for program-move sources from {:?} to {:?}",
@@ -3610,8 +3627,8 @@ impl<'a, F: Function> Env<'a, F> {
                     prog_move_src_idx += 1;
                 }
 
-                let move_dst_start = (vreg, range.from.inst);
-                let move_dst_end = (vreg, range.to.inst);
+                let move_dst_start = (vreg, range.from.inst());
+                let move_dst_end = (vreg, range.to.inst());
                 log::debug!(
                     "vreg {:?} range {:?}: looking for program-move dests from {:?} to {:?}",
                     vreg,
@@ -3753,7 +3770,7 @@ impl<'a, F: Function> Env<'a, F> {
                 Allocation::reg(self.pregs[to_preg.index()].reg),
             );
             self.set_alloc(
-                progpoint.inst,
+                progpoint.inst(),
                 slot,
                 Allocation::reg(self.pregs[to_preg.index()].reg),
             );

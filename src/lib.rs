@@ -781,64 +781,51 @@ pub enum InstPosition {
 /// A program point: a single point before or after a given instruction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ProgPoint {
-    pub inst: Inst,
-    pub pos: InstPosition,
+    bits: u32,
 }
 
 impl ProgPoint {
-    pub fn before(inst: Inst) -> Self {
-        Self {
-            inst,
-            pos: InstPosition::Before,
-        }
+    pub fn new(inst: Inst, pos: InstPosition) -> Self {
+        let bits = ((inst.0 as u32) << 1) | (pos as u8 as u32);
+        Self { bits }
     }
-
+    pub fn before(inst: Inst) -> Self {
+        Self::new(inst, InstPosition::Before)
+    }
     pub fn after(inst: Inst) -> Self {
-        Self {
-            inst,
-            pos: InstPosition::After,
+        Self::new(inst, InstPosition::After)
+    }
+    pub fn inst(self) -> Inst {
+        // Cast to i32 to do an arithmetic right-shift, which will
+        // preserve an `Inst::invalid()` (which is -1, or all-ones).
+        Inst::new(((self.bits as i32) >> 1) as usize)
+    }
+    pub fn pos(self) -> InstPosition {
+        match self.bits & 1 {
+            0 => InstPosition::Before,
+            1 => InstPosition::After,
+            _ => unreachable!(),
         }
     }
 
     pub fn next(self) -> ProgPoint {
-        match self.pos {
-            InstPosition::Before => ProgPoint {
-                inst: self.inst,
-                pos: InstPosition::After,
-            },
-            InstPosition::After => ProgPoint {
-                inst: self.inst.next(),
-                pos: InstPosition::Before,
-            },
+        Self {
+            bits: self.bits + 1,
         }
     }
 
     pub fn prev(self) -> ProgPoint {
-        match self.pos {
-            InstPosition::Before => ProgPoint {
-                inst: self.inst.prev(),
-                pos: InstPosition::After,
-            },
-            InstPosition::After => ProgPoint {
-                inst: self.inst,
-                pos: InstPosition::Before,
-            },
+        Self {
+            bits: self.bits - 1,
         }
     }
 
     pub fn to_index(self) -> u32 {
-        debug_assert!(self.inst.index() <= ((1 << 31) - 1));
-        ((self.inst.index() as u32) << 1) | (self.pos as u8 as u32)
+        self.bits
     }
 
     pub fn from_index(index: u32) -> Self {
-        let inst = Inst::new((index >> 1) as usize);
-        let pos = match index & 1 {
-            0 => InstPosition::Before,
-            1 => InstPosition::After,
-            _ => unreachable!(),
-        };
-        Self { inst, pos }
+        Self { bits: index }
     }
 }
 

@@ -20,6 +20,7 @@ impl AdaptiveMap {
     fn new() -> Self {
         Self::Small(0, [INVALID, INVALID, INVALID, INVALID], [0, 0, 0, 0])
     }
+    #[inline(never)]
     fn expand(&mut self) {
         match self {
             &mut Self::Small(len, ref keys, ref values) => {
@@ -32,6 +33,7 @@ impl AdaptiveMap {
             _ => {}
         }
     }
+    #[inline(always)]
     fn get_or_insert<'a>(&'a mut self, key: u32) -> &'a mut u64 {
         let needs_expand = match self {
             &mut Self::Small(len, ref keys, ..) => len == 4 && !keys.iter().any(|k| *k == key),
@@ -58,6 +60,7 @@ impl AdaptiveMap {
             &mut Self::Large(ref mut map) => map.entry(key).or_insert(0),
         }
     }
+    #[inline(always)]
     fn get_mut(&mut self, key: u32) -> Option<&mut u64> {
         match self {
             &mut Self::Small(len, ref keys, ref mut values) => {
@@ -71,6 +74,7 @@ impl AdaptiveMap {
             &mut Self::Large(ref mut map) => map.get_mut(&key),
         }
     }
+    #[inline(always)]
     fn get(&self, key: u32) -> Option<&u64> {
         match self {
             &Self::Small(len, ref keys, ref values) => {
