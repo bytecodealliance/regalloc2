@@ -391,17 +391,20 @@ impl LiveRangeKey {
 }
 
 impl std::cmp::PartialEq for LiveRangeKey {
+    #[inline(always)]
     fn eq(&self, other: &Self) -> bool {
         self.to > other.from && self.from < other.to
     }
 }
 impl std::cmp::Eq for LiveRangeKey {}
 impl std::cmp::PartialOrd for LiveRangeKey {
+    #[inline(always)]
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 impl std::cmp::Ord for LiveRangeKey {
+    #[inline(always)]
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         if self.to <= other.from {
             std::cmp::Ordering::Less
