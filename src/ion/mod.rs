@@ -19,16 +19,9 @@
  *     - safepoints?
  *     - split just before uses with fixed regs and/or just after defs
  *       with fixed regs?
- *   - try-any-reg allocate loop should randomly probe in caller-save
- *     ("preferred") regs first -- have a notion of "preferred regs" in
- *     MachineEnv?
  *   - measure average liverange length / number of splits / ...
  *
  * - reused-input reg: don't allocate register for input that is reused.
- *
- * - modify CL to generate SSA VCode
- *   - lower blockparams to blockparams directly
- *   - use temps properly (`alloc_tmp()` vs `alloc_reg()`)
  *
  * - "Fixed-stack location": negative spillslot numbers?
  *
@@ -37,16 +30,6 @@
 
 /*
    Performance ideas:
-
-   - moves: don't consider as normal inst with uses/defs
-     - explicit list of src/dst pairs? elide completely if
-       remain in same bundle; otherwise only should appear
-       when generating halfmoves
-       - sorted list of (inst, src-vreg, dst-vreg) and
-                        (vreg, inst)
-       - ignore inst during all passes over code
-       - when same bundle at both ends, ignore during resolution
-       - otherwise, fill in move-list alloc slots during scans
 
    - conflict hints? (note on one bundle that it definitely conflicts
      with another, so avoid probing the other's alloc)
@@ -139,8 +122,9 @@ struct LiveRange {
     next_in_bundle: LiveRangeIndex,
     next_in_reg: LiveRangeIndex,
 
-    reg_hint: Option<PReg>, // if a bundle partly fits, this is used to
-                            // record LRs that do fit
+    // if a bundle partly fits, this is used to record LRs that do fit
+    reg_hint: Option<PReg>,
+    merged_into: LiveRangeIndex,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -316,6 +300,21 @@ struct Env<'a, F: Function> {
     spilled_bundles: Vec<LiveBundleIndex>,
     spillslots: Vec<SpillSlotData>,
     slots_by_size: Vec<SpillSlotList>,
+
+    // Program moves: these are moves in the provided program that we
+    // handle with our internal machinery, in order to avoid the
+    // overhead of ordinary operand processing. We expect the client
+    // to not generate any code for instructions that return
+    // `Some(..)` for `.is_move()`, and instead use the edits that we
+    // provide to implement those moves (or some simplified version of
+    // them) post-regalloc.
+    //
+    // (from-vreg, inst, from-alloc), sorted by (from-vreg, inst)
+    prog_move_srcs: Vec<((VRegIndex, Inst), Allocation)>,
+    // (to-vreg, inst, to-alloc), sorted by (to-vreg, inst)
+    prog_move_dsts: Vec<((VRegIndex, Inst), Allocation)>,
+    // (from-vreg, to-vreg) for bundle-merging.
+    prog_move_merges: Vec<(LiveRangeIndex, LiveRangeIndex)>,
 
     // When multiple fixed-register constraints are present on a
     // single VReg at a single program point (this can happen for,
@@ -535,6 +534,7 @@ enum InsertMovePrio {
     MultiFixedReg,
     ReusedInput,
     OutEdgeMoves,
+    ProgramMove,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -671,6 +671,10 @@ impl<'a, F: Function> Env<'a, F> {
             spillslots: vec![],
             slots_by_size: vec![],
 
+            prog_move_srcs: vec![],
+            prog_move_dsts: vec![],
+            prog_move_merges: vec![],
+
             multi_fixed_reg_fixups: vec![],
             inserted_moves: vec![],
             edits: vec![],
@@ -741,6 +745,7 @@ impl<'a, F: Function> Env<'a, F> {
             next_in_bundle: LiveRangeIndex::invalid(),
             next_in_reg: LiveRangeIndex::invalid(),
             reg_hint: None,
+            merged_into: LiveRangeIndex::invalid(),
         });
         LiveRangeIndex::new(idx)
     }
@@ -894,6 +899,7 @@ impl<'a, F: Function> Env<'a, F> {
                 iter = usedata.next_use;
             }
         }
+        self.ranges[from.index()].merged_into = into;
     }
 
     fn update_liverange_stats_on_remove_use(&mut self, from: LiveRangeIndex, u: UseIndex) {
@@ -1114,6 +1120,73 @@ impl<'a, F: Function> Env<'a, F> {
                     }
                 }
 
+                // If this is a move, handle specially.
+                if let Some((src, dst)) = self.func.is_move(inst) {
+                    log::debug!(" -> move inst{}: src {} -> dst {}", inst.index(), src, dst);
+                    assert_eq!(src.class(), dst.class());
+
+                    // Handle the def w.r.t. liveranges: trim the
+                    // start of the range and mark it dead at this
+                    // point in our backward scan.
+                    let pos = ProgPoint::after(inst);
+                    let mut dst_lr = vreg_ranges[dst.vreg()];
+                    // If there was no liverange (dead def), create a trivial one.
+                    if dst_lr.is_invalid() {
+                        dst_lr = self.add_liverange_to_vreg(
+                            VRegIndex::new(dst.vreg()),
+                            CodeRange {
+                                from: pos,
+                                to: pos.next(),
+                            },
+                            &mut num_ranges,
+                        );
+                        log::debug!(" -> invalid; created {:?}", dst_lr);
+                    } else {
+                        log::debug!(" -> has existing LR {:?}", dst_lr);
+                    }
+                    if self.ranges[dst_lr.index()].range.from
+                        == self.cfginfo.block_entry[block.index()]
+                    {
+                        log::debug!(" -> started at block start; trimming to {:?}", pos);
+                        self.ranges[dst_lr.index()].range.from = pos;
+                    }
+                    live.set(dst.vreg(), false);
+                    vreg_ranges[dst.vreg()] = LiveRangeIndex::invalid();
+                    self.vregs[dst.vreg()].reg = dst;
+
+                    // Handle the use w.r.t. liveranges: make it live
+                    // and create an initial LR back to the start of
+                    // the block.
+                    let pos = ProgPoint::before(inst);
+                    let range = CodeRange {
+                        from: self.cfginfo.block_entry[block.index()],
+                        to: pos.next(),
+                    };
+                    let src_lr = self.add_liverange_to_vreg(
+                        VRegIndex::new(src.vreg()),
+                        range,
+                        &mut num_ranges,
+                    );
+                    let src_is_dead_after_move = !vreg_ranges[src.vreg()].is_valid();
+                    vreg_ranges[src.vreg()] = src_lr;
+
+                    log::debug!(" -> src LR {:?}", src_lr);
+
+                    // Add to live-set.
+                    live.set(src.vreg(), true);
+
+                    // Add to program-moves lists.
+                    self.prog_move_srcs
+                        .push(((VRegIndex::new(src.vreg()), inst), Allocation::none()));
+                    self.prog_move_dsts
+                        .push(((VRegIndex::new(dst.vreg()), inst), Allocation::none()));
+                    if src_is_dead_after_move {
+                        self.prog_move_merges.push((src_lr, dst_lr));
+                    }
+
+                    continue;
+                }
+
                 // Process defs and uses.
                 for i in 0..self.func.inst_operands(inst).len() {
                     // don't borrow `self`
@@ -1166,7 +1239,6 @@ impl<'a, F: Function> Env<'a, F> {
                             }
                             self.insert_use_into_liverange_and_update_stats(lr, u);
                             // Remove from live-set.
-                            // TODO-cranelift: here is where we keep it live if it's a mod, not def.
                             live.set(operand.vreg().vreg(), false);
                             vreg_ranges[operand.vreg().vreg()] = LiveRangeIndex::invalid();
                         }
@@ -1507,6 +1579,11 @@ impl<'a, F: Function> Env<'a, F> {
         self.clobbers.sort();
         self.blockparam_ins.sort();
         self.blockparam_outs.sort();
+        self.prog_move_srcs.sort_unstable_by_key(|(pos, _)| *pos);
+        self.prog_move_dsts.sort_unstable_by_key(|(pos, _)| *pos);
+
+        log::debug!("prog_move_srcs = {:?}", self.prog_move_srcs);
+        log::debug!("prog_move_dsts = {:?}", self.prog_move_dsts);
 
         self.stats.initial_liverange_count = self.ranges.len();
         self.stats.blockparam_ins_count = self.blockparam_ins.len();
@@ -1576,6 +1653,20 @@ impl<'a, F: Function> Env<'a, F> {
         let rc = self.vregs[vreg_from.index()].reg.class();
         if rc != self.vregs[vreg_to.index()].reg.class() {
             return false;
+        }
+
+        // Sanity check: both bundles should contain only ranges with appropriate VReg classes.
+        let mut iter = self.bundles[from.index()].first_range;
+        while iter.is_valid() {
+            let vreg = self.ranges[iter.index()].vreg;
+            assert_eq!(rc, self.vregs[vreg.index()].reg.class());
+            iter = self.ranges[iter.index()].next_in_bundle;
+        }
+        let mut iter = self.bundles[to.index()].first_range;
+        while iter.is_valid() {
+            let vreg = self.ranges[iter.index()].vreg;
+            assert_eq!(rc, self.vregs[vreg.index()].reg.class());
+            iter = self.ranges[iter.index()].next_in_bundle;
         }
 
         // Check for overlap in LiveRanges.
@@ -1730,19 +1821,8 @@ impl<'a, F: Function> Env<'a, F> {
         for inst in 0..self.func.insts() {
             let inst = Inst::new(inst);
 
-            // Attempt to merge move srcs and dests, and attempt to
-            // merge Reuse-policy operand outputs with the
+            // Attempt to merge Reuse-policy operand outputs with the
             // corresponding inputs.
-            if let Some((src_vreg, dst_vreg)) = self.func.is_move(inst) {
-                log::debug!("trying to merge move src {} to dst {}", src_vreg, dst_vreg);
-                let src_bundle =
-                    self.ranges[self.vregs[src_vreg.vreg()].first_range.index()].bundle;
-                assert!(src_bundle.is_valid());
-                let dest_bundle =
-                    self.ranges[self.vregs[dst_vreg.vreg()].first_range.index()].bundle;
-                assert!(dest_bundle.is_valid());
-                self.merge_bundles(/* from */ dest_bundle, /* to */ src_bundle);
-            }
             for op in self.func.inst_operands(inst) {
                 if let OperandPolicy::Reuse(reuse_idx) = op.policy() {
                     let src_vreg = op.vreg();
@@ -1783,7 +1863,34 @@ impl<'a, F: Function> Env<'a, F> {
             self.merge_bundles(from_bundle, to_bundle);
         }
 
+        // Attempt to merge move srcs/dsts.
+        for i in 0..self.prog_move_merges.len() {
+            let (src, dst) = self.prog_move_merges[i];
+            log::debug!("trying to merge move src LR {:?} to dst LR {:?}", src, dst);
+            let src = self.resolve_merged_lr(src);
+            let dst = self.resolve_merged_lr(dst);
+            log::debug!(
+                "resolved LR-construction merging chains: move-merge is now src LR {:?} to dst LR {:?}",
+                src,
+                dst
+            );
+            let src_bundle = self.ranges[src.index()].bundle;
+            assert!(src_bundle.is_valid());
+            let dest_bundle = self.ranges[dst.index()].bundle;
+            assert!(dest_bundle.is_valid());
+            self.merge_bundles(/* from */ dest_bundle, /* to */ src_bundle);
+        }
+
         log::debug!("done merging bundles");
+    }
+
+    fn resolve_merged_lr(&self, mut lr: LiveRangeIndex) -> LiveRangeIndex {
+        let mut iter = 0;
+        while iter < 100 && self.ranges[lr.index()].merged_into.is_valid() {
+            lr = self.ranges[lr.index()].merged_into;
+            iter += 1;
+        }
+        lr
     }
 
     fn compute_bundle_prio(&self, bundle: LiveBundleIndex) -> u32 {
@@ -1901,14 +2008,19 @@ impl<'a, F: Function> Env<'a, F> {
     }
 
     fn compute_requirement(&self, bundle: LiveBundleIndex) -> Option<Requirement> {
-        let class = self.vregs[self.ranges[self.bundles[bundle.index()].first_range.index()]
+        let init_vreg = self.vregs[self.ranges[self.bundles[bundle.index()].first_range.index()]
             .vreg
             .index()]
-        .reg
-        .class();
+        .reg;
+        let class = init_vreg.class();
         let mut needed = Requirement::Any(class);
 
-        log::debug!("compute_requirement: bundle {:?} class {:?}", bundle, class);
+        log::debug!(
+            "compute_requirement: bundle {:?} class {:?} (from vreg {:?})",
+            bundle,
+            class,
+            init_vreg
+        );
 
         let mut iter = self.bundles[bundle.index()].first_range;
         while iter.is_valid() {
@@ -2669,6 +2781,7 @@ impl<'a, F: Function> Env<'a, F> {
         let mut first_conflicting_bundle;
         loop {
             attempts += 1;
+            log::debug!("attempt {}, req {:?}", attempts, req);
             debug_assert!(attempts < 100 * self.func.insts());
             first_conflicting_bundle = None;
             let req = match req {
@@ -2682,6 +2795,7 @@ impl<'a, F: Function> Env<'a, F> {
                 Requirement::Fixed(preg) => {
                     let preg_idx = PRegIndex::new(preg.index());
                     self.stats.process_bundle_reg_probes_fixed += 1;
+                    log::debug!("trying fixed reg {:?}", preg_idx);
                     match self.try_to_allocate_bundle_to_reg(bundle, preg_idx) {
                         AllocRegResult::Allocated(alloc) => {
                             self.stats.process_bundle_reg_success_fixed += 1;
@@ -2690,8 +2804,12 @@ impl<'a, F: Function> Env<'a, F> {
                                 .reg_hint = Some(alloc.as_reg().unwrap());
                             return;
                         }
-                        AllocRegResult::Conflict(bundles) => bundles,
+                        AllocRegResult::Conflict(bundles) => {
+                            log::debug!(" -> conflict with bundles {:?}", bundles);
+                            bundles
+                        }
                         AllocRegResult::ConflictWithFixed => {
+                            log::debug!(" -> conflict with fixed alloc");
                             // Empty conflicts set: there's nothing we can
                             // evict, because fixed conflicts cannot be moved.
                             smallvec![]
@@ -2721,10 +2839,12 @@ impl<'a, F: Function> Env<'a, F> {
                     // each reg in preference order.
                     let bounding_range = self.bundle_bounding_range_if_multiple(bundle);
                     if let Some(bounding_range) = bounding_range {
+                        log::debug!("initial scan with bounding range {:?}", bounding_range);
                         for preg in
                             RegTraversalIter::new(self.env, class, hint_reg, hint2_reg, scan_offset)
                         {
                             let preg_idx = PRegIndex::new(preg.index());
+                            log::debug!("trying preg {:?}", preg_idx);
                             self.stats.process_bundle_bounding_range_probes_any += 1;
                             if self.range_definitely_fits_in_reg(bounding_range, preg_idx) {
                                 let result = self.try_to_allocate_bundle_to_reg(bundle, preg_idx);
@@ -2735,6 +2855,7 @@ impl<'a, F: Function> Env<'a, F> {
                                 };
                                 self.spillsets[self.bundles[bundle.index()].spillset.index()]
                                     .reg_hint = Some(alloc.as_reg().unwrap());
+                                log::debug!(" -> definitely fits; assigning");
                                 return;
                             }
                         }
@@ -2745,6 +2866,7 @@ impl<'a, F: Function> Env<'a, F> {
                     {
                         self.stats.process_bundle_reg_probes_any += 1;
                         let preg_idx = PRegIndex::new(preg.index());
+                        log::debug!("trying preg {:?}", preg_idx);
                         match self.try_to_allocate_bundle_to_reg(bundle, preg_idx) {
                             AllocRegResult::Allocated(alloc) => {
                                 self.stats.process_bundle_reg_success_any += 1;
@@ -2754,6 +2876,7 @@ impl<'a, F: Function> Env<'a, F> {
                                 return;
                             }
                             AllocRegResult::Conflict(bundles) => {
+                                log::debug!(" -> conflict with bundles {:?}", bundles);
                                 if lowest_cost_conflict_set.is_none() {
                                     lowest_cost_conflict_set = Some(bundles);
                                 } else if self.maximum_spill_weight_in_bundle_set(&bundles)
@@ -2765,6 +2888,7 @@ impl<'a, F: Function> Env<'a, F> {
                                 }
                             }
                             AllocRegResult::ConflictWithFixed => {
+                                log::debug!(" -> conflict with fixed alloc");
                                 // Simply don't consider as an option.
                             }
                         }
@@ -3154,12 +3278,15 @@ impl<'a, F: Function> Env<'a, F> {
 
         let mut blockparam_in_idx = 0;
         let mut blockparam_out_idx = 0;
+        let mut prog_move_src_idx = 0;
+        let mut prog_move_dst_idx = 0;
         for vreg in 0..self.vregs.len() {
             let vreg = VRegIndex::new(vreg);
 
             // For each range in each vreg, insert moves or
             // half-moves.  We also scan over `blockparam_ins` and
-            // `blockparam_outs`, which are sorted by (block, vreg).
+            // `blockparam_outs`, which are sorted by (block, vreg),
+            // and over program-move srcs/dsts to fill in allocations.
             let mut iter = self.vregs[vreg.index()].first_range;
             let mut prev = LiveRangeIndex::invalid();
             while iter.is_valid() {
@@ -3445,6 +3572,71 @@ impl<'a, F: Function> Env<'a, F> {
                     use_iter = self.uses[use_iter.index()].next_use;
                 }
 
+                // Scan over program move srcs/dsts to fill in allocations.
+                let move_src_start = if range.from.pos == InstPosition::Before {
+                    (vreg, range.from.inst)
+                } else {
+                    (vreg, range.from.inst.next())
+                };
+                let move_src_end = if range.to.pos == InstPosition::Before {
+                    (vreg, range.to.inst)
+                } else {
+                    (vreg, range.to.inst.next())
+                };
+                log::debug!(
+                    "vreg {:?} range {:?}: looking for program-move sources from {:?} to {:?}",
+                    vreg,
+                    range,
+                    move_src_start,
+                    move_src_end
+                );
+                while prog_move_src_idx < self.prog_move_srcs.len()
+                    && self.prog_move_srcs[prog_move_src_idx].0 < move_src_start
+                {
+                    log::debug!(" -> skipping idx {}", prog_move_src_idx);
+                    prog_move_src_idx += 1;
+                }
+                while prog_move_src_idx < self.prog_move_srcs.len()
+                    && self.prog_move_srcs[prog_move_src_idx].0 < move_src_end
+                {
+                    log::debug!(
+                        " -> setting idx {} ({:?}) to alloc {:?}",
+                        prog_move_src_idx,
+                        self.prog_move_srcs[prog_move_src_idx].0,
+                        alloc
+                    );
+                    self.prog_move_srcs[prog_move_src_idx].1 = alloc;
+                    prog_move_src_idx += 1;
+                }
+
+                let move_dst_start = (vreg, range.from.inst);
+                let move_dst_end = (vreg, range.to.inst);
+                log::debug!(
+                    "vreg {:?} range {:?}: looking for program-move dests from {:?} to {:?}",
+                    vreg,
+                    range,
+                    move_dst_start,
+                    move_dst_end
+                );
+                while prog_move_dst_idx < self.prog_move_dsts.len()
+                    && self.prog_move_dsts[prog_move_dst_idx].0 < move_dst_start
+                {
+                    log::debug!(" -> skipping idx {}", prog_move_dst_idx);
+                    prog_move_dst_idx += 1;
+                }
+                while prog_move_dst_idx < self.prog_move_dsts.len()
+                    && self.prog_move_dsts[prog_move_dst_idx].0 < move_dst_end
+                {
+                    log::debug!(
+                        " -> setting idx {} ({:?}) to alloc {:?}",
+                        prog_move_dst_idx,
+                        self.prog_move_dsts[prog_move_dst_idx].0,
+                        alloc
+                    );
+                    self.prog_move_dsts[prog_move_dst_idx].1 = alloc;
+                    prog_move_dst_idx += 1;
+                }
+
                 prev = iter;
                 iter = self.ranges[iter.index()].next_in_reg;
             }
@@ -3645,6 +3837,35 @@ impl<'a, F: Function> Env<'a, F> {
                     }
                 }
             }
+        }
+
+        // Sort the prog-moves lists and insert moves to reify the
+        // input program's move operations.
+        self.prog_move_srcs
+            .sort_unstable_by_key(|((_, inst), _)| *inst);
+        self.prog_move_dsts
+            .sort_unstable_by_key(|((_, inst), _)| *inst);
+        let prog_move_srcs = std::mem::replace(&mut self.prog_move_srcs, vec![]);
+        let prog_move_dsts = std::mem::replace(&mut self.prog_move_dsts, vec![]);
+        assert_eq!(prog_move_srcs.len(), prog_move_dsts.len());
+        for (&((_, from_inst), from_alloc), &((_, to_inst), to_alloc)) in
+            prog_move_srcs.iter().zip(prog_move_dsts.iter())
+        {
+            assert!(!from_alloc.is_none());
+            assert!(!to_alloc.is_none());
+            assert_eq!(from_inst, to_inst);
+            log::debug!(
+                "program move at inst {:?}: alloc {:?} -> {:?}",
+                from_inst,
+                from_alloc,
+                to_alloc
+            );
+            self.insert_move(
+                ProgPoint::before(from_inst),
+                InsertMovePrio::ProgramMove,
+                from_alloc,
+                to_alloc,
+            );
         }
     }
 
