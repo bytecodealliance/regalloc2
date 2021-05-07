@@ -267,7 +267,6 @@ struct Env<'a, F: Function> {
     env: &'a MachineEnv,
     cfginfo: CFGInfo,
     liveins: Vec<BitVec>,
-    livein_parents: Vec<Vec<Block>>,
     /// Blockparam outputs: from-vreg, (end of) from-block, (start of)
     /// to-block, to-vreg. The field order is significant: these are sorted so
     /// that a scan over vregs, then blocks in each range, can scan in
@@ -664,7 +663,6 @@ impl<'a, F: Function> Env<'a, F> {
             cfginfo,
 
             liveins: vec![],
-            livein_parents: vec![],
             blockparam_outs: vec![],
             blockparam_ins: vec![],
             blockparam_allocs: vec![],
@@ -1016,23 +1014,13 @@ impl<'a, F: Function> Env<'a, F> {
     }
 
     fn is_live_in(&mut self, block: Block, vreg: VRegIndex) -> bool {
-        if self.liveins[block.index()].get(vreg.index()) {
-            return true;
-        }
-        for &parent in &self.livein_parents[block.index()] {
-            if self.liveins[parent.index()].get(vreg.index()) {
-                self.liveins[block.index()].set(vreg.index(), true);
-                return true;
-            }
-        }
-        false
+        self.liveins[block.index()].get(vreg.index())
     }
 
     fn compute_liveness(&mut self) {
         // Create initial LiveIn bitsets.
         for _ in 0..self.func.blocks() {
             self.liveins.push(BitVec::new());
-            self.livein_parents.push(vec![]);
         }
 
         let mut num_ranges = 0;
@@ -1428,7 +1416,7 @@ impl<'a, F: Function> Env<'a, F> {
                 );
                 log::debug!(" -> loop range {:?}", loop_range);
                 for &loopblock in loop_blocks {
-                    self.livein_parents[loopblock.index()].push(block);
+                    self.liveins[loopblock.index()].or(&live);
                 }
                 for vreg in live.iter() {
                     log::debug!(

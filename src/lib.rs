@@ -779,9 +779,23 @@ pub enum InstPosition {
 }
 
 /// A program point: a single point before or after a given instruction.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ProgPoint {
     bits: u32,
+}
+
+impl std::fmt::Debug for ProgPoint {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(
+            f,
+            "progpoint{}{}",
+            self.inst().index(),
+            match self.pos() {
+                InstPosition::Before => "-pre",
+                InstPosition::After => "-post",
+            }
+        )
+    }
 }
 
 impl ProgPoint {

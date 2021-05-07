@@ -130,7 +130,7 @@ impl Function for Func {
         &self.reftype_vregs[..]
     }
 
-    fn is_move(&self, insn: Inst) -> Option<(VReg, VReg)> {
+    fn is_move(&self, _: Inst) -> Option<(VReg, VReg)> {
         None
     }
 

@@ -177,7 +177,7 @@ impl<'a> std::iter::Iterator for AdaptiveMapIter<'a> {
 
 /// A conceptually infinite-length bitvector that allows bitwise operations and
 /// iteration over set bits efficiently.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct BitVec {
     elems: AdaptiveMap,
 }
@@ -272,6 +272,13 @@ impl Iterator for SetBitsIter {
             self.0 &= !(1 << bitidx);
             Some(bitidx as usize)
         }
+    }
+}
+
+impl std::fmt::Debug for BitVec {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let vals = self.iter().collect::<Vec<_>>();
+        write!(f, "{:?}", vals)
     }
 }
 
