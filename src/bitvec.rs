@@ -3,34 +3,53 @@
  * exception. See `LICENSE` for details.
  */
 
-//! Bit vectors.
+//! Index sets: sets of integers that represent indices into a space.
+//!
+//! For historical reasons this is called a `BitVec` but it is no
+//! longer a dense bitvector; the chunked adaptive-sparse data
+//! structure here has better performance.
 
 use fxhash::FxHashMap;
+use std::cell::Cell;
 
 const SMALL_ELEMS: usize = 12;
 
-/// A hybrid large/small-mode sparse mapping from integer indices to elements.
+/// A hybrid large/small-mode sparse mapping from integer indices to
+/// elements.
+///
+/// The trailing `(u32, u64)` elements in each variant is a one-item
+/// cache to allow fast access when streaming through.
 #[derive(Clone, Debug)]
 enum AdaptiveMap {
-    Small(u32, [u32; SMALL_ELEMS], [u64; SMALL_ELEMS]),
-    Large(FxHashMap<u32, u64>),
+    Small(
+        u32,
+        [u32; SMALL_ELEMS],
+        [u64; SMALL_ELEMS],
+        Cell<(u32, u64)>,
+    ),
+    Large(FxHashMap<u32, u64>, Cell<(u32, u64)>),
 }
 
 const INVALID: u32 = 0xffff_ffff;
 
 impl AdaptiveMap {
     fn new() -> Self {
-        Self::Small(0, [INVALID; SMALL_ELEMS], [0; SMALL_ELEMS])
+        Self::Small(
+            0,
+            [INVALID; SMALL_ELEMS],
+            [0; SMALL_ELEMS],
+            Cell::new((INVALID, 0)),
+        )
     }
     #[inline(never)]
     fn expand(&mut self) {
         match self {
-            &mut Self::Small(len, ref keys, ref values) => {
+            &mut Self::Small(len, ref keys, ref values, ref cache) => {
                 let mut map = FxHashMap::default();
                 for i in 0..len {
                     map.insert(keys[i as usize], values[i as usize]);
                 }
-                *self = Self::Large(map);
+                *self = Self::Large(map, cache.clone());
             }
             _ => {}
         }
@@ -48,7 +67,10 @@ impl AdaptiveMap {
         }
 
         match self {
-            &mut Self::Small(ref mut len, ref mut keys, ref mut values) => {
+            &mut Self::Small(ref mut len, ref mut keys, ref mut values, ref cached) => {
+                if cached.get().0 == key {
+                    cached.set((INVALID, 0));
+                }
                 for i in 0..*len {
                     if keys[i as usize] == key {
                         return &mut values[i as usize];
@@ -61,13 +83,21 @@ impl AdaptiveMap {
                 values[idx as usize] = 0;
                 &mut values[idx as usize]
             }
-            &mut Self::Large(ref mut map) => map.entry(key).or_insert(0),
+            &mut Self::Large(ref mut map, ref cached) => {
+                if cached.get().0 == key {
+                    cached.set((INVALID, 0));
+                }
+                map.entry(key).or_insert(0)
+            }
         }
     }
     #[inline(always)]
     fn get_mut(&mut self, key: u32) -> Option<&mut u64> {
         match self {
-            &mut Self::Small(len, ref keys, ref mut values) => {
+            &mut Self::Small(len, ref keys, ref mut values, ref cached) => {
+                if cached.get().0 == key {
+                    cached.set((INVALID, 0));
+                }
                 for i in 0..len {
                     if keys[i as usize] == key {
                         return Some(&mut values[i as usize]);
@@ -75,29 +105,48 @@ impl AdaptiveMap {
                 }
                 None
             }
-            &mut Self::Large(ref mut map) => map.get_mut(&key),
+            &mut Self::Large(ref mut map, ref cached) => {
+                if cached.get().0 == key {
+                    cached.set((INVALID, 0));
+                }
+                map.get_mut(&key)
+            }
         }
     }
     #[inline(always)]
-    fn get(&self, key: u32) -> Option<&u64> {
+    fn get(&self, key: u32) -> Option<u64> {
         match self {
-            &Self::Small(len, ref keys, ref values) => {
+            &Self::Small(len, ref keys, ref values, ref cached) => {
+                if cached.get().0 == key {
+                    return Some(cached.get().1);
+                }
                 for i in 0..len {
                     if keys[i as usize] == key {
-                        return Some(&values[i as usize]);
+                        let value = values[i as usize];
+                        cached.set((key, value));
+                        return Some(value);
                     }
                 }
                 None
             }
-            &Self::Large(ref map) => map.get(&key),
+            &Self::Large(ref map, ref cached) => {
+                if cached.get().0 == key {
+                    return Some(cached.get().1);
+                }
+                let value = map.get(&key).cloned();
+                if let Some(value) = value {
+                    cached.set((key, value));
+                }
+                value
+            }
         }
     }
     fn iter<'a>(&'a self) -> AdaptiveMapIter<'a> {
         match self {
-            &Self::Small(len, ref keys, ref values) => {
+            &Self::Small(len, ref keys, ref values, ..) => {
                 AdaptiveMapIter::Small(&keys[0..len as usize], &values[0..len as usize])
             }
-            &Self::Large(ref map) => AdaptiveMapIter::Large(map.iter()),
+            &Self::Large(ref map, ..) => AdaptiveMapIter::Large(map.iter()),
         }
     }
 }
@@ -155,7 +204,7 @@ impl BitVec {
     }
 
     #[inline(always)]
-    fn maybe_elem(&self, bit_index: usize) -> Option<&u64> {
+    fn maybe_elem(&self, bit_index: usize) -> Option<u64> {
         let word_index = (bit_index / BITS_PER_WORD) as u32;
         self.elems.get(word_index)
     }
@@ -178,7 +227,7 @@ impl BitVec {
     pub fn get(&self, idx: usize) -> bool {
         let bit = idx % BITS_PER_WORD;
         if let Some(word) = self.maybe_elem(idx) {
-            (*word & (1 << bit)) != 0
+            (word & (1 << bit)) != 0
         } else {
             false
         }

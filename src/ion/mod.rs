@@ -267,6 +267,7 @@ struct Env<'a, F: Function> {
     env: &'a MachineEnv,
     cfginfo: CFGInfo,
     liveins: Vec<BitVec>,
+    livein_parents: Vec<Vec<Block>>,
     /// Blockparam outputs: from-vreg, (end of) from-block, (start of)
     /// to-block, to-vreg. The field order is significant: these are sorted so
     /// that a scan over vregs, then blocks in each range, can scan in
@@ -663,6 +664,7 @@ impl<'a, F: Function> Env<'a, F> {
             cfginfo,
 
             liveins: vec![],
+            livein_parents: vec![],
             blockparam_outs: vec![],
             blockparam_ins: vec![],
             blockparam_allocs: vec![],
@@ -1013,10 +1015,24 @@ impl<'a, F: Function> Env<'a, F> {
             .insert(LiveRangeKey::from_range(&range), lr);
     }
 
+    fn is_live_in(&mut self, block: Block, vreg: VRegIndex) -> bool {
+        if self.liveins[block.index()].get(vreg.index()) {
+            return true;
+        }
+        for &parent in &self.livein_parents[block.index()] {
+            if self.liveins[parent.index()].get(vreg.index()) {
+                self.liveins[block.index()].set(vreg.index(), true);
+                return true;
+            }
+        }
+        false
+    }
+
     fn compute_liveness(&mut self) {
         // Create initial LiveIn bitsets.
         for _ in 0..self.func.blocks() {
             self.liveins.push(BitVec::new());
+            self.livein_parents.push(vec![]);
         }
 
         let mut num_ranges = 0;
@@ -1050,10 +1066,18 @@ impl<'a, F: Function> Env<'a, F> {
 
             // Init live-set to union of liveins from successors
             // (excluding backedges; those are handled below).
-            let mut live = BitVec::new();
+            let mut live = None;
             for &succ in self.func.block_succs(block) {
-                live.or(&self.liveins[succ.index()]);
+                if block_to_postorder[succ.index()].is_none() {
+                    continue;
+                }
+                if live.is_none() {
+                    live = Some(self.liveins[succ.index()].clone());
+                } else {
+                    live.as_mut().unwrap().or(&self.liveins[succ.index()]);
+                }
             }
+            let mut live = live.unwrap_or(BitVec::new());
 
             // Initially, registers are assumed live for the whole block.
             for vreg in live.iter() {
@@ -1404,7 +1428,7 @@ impl<'a, F: Function> Env<'a, F> {
                 );
                 log::debug!(" -> loop range {:?}", loop_range);
                 for &loopblock in loop_blocks {
-                    self.liveins[loopblock.index()].or(&live);
+                    self.livein_parents[loopblock.index()].push(block);
                 }
                 for vreg in live.iter() {
                     log::debug!(
@@ -3404,7 +3428,7 @@ impl<'a, F: Function> Env<'a, F> {
                             continue;
                         }
                         log::debug!(" -> out of this range, requires half-move if live");
-                        if self.liveins[succ.index()].get(vreg.index()) {
+                        if self.is_live_in(succ, vreg) {
                             log::debug!("  -> live at input to succ, adding halfmove");
                             half_moves.push(HalfMove {
                                 key: half_move_key(block, succ, vreg, HalfMoveKind::Source),
@@ -3524,7 +3548,7 @@ impl<'a, F: Function> Env<'a, F> {
                         blockparam_in_idx += 1;
                     }
 
-                    if !self.liveins[block.index()].get(vreg.index()) {
+                    if !self.is_live_in(block, vreg) {
                         block = block.next();
                         continue;
                     }
