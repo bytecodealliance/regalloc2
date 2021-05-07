@@ -49,6 +49,7 @@ use crate::{
     MachineEnv, Operand, OperandKind, OperandPolicy, OperandPos, Output, PReg, ProgPoint,
     RegAllocError, RegClass, SpillSlot, VReg,
 };
+use fxhash::FxHashSet;
 use log::debug;
 use smallvec::{smallvec, SmallVec};
 use std::cmp::Ordering;
@@ -267,6 +268,7 @@ struct Env<'a, F: Function> {
     env: &'a MachineEnv,
     cfginfo: CFGInfo,
     liveins: Vec<BitVec>,
+    liveouts: Vec<BitVec>,
     /// Blockparam outputs: from-vreg, (end of) from-block, (start of)
     /// to-block, to-vreg. The field order is significant: these are sorted so
     /// that a scan over vregs, then blocks in each range, can scan in
@@ -293,6 +295,7 @@ struct Env<'a, F: Function> {
     hot_code: LiveRangeSet,
     clobbers: Vec<Inst>,   // Sorted list of insts with clobbers.
     safepoints: Vec<Inst>, // Sorted list of safepoint insts.
+    safepoints_per_vreg: HashMap<usize, HashSet<Inst>>,
 
     spilled_bundles: Vec<LiveBundleIndex>,
     spillslots: Vec<SpillSlotData>,
@@ -538,9 +541,7 @@ enum InsertMovePrio {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Stats {
     livein_blocks: usize,
-    livein_succ_unions: usize,
-    livein_loops: usize,
-    livein_loop_unions: usize,
+    livein_iterations: usize,
     initial_liverange_count: usize,
     merged_bundle_count: usize,
     process_bundle_count: usize,
@@ -667,6 +668,7 @@ impl<'a, F: Function> Env<'a, F> {
             cfginfo,
 
             liveins: vec![],
+            liveouts: vec![],
             blockparam_outs: vec![],
             blockparam_ins: vec![],
             blockparam_allocs: vec![],
@@ -680,6 +682,7 @@ impl<'a, F: Function> Env<'a, F> {
             allocation_queue: PrioQueue::new(),
             clobbers: vec![],
             safepoints: vec![],
+            safepoints_per_vreg: HashMap::new(),
             hot_code: LiveRangeSet::new(),
             spilled_bundles: vec![],
             spillslots: vec![],
@@ -1022,57 +1025,96 @@ impl<'a, F: Function> Env<'a, F> {
     }
 
     fn compute_liveness(&mut self) {
-        // Create initial LiveIn bitsets.
+        // Create initial LiveIn and LiveOut bitsets.
         for _ in 0..self.func.blocks() {
             self.liveins.push(BitVec::new());
+            self.liveouts.push(BitVec::new());
+        }
+
+        // Run a worklist algorithm to precisely compute liveins and
+        // liveouts.
+        let mut workqueue = VecDeque::new();
+        let mut workqueue_set = FxHashSet::default();
+        // Initialize workqueue with postorder traversal.
+        for &block in &self.cfginfo.postorder[..] {
+            workqueue.push_back(block);
+            workqueue_set.insert(block);
+        }
+
+        while !workqueue.is_empty() {
+            let block = workqueue.pop_front().unwrap();
+            workqueue_set.remove(&block);
+
+            log::debug!("computing liveins for block{}", block.index());
+
+            self.stats.livein_iterations += 1;
+
+            let mut live = self.liveouts[block.index()].clone();
+            for inst in self.func.block_insns(block).rev().iter() {
+                if let Some((src, dst)) = self.func.is_move(inst) {
+                    live.set(dst.vreg(), false);
+                    live.set(src.vreg(), true);
+                }
+                for pos in &[OperandPos::After, OperandPos::Both, OperandPos::Before] {
+                    for op in self.func.inst_operands(inst) {
+                        if op.pos() == *pos {
+                            match op.kind() {
+                                OperandKind::Use => {
+                                    live.set(op.vreg().vreg(), true);
+                                }
+                                OperandKind::Def => {
+                                    live.set(op.vreg().vreg(), false);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            for &blockparam in self.func.block_params(block) {
+                live.set(blockparam.vreg(), false);
+            }
+
+            for &pred in self.func.block_preds(block) {
+                if self.liveouts[pred.index()].or(&live) {
+                    if !workqueue_set.contains(&pred) {
+                        workqueue_set.insert(pred);
+                        workqueue.push_back(pred);
+                    }
+                }
+            }
+
+            log::debug!("computed liveins at block{}: {:?}", block.index(), live);
+            self.liveins[block.index()] = live;
         }
 
         let mut num_ranges = 0;
 
+        for &vreg in self.func.reftype_vregs() {
+            self.safepoints_per_vreg.insert(vreg.vreg(), HashSet::new());
+        }
+
         // Create Uses and Defs referring to VRegs, and place the Uses
         // in LiveRanges.
         //
-        // We iterate backward, so as long as blocks are well-ordered
-        // (in RPO), we see uses before defs.
-        //
-        // Because of this, we can construct live ranges in one pass,
-        // i.e., considering each block once, propagating live
-        // registers backward across edges to a bitset at each block
-        // exit point, gen'ing at uses, kill'ing at defs, and meeting
-        // with a union.
-        let mut block_to_postorder: SmallVec<[Option<u32>; 16]> =
-            smallvec![None; self.func.blocks()];
-        for i in 0..self.cfginfo.postorder.len() {
-            let block = self.cfginfo.postorder[i];
-            block_to_postorder[block.index()] = Some(i as u32);
-        }
+        // We already computed precise liveouts and liveins for every
+        // block above, so we don't need to run an iterative algorithm
+        // here; instead, every block's computation is purely local,
+        // from end to start.
 
         // Track current LiveRange for each vreg.
+        //
+        // Invariant: a stale range may be present here; ranges are
+        // only valid if `live.get(vreg)` is true.
         let mut vreg_ranges: Vec<LiveRangeIndex> =
             vec![LiveRangeIndex::invalid(); self.func.num_vregs()];
 
-        for i in 0..self.cfginfo.postorder.len() {
-            // (avoid borrowing `self`)
-            let block = self.cfginfo.postorder[i];
-            block_to_postorder[block.index()] = Some(i as u32);
+        for i in (0..self.func.blocks()).rev() {
+            let block = Block::new(i);
 
             self.stats.livein_blocks += 1;
 
-            // Init live-set to union of liveins from successors
-            // (excluding backedges; those are handled below).
-            let mut live = None;
-            for &succ in self.func.block_succs(block) {
-                if block_to_postorder[succ.index()].is_none() {
-                    continue;
-                }
-                if live.is_none() {
-                    live = Some(self.liveins[succ.index()].clone());
-                } else {
-                    live.as_mut().unwrap().or(&self.liveins[succ.index()]);
-                }
-                self.stats.livein_succ_unions += 1;
-            }
-            let mut live = live.unwrap_or(BitVec::new());
+            // Init our local live-in set.
+            let mut live = self.liveouts[block.index()].clone();
 
             // Initially, registers are assumed live for the whole block.
             for vreg in live.iter() {
@@ -1119,9 +1161,7 @@ impl<'a, F: Function> Env<'a, F> {
                 if self.func.inst_clobbers(inst).len() > 0 {
                     self.clobbers.push(inst);
                 }
-                if self.func.is_safepoint(inst) {
-                    self.safepoints.push(inst);
-                }
+
                 // Mark clobbers with CodeRanges on PRegs.
                 for i in 0..self.func.inst_clobbers(inst).len() {
                     // don't borrow `self`
@@ -1160,7 +1200,7 @@ impl<'a, F: Function> Env<'a, F> {
                     let pos = ProgPoint::after(inst);
                     let mut dst_lr = vreg_ranges[dst.vreg()];
                     // If there was no liverange (dead def), create a trivial one.
-                    if dst_lr.is_invalid() {
+                    if !live.get(dst.vreg()) {
                         dst_lr = self.add_liverange_to_vreg(
                             VRegIndex::new(dst.vreg()),
                             CodeRange {
@@ -1196,12 +1236,12 @@ impl<'a, F: Function> Env<'a, F> {
                         range,
                         &mut num_ranges,
                     );
-                    let src_is_dead_after_move = !vreg_ranges[src.vreg()].is_valid();
                     vreg_ranges[src.vreg()] = src_lr;
 
                     log::debug!(" -> src LR {:?}", src_lr);
 
                     // Add to live-set.
+                    let src_is_dead_after_move = !live.get(src.vreg());
                     live.set(src.vreg(), true);
 
                     // Add to program-moves lists.
@@ -1248,7 +1288,7 @@ impl<'a, F: Function> Env<'a, F> {
                             let mut lr = vreg_ranges[operand.vreg().vreg()];
                             log::debug!(" -> has existing LR {:?}", lr);
                             // If there was no liverange (dead def), create a trivial one.
-                            if lr.is_invalid() {
+                            if !live.get(operand.vreg().vreg()) {
                                 lr = self.add_liverange_to_vreg(
                                     VRegIndex::new(operand.vreg().vreg()),
                                     CodeRange {
@@ -1322,6 +1362,15 @@ impl<'a, F: Function> Env<'a, F> {
                         }
                     }
                 }
+
+                if self.func.is_safepoint(inst) {
+                    self.safepoints.push(inst);
+                    for vreg in live.iter() {
+                        if let Some(safepoints) = self.safepoints_per_vreg.get_mut(&vreg) {
+                            safepoints.insert(inst);
+                        }
+                    }
+                }
             }
 
             // Block parameters define vregs at the very beginning of
@@ -1348,98 +1397,6 @@ impl<'a, F: Function> Env<'a, F> {
                     self.blockparam_ins.push((vreg_idx, block, pred));
                 }
             }
-
-            // Loop-handling: to handle backedges, rather than running
-            // a fixpoint loop, we add a live-range for every value
-            // live at the beginning of the loop over the whole loop
-            // body.
-            //
-            // To determine what the "loop body" consists of, we find
-            // the transitively minimum-reachable traversal index in
-            // our traversal order before the current block
-            // index. When we discover a backedge, *all* block indices
-            // within the traversal range are considered part of the
-            // loop body.  This is guaranteed correct (though perhaps
-            // an overapproximation) even for irreducible control
-            // flow, because it will find all blocks to which the
-            // liveness could flow backward over which we've already
-            // scanned, and it should give good results for reducible
-            // control flow with properly ordered blocks.
-            let mut min_pred = i;
-            let mut loop_scan = i;
-            log::debug!(
-                "looking for loops from postorder#{} (block{})",
-                i,
-                self.cfginfo.postorder[i].index()
-            );
-            while loop_scan >= min_pred {
-                let block = self.cfginfo.postorder[loop_scan];
-                log::debug!(
-                    " -> scan at postorder#{} (block{})",
-                    loop_scan,
-                    block.index()
-                );
-                for &pred in self.func.block_preds(block) {
-                    log::debug!(
-                        " -> pred block{} (postorder#{})",
-                        pred.index(),
-                        block_to_postorder[pred.index()].unwrap_or(min_pred as u32)
-                    );
-                    min_pred = std::cmp::min(
-                        min_pred,
-                        block_to_postorder[pred.index()].unwrap_or(min_pred as u32) as usize,
-                    );
-                    log::debug!(" -> min_pred = {}", min_pred);
-                }
-                if loop_scan == 0 {
-                    break;
-                }
-                loop_scan -= 1;
-            }
-
-            if min_pred < i {
-                // We have one or more backedges, and the loop body is
-                // (conservatively) postorder[min_pred..i]. Find a
-                // range that covers all of those blocks.
-                let loop_blocks = &self.cfginfo.postorder[min_pred..=i];
-                let loop_begin = loop_blocks
-                    .iter()
-                    .map(|b| self.cfginfo.block_entry[b.index()])
-                    .min()
-                    .unwrap();
-                let loop_end = loop_blocks
-                    .iter()
-                    .map(|b| self.cfginfo.block_exit[b.index()])
-                    .max()
-                    .unwrap();
-                let loop_range = CodeRange {
-                    from: loop_begin,
-                    to: loop_end,
-                };
-                log::debug!(
-                    "found backedge wrt postorder: postorder#{}..postorder#{}",
-                    min_pred,
-                    i
-                );
-                log::debug!(" -> loop range {:?}", loop_range);
-                self.stats.livein_loops += 1;
-                for &loopblock in loop_blocks {
-                    self.stats.livein_loop_unions += 1;
-                    self.liveins[loopblock.index()].or(&live);
-                }
-                for vreg in live.iter() {
-                    log::debug!(
-                        "vreg {:?} live at top of loop (block {:?}) -> range {:?}",
-                        VRegIndex::new(vreg),
-                        block,
-                        loop_range,
-                    );
-                    self.add_liverange_to_vreg(VRegIndex::new(vreg), loop_range, &mut num_ranges);
-                }
-            }
-
-            log::debug!("liveins at block {:?} = {:?}", block, live);
-            self.liveins[block.index()] = live;
         }
 
         self.safepoints.sort();
@@ -3886,15 +3843,15 @@ impl<'a, F: Function> Env<'a, F> {
         for (&((_, from_inst), from_alloc), &((_, to_inst), to_alloc)) in
             prog_move_srcs.iter().zip(prog_move_dsts.iter())
         {
-            assert!(!from_alloc.is_none());
-            assert!(!to_alloc.is_none());
-            assert_eq!(from_inst, to_inst);
             log::debug!(
                 "program move at inst {:?}: alloc {:?} -> {:?}",
                 from_inst,
                 from_alloc,
                 to_alloc
             );
+            assert!(!from_alloc.is_none());
+            assert!(!to_alloc.is_none());
+            assert_eq!(from_inst, to_inst);
             self.insert_move(
                 ProgPoint::before(from_inst),
                 InsertMovePrio::ProgramMove,
@@ -4016,117 +3973,24 @@ impl<'a, F: Function> Env<'a, F> {
     fn compute_stackmaps(&mut self) {
         // For each ref-typed vreg, iterate through ranges and find
         // safepoints in-range. Add the SpillSlot to the stackmap.
-        //
-        // Note that unlike in the rest of the allocator, we cannot
-        // overapproximate here: we cannot list a vreg's alloc at a
-        // certain program point in the metadata if it is not yet
-        // live. Because arbitrary block order and irreducible control
-        // flow could result in us encountering an (overapproximated,
-        // not actually live) vreg range for a reftyped value when
-        // scanning in block order, we need to do a fixpoint liveness
-        // analysis here for reftyped vregs only. We only perform this
-        // analysis if there are reftyped vregs present, so it will
-        // not add to allocation runtime otherwise.
 
         if self.func.reftype_vregs().is_empty() {
             return;
         }
 
-        let mut reftype_vreg_map = BitVec::new();
-        for vreg in self.func.reftype_vregs() {
-            reftype_vreg_map.set(vreg.vreg(), true);
-        }
+        // Given `safepoints_per_vreg` from the liveness computation,
+        // all we have to do is, for each vreg in this map, step
+        // through the LiveRanges along with a sorted list of
+        // safepoints; and for each safepoint in the current range,
+        // emit the allocation into the `safepoint_slots` list.
 
-        let mut live_reftypes_block_start: Vec<BitVec> = vec![];
-        let mut live_reftypes_block_end: Vec<BitVec> = vec![];
-        for _ in 0..self.func.blocks() {
-            live_reftypes_block_start.push(BitVec::new());
-            live_reftypes_block_end.push(BitVec::new());
-        }
-
-        let mut safepoints_per_vreg: HashMap<usize, HashSet<Inst>> = HashMap::new();
-        for &vreg in self.func.reftype_vregs() {
-            safepoints_per_vreg.insert(vreg.vreg(), HashSet::new());
-        }
-
-        let mut workqueue = VecDeque::new();
-        let mut workqueue_set = HashSet::new();
-        let mut visited = HashSet::new();
-
-        // Backward analysis: start at return blocks.
-        for block in 0..self.func.blocks() {
-            let block = Block::new(block);
-            if self.func.is_ret(self.func.block_insns(block).last()) {
-                workqueue.push_back(block);
-                workqueue_set.insert(block);
-            }
-        }
-
-        // While workqueue is not empty, scan a block backward.
-        while !workqueue.is_empty() {
-            let block = workqueue.pop_back().unwrap();
-            workqueue_set.remove(&block);
-            visited.insert(block);
-
-            let live = &mut live_reftypes_block_start[block.index()];
-            live.assign(&live_reftypes_block_end[block.index()]);
-
-            for inst in self.func.block_insns(block).rev().iter() {
-                for pos in &[OperandPos::After, OperandPos::Before] {
-                    for op in self.func.inst_operands(inst) {
-                        if !reftype_vreg_map.get(op.vreg().vreg()) {
-                            continue;
-                        }
-                        if op.pos() != OperandPos::Both && op.pos() != *pos {
-                            continue;
-                        }
-                        match op.kind() {
-                            OperandKind::Def => {
-                                live.set(op.vreg().vreg(), false);
-                            }
-                            OperandKind::Use => {
-                                live.set(op.vreg().vreg(), true);
-                            }
-                        }
-                    }
-                }
-
-                if self.func.is_safepoint(inst) {
-                    for vreg in live.iter() {
-                        let safepoints = safepoints_per_vreg.get_mut(&vreg).unwrap();
-                        safepoints.insert(inst);
-                    }
-                }
-            }
-            for blockparam in self.func.block_params(block) {
-                if !reftype_vreg_map.get(blockparam.vreg()) {
-                    continue;
-                }
-                live.set(blockparam.vreg(), false);
-            }
-
-            for &pred in self.func.block_preds(block) {
-                if live_reftypes_block_end[pred.index()].or(live) || !visited.contains(&pred) {
-                    if !workqueue_set.contains(&pred) {
-                        workqueue.push_back(pred);
-                        workqueue_set.insert(pred);
-                    }
-                }
-            }
-        }
-
-        // Now we have `safepoints_per_vreg`. All we have to do is,
-        // for each vreg in this map, step through the LiveRanges
-        // along with a sorted list of safepoints; and for each
-        // safepoint in the current range, emit the allocation into
-        // the `safepoint_slots` list.
-
-        log::debug!("safepoints_per_vreg = {:?}", safepoints_per_vreg);
+        log::debug!("safepoints_per_vreg = {:?}", self.safepoints_per_vreg);
 
         for vreg in self.func.reftype_vregs() {
             log::debug!("generating safepoint info for vreg {}", vreg);
             let vreg = VRegIndex::new(vreg.vreg());
-            let mut safepoints: Vec<ProgPoint> = safepoints_per_vreg
+            let mut safepoints: Vec<ProgPoint> = self
+                .safepoints_per_vreg
                 .get(&vreg.index())
                 .unwrap()
                 .iter()
