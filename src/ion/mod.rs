@@ -101,7 +101,6 @@ define_index!(LiveBundleIndex);
 define_index!(LiveRangeIndex);
 define_index!(SpillSetIndex);
 define_index!(UseIndex);
-define_index!(DefIndex);
 define_index!(VRegIndex);
 define_index!(PRegIndex);
 define_index!(SpillSlotIndex);
@@ -174,7 +173,6 @@ struct Use {
     pos: ProgPoint,
     next_use: UseIndex,
     slot: u8,
-    is_def: bool,
 }
 
 const SLOT_NONE: u8 = u8::MAX;
@@ -224,8 +222,6 @@ struct SpillSet {
 
 #[derive(Clone, Debug)]
 struct VRegData {
-    reg: VReg,
-    def: DefIndex,
     blockparam: Block,
     first_range: LiveRangeIndex,
     is_ref: bool,
@@ -291,6 +287,7 @@ struct Env<'a, F: Function> {
     spillsets: Vec<SpillSet>,
     uses: Vec<Use>,
     vregs: Vec<VRegData>,
+    vreg_regs: Vec<VReg>,
     pregs: Vec<PRegData>,
     allocation_queue: PrioQueue,
     hot_code: LiveRangeSet,
@@ -454,6 +451,7 @@ impl LiveRangeSet {
     }
 }
 
+#[inline(always)]
 fn spill_weight_from_policy(policy: OperandPolicy) -> u32 {
     match policy {
         OperandPolicy::Any => 1000,
@@ -673,6 +671,7 @@ impl<'a, F: Function> Env<'a, F> {
             spillsets: vec![],
             uses: vec![],
             vregs: vec![],
+            vreg_regs: vec![],
             pregs: vec![],
             allocation_queue: PrioQueue::new(),
             clobbers: vec![],
@@ -716,13 +715,14 @@ impl<'a, F: Function> Env<'a, F> {
         for idx in 0..self.func.num_vregs() {
             // We'll fill in the real details when we see the def.
             let reg = VReg::new(idx, RegClass::Int);
-            self.add_vreg(VRegData {
+            self.add_vreg(
                 reg,
-                def: DefIndex::invalid(),
-                first_range: LiveRangeIndex::invalid(),
-                blockparam: Block::invalid(),
-                is_ref: false,
-            });
+                VRegData {
+                    first_range: LiveRangeIndex::invalid(),
+                    blockparam: Block::invalid(),
+                    is_ref: false,
+                },
+            );
         }
         for v in self.func.reftype_vregs() {
             self.vregs[v.vreg()].is_ref = true;
@@ -737,9 +737,10 @@ impl<'a, F: Function> Env<'a, F> {
         }
     }
 
-    fn add_vreg(&mut self, data: VRegData) -> VRegIndex {
+    fn add_vreg(&mut self, reg: VReg, data: VRegData) -> VRegIndex {
         let idx = self.vregs.len();
         self.vregs.push(data);
+        self.vreg_regs.push(reg);
         VRegIndex::new(idx)
     }
 
@@ -929,7 +930,7 @@ impl<'a, F: Function> Env<'a, F> {
         );
 
         lrdata.uses_spill_weight -= spill_weight_from_policy(usedata.operand.policy());
-        if usedata.is_def {
+        if usedata.operand.kind() == OperandKind::Def {
             lrdata.uses_spill_weight -= 2000;
         }
     }
@@ -981,7 +982,7 @@ impl<'a, F: Function> Env<'a, F> {
             spill_weight_from_policy(policy)
         );
         self.ranges[into.index()].uses_spill_weight += spill_weight_from_policy(policy);
-        if self.uses[u.index()].is_def {
+        if self.uses[u.index()].operand.kind() == OperandKind::Def {
             self.ranges[into.index()].uses_spill_weight += 2000;
         }
         log::debug!("  -> now {}", self.ranges[into.index()].uses_spill_weight);
@@ -1071,7 +1072,7 @@ impl<'a, F: Function> Env<'a, F> {
 
             // Create vreg data for blockparams.
             for param in self.func.block_params(block) {
-                self.vregs[param.vreg()].reg = *param;
+                self.vreg_regs[param.vreg()] = *param;
                 self.vregs[param.vreg()].blockparam = block;
             }
 
@@ -1161,7 +1162,7 @@ impl<'a, F: Function> Env<'a, F> {
                     }
                     live.set(dst.vreg(), false);
                     vreg_ranges[dst.vreg()] = LiveRangeIndex::invalid();
-                    self.vregs[dst.vreg()].reg = dst;
+                    self.vreg_regs[dst.vreg()] = dst;
 
                     // Handle the use w.r.t. liveranges: make it live
                     // and create an initial LR back to the start of
@@ -1213,13 +1214,12 @@ impl<'a, F: Function> Env<'a, F> {
                                 pos,
                                 slot: i as u8,
                                 next_use: UseIndex::invalid(),
-                                is_def: true,
                             });
 
                             log::debug!("Def of {} at {:?}", operand.vreg(), pos);
 
                             // Fill in vreg's actual data.
-                            self.vregs[operand.vreg().vreg()].reg = operand.vreg();
+                            self.vreg_regs[operand.vreg().vreg()] = operand.vreg();
 
                             // Trim the range for this vreg to start
                             // at `pos` if it previously ended at the
@@ -1280,7 +1280,6 @@ impl<'a, F: Function> Env<'a, F> {
                                 pos,
                                 slot: i as u8,
                                 next_use: UseIndex::invalid(),
-                                is_def: false,
                             });
 
                             // Create/extend the LiveRange and add the use to the range.
@@ -1443,7 +1442,7 @@ impl<'a, F: Function> Env<'a, F> {
                     // Create a virtual use.
                     let pos = ProgPoint::before(self.safepoints[safepoint_idx]);
                     let operand = Operand::new(
-                        self.vregs[vreg.index()].reg,
+                        self.vreg_regs[vreg.index()],
                         OperandPolicy::Stack,
                         OperandKind::Use,
                         OperandPos::Before,
@@ -1456,7 +1455,6 @@ impl<'a, F: Function> Env<'a, F> {
                         pos,
                         slot: SLOT_NONE,
                         next_use: UseIndex::invalid(),
-                        is_def: false,
                     });
 
                     // Create/extend the LiveRange and add the use to the range.
@@ -1659,8 +1657,8 @@ impl<'a, F: Function> Env<'a, F> {
         // have to have the same regclass (because bundles start with one vreg
         // and all merging happens here) so we can just sample the first vreg of
         // each bundle.
-        let rc = self.vregs[vreg_from.index()].reg.class();
-        if rc != self.vregs[vreg_to.index()].reg.class() {
+        let rc = self.vreg_regs[vreg_from.index()].class();
+        if rc != self.vreg_regs[vreg_to.index()].class() {
             return false;
         }
 
@@ -1927,7 +1925,7 @@ impl<'a, F: Function> Env<'a, F> {
                     // First time seeing `bundle`: allocate a spillslot for it,
                     // compute its priority, and enqueue it.
                     let ssidx = SpillSetIndex::new(self.spillsets.len());
-                    let reg = self.vregs[vreg.index()].reg;
+                    let reg = self.vreg_regs[vreg.index()];
                     let size = self.func.spillslot_size(reg.class(), reg) as u8;
                     self.spillsets.push(SpillSet {
                         bundles: smallvec![],
@@ -2008,22 +2006,21 @@ impl<'a, F: Function> Env<'a, F> {
         log::debug!("Uses:");
         for (i, u) in self.uses.iter().enumerate() {
             log::debug!(
-                "use{}: op={:?} pos={:?} slot={} next_use={:?} is_def={:?}",
+                "use{}: op={:?} pos={:?} slot={} next_use={:?}",
                 i,
                 u.operand,
                 u.pos,
                 u.slot,
                 u.next_use,
-                u.is_def,
             );
         }
     }
 
     fn compute_requirement(&self, bundle: LiveBundleIndex) -> Option<Requirement> {
-        let init_vreg = self.vregs[self.ranges[self.bundles[bundle.index()].first_range.index()]
-            .vreg
-            .index()]
-        .reg;
+        let init_vreg = self.vreg_regs[self.ranges
+            [self.bundles[bundle.index()].first_range.index()]
+        .vreg
+        .index()];
         let class = init_vreg.class();
         let mut needed = Requirement::Any(class);
 
@@ -2486,7 +2483,7 @@ impl<'a, F: Function> Env<'a, F> {
             while use_idx.is_valid() {
                 let use_data = &self.uses[use_idx.index()];
                 log::debug!("  -> use: {:?}", use_data);
-                let before_use_inst = if use_data.is_def {
+                let before_use_inst = if use_data.operand.kind() == OperandKind::Def {
                     // For a def, split *at* the def -- this may be an
                     // After point, but the value cannot be live into
                     // the def so we don't need to insert a move.
@@ -2986,11 +2983,10 @@ impl<'a, F: Function> Env<'a, F> {
     fn try_allocating_regs_for_spilled_bundles(&mut self) {
         for i in 0..self.spilled_bundles.len() {
             let bundle = self.spilled_bundles[i]; // don't borrow self
-            let any_vreg = self.vregs[self.ranges
+            let any_vreg = self.vreg_regs[self.ranges
                 [self.bundles[bundle.index()].first_range.index()]
             .vreg
-            .index()]
-            .reg;
+            .index()];
             let class = any_vreg.class();
             let mut success = false;
             self.stats.spill_bundle_reg_probes += 1;
@@ -3365,7 +3361,7 @@ impl<'a, F: Function> Env<'a, F> {
                     let prev_range = self.ranges[prev.index()].range;
                     let first_use = self.ranges[iter.index()].first_use;
                     let first_is_def = if first_use.is_valid() {
-                        self.uses[first_use.index()].is_def
+                        self.uses[first_use.index()].operand.kind() == OperandKind::Def
                     } else {
                         false
                     };
@@ -3945,7 +3941,7 @@ impl<'a, F: Function> Env<'a, F> {
             let params = &self.blockparam_allocs[start..i];
             let vregs = params
                 .iter()
-                .map(|(_, _, vreg_idx, _)| self.vregs[vreg_idx.index()].reg)
+                .map(|(_, _, vreg_idx, _)| self.vreg_regs[vreg_idx.index()])
                 .collect::<Vec<_>>();
             let allocs = params
                 .iter()

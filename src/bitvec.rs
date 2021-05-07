@@ -7,10 +7,12 @@
 
 use fxhash::FxHashMap;
 
+const SMALL_ELEMS: usize = 12;
+
 /// A hybrid large/small-mode sparse mapping from integer indices to elements.
 #[derive(Clone, Debug)]
 enum AdaptiveMap {
-    Small(u32, [u32; 4], [u64; 4]),
+    Small(u32, [u32; SMALL_ELEMS], [u64; SMALL_ELEMS]),
     Large(FxHashMap<u32, u64>),
 }
 
@@ -18,7 +20,7 @@ const INVALID: u32 = 0xffff_ffff;
 
 impl AdaptiveMap {
     fn new() -> Self {
-        Self::Small(0, [INVALID, INVALID, INVALID, INVALID], [0, 0, 0, 0])
+        Self::Small(0, [INVALID; SMALL_ELEMS], [0; SMALL_ELEMS])
     }
     #[inline(never)]
     fn expand(&mut self) {
@@ -36,7 +38,9 @@ impl AdaptiveMap {
     #[inline(always)]
     fn get_or_insert<'a>(&'a mut self, key: u32) -> &'a mut u64 {
         let needs_expand = match self {
-            &mut Self::Small(len, ref keys, ..) => len == 4 && !keys.iter().any(|k| *k == key),
+            &mut Self::Small(len, ref keys, ..) => {
+                len == SMALL_ELEMS as u32 && !keys.iter().any(|k| *k == key)
+            }
             _ => false,
         };
         if needs_expand {
@@ -50,7 +54,7 @@ impl AdaptiveMap {
                         return &mut values[i as usize];
                     }
                 }
-                assert!(*len < 4);
+                assert!(*len < SMALL_ELEMS as u32);
                 let idx = *len;
                 *len += 1;
                 keys[idx as usize] = key;
