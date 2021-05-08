@@ -36,6 +36,10 @@
 
    - partial allocation -- place one LR, split rest off into separate
      bundle, in one pass?
+
+   - coarse-grained "register contention" counters per fixed region;
+     randomly sample these, adding up a vector of them, to choose
+     register probe order?
  */
 
 #![allow(dead_code, unused_imports)]
@@ -122,8 +126,6 @@ struct LiveRange {
     next_in_bundle: LiveRangeIndex,
     next_in_reg: LiveRangeIndex,
 
-    // if a bundle partly fits, this is used to record LRs that do fit
-    reg_hint: PReg,
     merged_into: LiveRangeIndex,
 }
 
@@ -186,6 +188,7 @@ struct LiveBundle {
     allocation: Allocation,
     prio: u32, // recomputed after every bulk update
     spill_weight_and_props: u32,
+    range_summary: RangeSummary,
 }
 
 impl LiveBundle {
@@ -209,6 +212,73 @@ impl LiveBundle {
     #[inline(always)]
     fn cached_spill_weight(&self) -> u32 {
         self.spill_weight_and_props & ((1 << 30) - 1)
+    }
+}
+
+#[derive(Clone, Debug)]
+struct RangeSummary {
+    /// Indices in `range_ranges` dense array of packed CodeRange structs.
+    from: u32,
+    to: u32,
+    bound: CodeRange,
+}
+
+impl RangeSummary {
+    fn new() -> Self {
+        Self {
+            from: 0,
+            to: 0,
+            bound: CodeRange {
+                from: ProgPoint::from_index(0),
+                to: ProgPoint::from_index(0),
+            },
+        }
+    }
+
+    fn iter<'a>(&'a self, range_array: &'a [CodeRange]) -> RangeSummaryIter<'a> {
+        RangeSummaryIter {
+            idx: self.from as usize,
+            start: self.from as usize,
+            limit: self.to as usize,
+            bound: self.bound,
+            arr: range_array,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct RangeSummaryIter<'a> {
+    idx: usize,
+    start: usize,
+    limit: usize,
+    bound: CodeRange,
+    arr: &'a [CodeRange],
+}
+
+impl<'a> std::iter::Iterator for RangeSummaryIter<'a> {
+    type Item = CodeRange;
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.idx == self.limit {
+            return None;
+        }
+        while self.idx < self.limit && self.arr[self.idx].to <= self.bound.from {
+            self.idx += 1;
+        }
+        let mut cur = self.arr[self.idx];
+        if cur.from >= self.bound.to {
+            self.idx = self.limit;
+            return None;
+        }
+
+        if cur.from < self.bound.from {
+            cur.from = self.bound.from;
+        }
+        if cur.to > self.bound.to {
+            cur.to = self.bound.to;
+        }
+
+        self.idx += 1;
+        Some(cur)
     }
 }
 
@@ -285,6 +355,7 @@ struct Env<'a, F: Function> {
     blockparam_allocs: Vec<(Block, u32, VRegIndex, Allocation)>,
 
     ranges: Vec<LiveRange>,
+    range_ranges: Vec<CodeRange>,
     bundles: Vec<LiveBundle>,
     spillsets: Vec<SpillSet>,
     uses: Vec<Use>,
@@ -382,6 +453,7 @@ struct LiveRangeKey {
 }
 
 impl LiveRangeKey {
+    #[inline(always)]
     fn from_range(range: &CodeRange) -> Self {
         Self {
             from: range.from.to_index(),
@@ -550,8 +622,10 @@ pub struct Stats {
     process_bundle_count: usize,
     process_bundle_reg_probes_fixed: usize,
     process_bundle_reg_success_fixed: usize,
+    process_bundle_bounding_range_probe_start_any: usize,
     process_bundle_bounding_range_probes_any: usize,
     process_bundle_bounding_range_success_any: usize,
+    process_bundle_reg_probe_start_any: usize,
     process_bundle_reg_probes_any: usize,
     process_bundle_reg_success_any: usize,
     evict_bundle_event: usize,
@@ -677,6 +751,7 @@ impl<'a, F: Function> Env<'a, F> {
             blockparam_allocs: vec![],
             bundles: vec![],
             ranges: vec![],
+            range_ranges: vec![],
             spillsets: vec![],
             uses: vec![],
             vregs: vec![],
@@ -766,7 +841,6 @@ impl<'a, F: Function> Env<'a, F> {
             last_use: UseIndex::invalid(),
             next_in_bundle: LiveRangeIndex::invalid(),
             next_in_reg: LiveRangeIndex::invalid(),
-            reg_hint: PReg::invalid(),
             merged_into: LiveRangeIndex::invalid(),
         });
         LiveRangeIndex::new(idx)
@@ -1617,6 +1691,7 @@ impl<'a, F: Function> Env<'a, F> {
             spillset: SpillSetIndex::invalid(),
             prio: 0,
             spill_weight_and_props: 0,
+            range_summary: RangeSummary::new(),
         });
         LiveBundleIndex::new(bundle)
     }
@@ -1872,6 +1947,35 @@ impl<'a, F: Function> Env<'a, F> {
             self.merge_bundles(/* from */ dest_bundle, /* to */ src_bundle);
         }
 
+        // Now create range summaries for all bundles.
+        for bundle in 0..self.bundles.len() {
+            let bundle = LiveBundleIndex::new(bundle);
+            let mut iter = self.bundles[bundle.index()].first_range;
+            let start_idx = self.range_ranges.len();
+            let start_pos = if iter.is_valid() {
+                self.ranges[iter.index()].range.from
+            } else {
+                ProgPoint::from_index(0)
+            };
+            let mut end_pos = start_pos;
+            while iter.is_valid() {
+                let range = self.ranges[iter.index()].range;
+                end_pos = range.to;
+                self.range_ranges.push(range);
+                iter = self.ranges[iter.index()].next_in_bundle;
+            }
+            let end_idx = self.range_ranges.len();
+            let bound = CodeRange {
+                from: start_pos,
+                to: end_pos,
+            };
+            self.bundles[bundle.index()].range_summary = RangeSummary {
+                from: start_idx as u32,
+                to: end_idx as u32,
+                bound,
+            };
+        }
+
         log::debug!("done merging bundles");
     }
 
@@ -2060,18 +2164,21 @@ impl<'a, F: Function> Env<'a, F> {
     ) -> AllocRegResult {
         log::debug!("try_to_allocate_bundle_to_reg: {:?} -> {:?}", bundle, reg);
         let mut conflicts = smallvec![];
-        let mut iter = self.bundles[bundle.index()].first_range;
-        while iter.is_valid() {
-            let range = &self.ranges[iter.index()];
-            let next = range.next_in_bundle;
+        // Use the range-summary array; this allows fast streaming
+        // access to CodeRanges (which are just two u32s packed
+        // together) which is important for this hot loop.
+        let iter = self.bundles[bundle.index()]
+            .range_summary
+            .iter(&self.range_ranges[..]);
+        for range in iter {
             log::debug!(" -> range {:?}", range);
             // Note that the comparator function here tests for *overlap*, so we
             // are checking whether the BTree contains any preg range that
-            // *overlaps* with range `iter`, not literally the range `iter`.
+            // *overlaps* with range `range`, not literally the range `range`.
             if let Some(preg_range) = self.pregs[reg.index()]
                 .allocations
                 .btree
-                .get(&LiveRangeKey::from_range(&range.range))
+                .get(&LiveRangeKey::from_range(&range))
             {
                 log::debug!(" -> btree contains range {:?} that overlaps", preg_range);
                 if self.ranges[preg_range.index()].vreg.is_valid() {
@@ -2083,15 +2190,25 @@ impl<'a, F: Function> Env<'a, F> {
                     if !conflicts.iter().any(|b| *b == conflict_bundle) {
                         conflicts.push(conflict_bundle);
                     }
+
+                    // Empirically, it seems to be essentially as good
+                    // to return only one conflicting bundle as all of
+                    // them; it is very rare that the combination of
+                    // all conflicting bundles yields a maximum spill
+                    // weight that is enough to keep them in place
+                    // when a single conflict does not. It is also a
+                    // quite significant compile-time win to *stop
+                    // scanning* as soon as we have a conflict. To
+                    // experiment with this, however, just remove this
+                    // `break`; the rest of the code will do the right
+                    // thing.
+                    break;
                 } else {
                     log::debug!("   -> conflict with fixed reservation");
                     // range from a direct use of the PReg (due to clobber).
                     return AllocRegResult::ConflictWithFixed;
                 }
-            } else {
-                self.ranges[iter.index()].reg_hint = self.pregs[reg.index()].reg;
             }
-            iter = next;
         }
 
         if conflicts.len() > 0 {
@@ -2567,6 +2684,7 @@ impl<'a, F: Function> Env<'a, F> {
         let mut iter = self.bundles[bundle.index()].first_range;
         self.bundles[bundle.index()].first_range = LiveRangeIndex::invalid();
         self.bundles[bundle.index()].last_range = LiveRangeIndex::invalid();
+        let mut range_summary_idx = self.bundles[bundle.index()].range_summary.from;
         while iter.is_valid() {
             // Read `next` link now and then clear it -- we rebuild the list below.
             let next = self.ranges[iter.index()].next_in_bundle;
@@ -2587,6 +2705,7 @@ impl<'a, F: Function> Env<'a, F> {
                 self.bundles[cur_bundle.index()].spillset = self.bundles[bundle.index()].spillset;
                 new_bundles.push(cur_bundle);
                 split_idx += 1;
+                self.bundles[cur_bundle.index()].range_summary.from = range_summary_idx;
             }
             while split_idx < split_points.len() && split_points[split_idx] <= range.from {
                 split_idx += 1;
@@ -2720,7 +2839,10 @@ impl<'a, F: Function> Env<'a, F> {
 
                 // Create a new bundle to hold the rest-range.
                 let rest_bundle = self.create_bundle();
+                self.bundles[cur_bundle.index()].range_summary.to = range_summary_idx + 1;
                 cur_bundle = rest_bundle;
+                self.bundles[cur_bundle.index()].range_summary.from = range_summary_idx;
+                self.bundles[cur_bundle.index()].range_summary.to = range_summary_idx + 1;
                 new_bundles.push(rest_bundle);
                 self.bundles[rest_bundle.index()].first_range = rest_lr;
                 self.bundles[rest_bundle.index()].last_range = rest_lr;
@@ -2732,6 +2854,13 @@ impl<'a, F: Function> Env<'a, F> {
             }
 
             iter = next;
+            range_summary_idx += 1;
+            self.bundles[cur_bundle.index()].range_summary.to = range_summary_idx;
+        }
+
+        self.fixup_range_summary_bound(bundle);
+        for &b in &new_bundles {
+            self.fixup_range_summary_bound(b);
         }
 
         // Enqueue all split-bundles on the allocation queue.
@@ -2739,7 +2868,7 @@ impl<'a, F: Function> Env<'a, F> {
         self.bundles[bundle.index()].prio = prio;
         self.recompute_bundle_properties(bundle);
         self.allocation_queue.insert(bundle, prio as usize);
-        for b in new_bundles {
+        for &b in &new_bundles {
             let prio = self.compute_bundle_prio(b);
             self.bundles[b.index()].prio = prio;
             self.recompute_bundle_properties(b);
@@ -2747,23 +2876,47 @@ impl<'a, F: Function> Env<'a, F> {
         }
     }
 
+    fn fixup_range_summary_bound(&mut self, bundle: LiveBundleIndex) {
+        let bundledata = &mut self.bundles[bundle.index()];
+        let from = if bundledata.first_range.is_valid() {
+            self.ranges[bundledata.first_range.index()].range.from
+        } else {
+            ProgPoint::from_index(0)
+        };
+        let to = if bundledata.last_range.is_valid() {
+            self.ranges[bundledata.last_range.index()].range.to
+        } else {
+            ProgPoint::from_index(0)
+        };
+        bundledata.range_summary.bound = CodeRange { from, to };
+
+        #[cfg(debug_assertions)]
+        {
+            // Sanity check: ensure that ranges returned by the range
+            // summary correspond to actual ranges.
+            let mut iter = self.bundles[bundle.index()].first_range;
+            let mut summary_iter = self.bundles[bundle.index()]
+                .range_summary
+                .iter(&self.range_ranges[..]);
+            while iter.is_valid() {
+                assert_eq!(summary_iter.next(), Some(self.ranges[iter.index()].range));
+                iter = self.ranges[iter.index()].next_in_bundle;
+            }
+            assert_eq!(summary_iter.next(), None);
+        }
+    }
+
     fn process_bundle(&mut self, bundle: LiveBundleIndex) {
         // Find any requirements: for every LR, for every def/use, gather
         // requirements (fixed-reg, any-reg, any) and merge them.
         let req = self.compute_requirement(bundle);
-        // Grab a hint from our spillset, if any, and from the first LR, if any.
+        // Grab a hint from our spillset, if any.
         let hint_reg = self.spillsets[self.bundles[bundle.index()].spillset.index()].reg_hint;
-        let hint2_reg = if self.bundles[bundle.index()].first_range.is_valid() {
-            self.ranges[self.bundles[bundle.index()].first_range.index()].reg_hint
-        } else {
-            PReg::invalid()
-        };
         log::debug!(
-            "process_bundle: bundle {:?} requirement {:?} hint {:?} hint2 {:?}",
+            "process_bundle: bundle {:?} requirement {:?} hint {:?}",
             bundle,
             req,
             hint_reg,
-            hint2_reg
         );
 
         // Try to allocate!
@@ -2830,9 +2983,14 @@ impl<'a, F: Function> Env<'a, F> {
                     let bounding_range = self.bundle_bounding_range_if_multiple(bundle);
                     if let Some(bounding_range) = bounding_range {
                         log::debug!("initial scan with bounding range {:?}", bounding_range);
-                        for preg in
-                            RegTraversalIter::new(self.env, class, hint_reg, hint2_reg, scan_offset)
-                        {
+                        self.stats.process_bundle_bounding_range_probe_start_any += 1;
+                        for preg in RegTraversalIter::new(
+                            self.env,
+                            class,
+                            hint_reg,
+                            PReg::invalid(),
+                            scan_offset,
+                        ) {
                             let preg_idx = PRegIndex::new(preg.index());
                             log::debug!("trying preg {:?}", preg_idx);
                             self.stats.process_bundle_bounding_range_probes_any += 1;
@@ -2851,9 +3009,14 @@ impl<'a, F: Function> Env<'a, F> {
                         }
                     }
 
-                    for preg in
-                        RegTraversalIter::new(self.env, class, hint_reg, hint2_reg, scan_offset)
-                    {
+                    self.stats.process_bundle_reg_probe_start_any += 1;
+                    for preg in RegTraversalIter::new(
+                        self.env,
+                        class,
+                        hint_reg,
+                        PReg::invalid(),
+                        scan_offset,
+                    ) {
                         self.stats.process_bundle_reg_probes_any += 1;
                         let preg_idx = PRegIndex::new(preg.index());
                         log::debug!("trying preg {:?}", preg_idx);
