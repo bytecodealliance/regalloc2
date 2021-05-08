@@ -808,21 +808,26 @@ impl std::fmt::Debug for ProgPoint {
 }
 
 impl ProgPoint {
+    #[inline(always)]
     pub fn new(inst: Inst, pos: InstPosition) -> Self {
         let bits = ((inst.0 as u32) << 1) | (pos as u8 as u32);
         Self { bits }
     }
+    #[inline(always)]
     pub fn before(inst: Inst) -> Self {
         Self::new(inst, InstPosition::Before)
     }
+    #[inline(always)]
     pub fn after(inst: Inst) -> Self {
         Self::new(inst, InstPosition::After)
     }
+    #[inline(always)]
     pub fn inst(self) -> Inst {
         // Cast to i32 to do an arithmetic right-shift, which will
         // preserve an `Inst::invalid()` (which is -1, or all-ones).
         Inst::new(((self.bits as i32) >> 1) as usize)
     }
+    #[inline(always)]
     pub fn pos(self) -> InstPosition {
         match self.bits & 1 {
             0 => InstPosition::Before,
@@ -830,23 +835,23 @@ impl ProgPoint {
             _ => unreachable!(),
         }
     }
-
+    #[inline(always)]
     pub fn next(self) -> ProgPoint {
         Self {
             bits: self.bits + 1,
         }
     }
-
+    #[inline(always)]
     pub fn prev(self) -> ProgPoint {
         Self {
             bits: self.bits - 1,
         }
     }
-
+    #[inline(always)]
     pub fn to_index(self) -> u32 {
         self.bits
     }
-
+    #[inline(always)]
     pub fn from_index(index: u32) -> Self {
         Self { bits: index }
     }
