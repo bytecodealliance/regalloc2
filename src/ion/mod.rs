@@ -1350,108 +1350,145 @@ impl<'a, F: Function> Env<'a, F> {
                 }
 
                 // Process defs and uses.
-                for i in 0..self.func.inst_operands(inst).len() {
-                    // don't borrow `self`
-                    let operand = self.func.inst_operands(inst)[i];
-                    match operand.kind() {
-                        OperandKind::Def | OperandKind::Mod => {
-                            // Create the Def object.
-                            let pos = match (operand.kind(), operand.pos()) {
-                                (OperandKind::Mod, _) => ProgPoint::before(inst),
-                                (_, OperandPos::Before) => ProgPoint::before(inst),
-                                (_, OperandPos::After) => ProgPoint::after(inst),
-                            };
-                            let u = UseIndex(self.uses.len() as u32);
-                            self.uses
-                                .push(Use::new(operand, pos, UseIndex::invalid(), i as u8));
-
-                            log::debug!("Def of {} at {:?}", operand.vreg(), pos);
-
-                            // Fill in vreg's actual data.
-                            self.vreg_regs[operand.vreg().vreg()] = operand.vreg();
-
-                            let mut lr = vreg_ranges[operand.vreg().vreg()];
-                            log::debug!(" -> has existing LR {:?}", lr);
-                            // If there was no liverange (dead def), create a trivial one.
-                            if !live.get(operand.vreg().vreg()) {
-                                lr = self.add_liverange_to_vreg(
-                                    VRegIndex::new(operand.vreg().vreg()),
-                                    CodeRange {
-                                        from: pos,
-                                        to: pos.next(),
-                                    },
-                                    &mut num_ranges,
-                                );
-                                log::debug!(" -> invalid; created {:?}", lr);
+                for &cur_pos in &[InstPosition::After, InstPosition::Before] {
+                    for i in 0..self.func.inst_operands(inst).len() {
+                        // don't borrow `self`
+                        let operand = self.func.inst_operands(inst)[i];
+                        let pos = match (operand.kind(), operand.pos()) {
+                            (OperandKind::Mod, _) => ProgPoint::before(inst),
+                            (OperandKind::Def, OperandPos::Before) => ProgPoint::before(inst),
+                            (OperandKind::Def, OperandPos::After) => ProgPoint::after(inst),
+                            (OperandKind::Use, OperandPos::After) => ProgPoint::after(inst),
+                            // If this is a branch, extend `pos` to
+                            // the end of the block. (Branch uses are
+                            // blockparams and need to be live at the
+                            // end of the block.)
+                            (OperandKind::Use, _) if self.func.is_branch(inst) => {
+                                self.cfginfo.block_exit[block.index()]
                             }
-                            self.insert_use_into_liverange_and_update_stats(lr, u);
-
-                            if operand.kind() == OperandKind::Def {
-                                // Trim the range for this vreg to start
-                                // at `pos` if it previously ended at the
-                                // start of this block (i.e. was not
-                                // merged into some larger LiveRange due
-                                // to out-of-order blocks).
-                                if self.ranges[lr.index()].range.from
-                                    == self.cfginfo.block_entry[block.index()]
-                                {
-                                    log::debug!(
-                                        " -> started at block start; trimming to {:?}",
-                                        pos
-                                    );
-                                    self.ranges[lr.index()].range.from = pos;
-                                }
-
-                                // Remove from live-set.
-                                live.set(operand.vreg().vreg(), false);
-                                vreg_ranges[operand.vreg().vreg()] = LiveRangeIndex::invalid();
-                            }
-                        }
-                        OperandKind::Use => {
-                            // Establish where the use occurs.
-                            let mut pos = match operand.pos() {
-                                OperandPos::Before => ProgPoint::before(inst),
-                                OperandPos::After => ProgPoint::after(inst),
-                            };
                             // If there are any reused inputs in this
                             // instruction, and this is *not* the
                             // reused input, force `pos` to
                             // `After`. (See note below for why; it's
                             // very subtle!)
-                            if reused_input.is_some() && reused_input.unwrap() != i {
-                                pos = ProgPoint::after(inst);
+                            (OperandKind::Use, OperandPos::Before)
+                                if reused_input.is_some() && reused_input.unwrap() != i =>
+                            {
+                                ProgPoint::after(inst)
                             }
-                            // If this is a branch, extend `pos` to
-                            // the end of the block. (Branch uses are
-                            // blockparams and need to be live at the
-                            // end of the block.)
-                            if self.func.is_branch(inst) {
-                                pos = self.cfginfo.block_exit[block.index()];
+                            (OperandKind::Use, OperandPos::Before) => ProgPoint::before(inst),
+                        };
+
+                        if pos.pos() != cur_pos {
+                            continue;
+                        }
+
+                        log::debug!(
+                            "processing inst{} operand at {:?}: {:?}",
+                            inst.index(),
+                            pos,
+                            operand
+                        );
+
+                        match operand.kind() {
+                            OperandKind::Def | OperandKind::Mod => {
+                                // Create the use object.
+                                let u = UseIndex(self.uses.len() as u32);
+                                self.uses.push(Use::new(
+                                    operand,
+                                    pos,
+                                    UseIndex::invalid(),
+                                    i as u8,
+                                ));
+
+                                log::debug!("Def of {} at {:?}", operand.vreg(), pos);
+
+                                // Fill in vreg's actual data.
+                                self.vreg_regs[operand.vreg().vreg()] = operand.vreg();
+
+                                let mut lr = vreg_ranges[operand.vreg().vreg()];
+                                log::debug!(" -> has existing LR {:?}", lr);
+                                // If there was no liverange (dead def), create a trivial one.
+                                if !live.get(operand.vreg().vreg()) {
+                                    let from = match operand.kind() {
+                                        OperandKind::Def => pos,
+                                        OperandKind::Mod => self.cfginfo.block_entry[block.index()],
+                                        _ => unreachable!(),
+                                    };
+                                    lr = self.add_liverange_to_vreg(
+                                        VRegIndex::new(operand.vreg().vreg()),
+                                        CodeRange {
+                                            from,
+                                            to: pos.next(),
+                                        },
+                                        &mut num_ranges,
+                                    );
+                                    log::debug!(" -> invalid; created {:?}", lr);
+                                }
+                                self.insert_use_into_liverange_and_update_stats(lr, u);
+
+                                if operand.kind() == OperandKind::Def {
+                                    // Trim the range for this vreg to start
+                                    // at `pos` if it previously ended at the
+                                    // start of this block (i.e. was not
+                                    // merged into some larger LiveRange due
+                                    // to out-of-order blocks).
+                                    if self.ranges[lr.index()].range.from
+                                        == self.cfginfo.block_entry[block.index()]
+                                    {
+                                        log::debug!(
+                                            " -> started at block start; trimming to {:?}",
+                                            pos
+                                        );
+                                        self.ranges[lr.index()].range.from = pos;
+                                    }
+
+                                    // Remove from live-set.
+                                    live.set(operand.vreg().vreg(), false);
+                                    vreg_ranges[operand.vreg().vreg()] = LiveRangeIndex::invalid();
+                                }
                             }
+                            OperandKind::Use => {
+                                // Create the use object.
+                                let u = UseIndex(self.uses.len() as u32);
+                                self.uses.push(Use::new(
+                                    operand,
+                                    pos,
+                                    UseIndex::invalid(),
+                                    i as u8,
+                                ));
 
-                            // Create the actual use object.
-                            let u = UseIndex(self.uses.len() as u32);
-                            self.uses
-                                .push(Use::new(operand, pos, UseIndex::invalid(), i as u8));
+                                // Create/extend the LiveRange if it
+                                // doesn't already exist, and add the use
+                                // to the range.
+                                let mut lr = vreg_ranges[operand.vreg().vreg()];
+                                if !live.get(operand.vreg().vreg()) {
+                                    let range = CodeRange {
+                                        from: self.cfginfo.block_entry[block.index()],
+                                        to: pos.next(),
+                                    };
+                                    lr = self.add_liverange_to_vreg(
+                                        VRegIndex::new(operand.vreg().vreg()),
+                                        range,
+                                        &mut num_ranges,
+                                    );
+                                    vreg_ranges[operand.vreg().vreg()] = lr;
+                                }
+                                assert!(lr.is_valid());
 
-                            // Create/extend the LiveRange and add the use to the range.
-                            let range = CodeRange {
-                                from: self.cfginfo.block_entry[block.index()],
-                                to: pos.next(),
-                            };
-                            let lr = self.add_liverange_to_vreg(
-                                VRegIndex::new(operand.vreg().vreg()),
-                                range,
-                                &mut num_ranges,
-                            );
-                            vreg_ranges[operand.vreg().vreg()] = lr;
+                                log::debug!(
+                                    "Use of {:?} at {:?} -> {:?} -> {:?}",
+                                    operand,
+                                    pos,
+                                    u,
+                                    lr
+                                );
 
-                            log::debug!("Use of {:?} at {:?} -> {:?} -> {:?}", operand, pos, u, lr);
+                                self.insert_use_into_liverange_and_update_stats(lr, u);
 
-                            self.insert_use_into_liverange_and_update_stats(lr, u);
-
-                            // Add to live-set.
-                            live.set(operand.vreg().vreg(), true);
+                                // Add to live-set.
+                                live.set(operand.vreg().vreg(), true);
+                            }
                         }
                     }
                 }
@@ -3741,6 +3778,7 @@ impl<'a, F: Function> Env<'a, F> {
                 let mut use_iter = self.ranges[iter.index()].first_use;
                 while use_iter.is_valid() {
                     let usedata = &self.uses[use_iter.index()];
+                    log::debug!("applying to use: {:?}", usedata);
                     debug_assert!(range.contains_point(usedata.pos));
                     let inst = usedata.pos.inst();
                     let slot = usedata.slot();
