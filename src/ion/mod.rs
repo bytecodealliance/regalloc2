@@ -1432,12 +1432,14 @@ impl<'a, F: Function> Env<'a, F> {
                                         OperandKind::Mod => self.cfginfo.block_entry[block.index()],
                                         _ => unreachable!(),
                                     };
+                                    let to = match operand.kind() {
+                                        OperandKind::Def => pos.next(),
+                                        OperandKind::Mod => pos.next().next(), // both Before and After positions
+                                        _ => unreachable!(),
+                                    };
                                     lr = self.add_liverange_to_vreg(
                                         VRegIndex::new(operand.vreg().vreg()),
-                                        CodeRange {
-                                            from,
-                                            to: pos.next(),
-                                        },
+                                        CodeRange { from, to },
                                         &mut num_ranges,
                                     );
                                     log::debug!(" -> invalid; created {:?}", lr);
