@@ -303,7 +303,7 @@ impl<'a> std::iter::Iterator for RangeSummaryIter<'a> {
 
 #[derive(Clone, Debug)]
 struct SpillSet {
-    bundles: LiveBundleVec,
+    bundles: SmallVec<[LiveBundleIndex; 2]>,
     slot: SpillSlotIndex,
     reg_hint: PReg,
     class: RegClass,
@@ -1909,7 +1909,21 @@ impl<'a, F: Function> Env<'a, F> {
                     self.add_liverange_to_preg(range, preg);
                     iter = self.ranges[iter.index()].next_in_bundle;
                 }
+                continue;
             }
+
+            // Otherwise, create a spillslot for it.
+            let ssidx = SpillSetIndex::new(self.spillsets.len());
+            let reg = self.vreg_regs[vreg.index()];
+            let size = self.func.spillslot_size(reg.class(), reg) as u8;
+            self.spillsets.push(SpillSet {
+                bundles: smallvec![],
+                slot: SpillSlotIndex::invalid(),
+                size,
+                class: reg.class(),
+                reg_hint: PReg::invalid(),
+            });
+            self.bundles[bundle.index()].spillset = ssidx;
         }
 
         for inst in 0..self.func.insts() {
@@ -2029,43 +2043,19 @@ impl<'a, F: Function> Env<'a, F> {
     }
 
     fn queue_bundles(&mut self) {
-        for vreg in 0..self.vregs.len() {
-            let vreg = VRegIndex::new(vreg);
-            let mut lr = self.vregs[vreg.index()].first_range;
-            while lr.is_valid() {
-                let bundle = self.ranges[lr.index()].bundle;
-                if !self.bundles[bundle.index()].allocation.is_none() {
-                    // Pinned VReg -- already allocated, so skip.
-                    lr = self.ranges[lr.index()].next_in_bundle;
-                    continue;
-                }
-                if self.bundles[bundle.index()].first_range == lr {
-                    // First time seeing `bundle`: allocate a spillslot for it,
-                    // compute its priority, and enqueue it.
-                    let ssidx = SpillSetIndex::new(self.spillsets.len());
-                    let reg = self.vreg_regs[vreg.index()];
-                    let size = self.func.spillslot_size(reg.class(), reg) as u8;
-                    self.spillsets.push(SpillSet {
-                        bundles: smallvec![],
-                        slot: SpillSlotIndex::invalid(),
-                        size,
-                        class: reg.class(),
-                        reg_hint: PReg::invalid(),
-                    });
-                    self.bundles[bundle.index()].spillset = ssidx;
-                    let prio = self.compute_bundle_prio(bundle);
-                    self.bundles[bundle.index()].prio = prio;
-                    self.recompute_bundle_properties(bundle);
-                    self.allocation_queue.insert(bundle, prio as usize);
-                }
-
-                // Keep going even if we handled one bundle for this vreg above:
-                // if we split a vreg's liveranges into multiple bundles, we
-                // need to hit all the bundles.
-                lr = self.ranges[lr.index()].next_in_bundle;
+        for bundle in 0..self.bundles.len() {
+            if self.bundles[bundle].first_range.is_invalid() {
+                continue;
             }
+            if !self.bundles[bundle].allocation.is_none() {
+                continue;
+            }
+            let bundle = LiveBundleIndex::new(bundle);
+            let prio = self.compute_bundle_prio(bundle);
+            self.bundles[bundle.index()].prio = prio;
+            self.recompute_bundle_properties(bundle);
+            self.allocation_queue.insert(bundle, prio as usize);
         }
-
         self.stats.merged_bundle_count = self.allocation_queue.heap.len();
     }
 
