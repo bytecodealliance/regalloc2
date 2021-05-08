@@ -117,8 +117,7 @@ struct LiveRange {
     range: CodeRange,
     vreg: VRegIndex,
     bundle: LiveBundleIndex,
-    uses_spill_weight: u32,
-    num_fixed_uses_and_flags: u32,
+    uses_spill_weight_and_flags: u32,
 
     first_use: UseIndex,
     last_use: UseIndex,
@@ -138,35 +137,26 @@ enum LiveRangeFlag {
 
 impl LiveRange {
     #[inline(always)]
-    pub fn num_fixed_uses(&self) -> u32 {
-        self.num_fixed_uses_and_flags & ((1 << 24) - 1)
-    }
-    #[inline(always)]
-    pub fn set_num_fixed_uses(&mut self, count: u32) {
-        debug_assert!(count < (1 << 24));
-        self.num_fixed_uses_and_flags = (self.num_fixed_uses_and_flags & !((1 << 24) - 1)) | count;
-    }
-    #[inline(always)]
-    pub fn inc_num_fixed_uses(&mut self) {
-        debug_assert!(self.num_fixed_uses_and_flags & ((1 << 24) - 1) < ((1 << 24) - 1));
-        self.num_fixed_uses_and_flags += 1;
-    }
-    #[inline(always)]
-    pub fn dec_num_fixed_uses(&mut self) {
-        debug_assert!(self.num_fixed_uses_and_flags & ((1 << 24) - 1) > 0);
-        self.num_fixed_uses_and_flags -= 1;
-    }
-    #[inline(always)]
     pub fn set_flag(&mut self, flag: LiveRangeFlag) {
-        self.num_fixed_uses_and_flags |= (flag as u32) << 24;
+        self.uses_spill_weight_and_flags |= (flag as u32) << 30;
     }
     #[inline(always)]
     pub fn clear_flag(&mut self, flag: LiveRangeFlag) {
-        self.num_fixed_uses_and_flags &= !((flag as u32) << 24);
+        self.uses_spill_weight_and_flags &= !((flag as u32) << 30);
     }
     #[inline(always)]
     pub fn has_flag(&self, flag: LiveRangeFlag) -> bool {
-        self.num_fixed_uses_and_flags & ((flag as u32) << 24) != 0
+        self.uses_spill_weight_and_flags & ((flag as u32) << 30) != 0
+    }
+    #[inline(always)]
+    pub fn uses_spill_weight(&self) -> u32 {
+        self.uses_spill_weight_and_flags & 0x3fff_ffff
+    }
+    #[inline(always)]
+    pub fn set_uses_spill_weight(&mut self, weight: u32) {
+        assert!(weight < (1 << 30));
+        self.uses_spill_weight_and_flags =
+            (self.uses_spill_weight_and_flags & 0xc000_0000) | weight;
     }
 }
 
@@ -739,23 +729,24 @@ impl<'a> std::iter::Iterator for RegTraversalIter<'a> {
 
 impl<'a, F: Function> Env<'a, F> {
     pub(crate) fn new(func: &'a F, env: &'a MachineEnv, cfginfo: CFGInfo) -> Self {
+        let n = func.insts();
         Self {
             func,
             env,
             cfginfo,
 
-            liveins: vec![],
-            liveouts: vec![],
+            liveins: Vec::with_capacity(func.blocks()),
+            liveouts: Vec::with_capacity(func.blocks()),
             blockparam_outs: vec![],
             blockparam_ins: vec![],
             blockparam_allocs: vec![],
-            bundles: vec![],
-            ranges: vec![],
-            range_ranges: vec![],
-            spillsets: vec![],
-            uses: vec![],
-            vregs: vec![],
-            vreg_regs: vec![],
+            bundles: Vec::with_capacity(n),
+            ranges: Vec::with_capacity(4 * n),
+            range_ranges: Vec::with_capacity(4 * n),
+            spillsets: Vec::with_capacity(n),
+            uses: Vec::with_capacity(4 * n),
+            vregs: Vec::with_capacity(n),
+            vreg_regs: Vec::with_capacity(n),
             pregs: vec![],
             allocation_queue: PrioQueue::new(),
             clobbers: vec![],
@@ -766,14 +757,14 @@ impl<'a, F: Function> Env<'a, F> {
             spillslots: vec![],
             slots_by_size: vec![],
 
-            prog_move_srcs: vec![],
-            prog_move_dsts: vec![],
-            prog_move_merges: vec![],
+            prog_move_srcs: Vec::with_capacity(n / 2),
+            prog_move_dsts: Vec::with_capacity(n / 2),
+            prog_move_merges: Vec::with_capacity(n / 2),
 
             multi_fixed_reg_fixups: vec![],
             inserted_moves: vec![],
-            edits: vec![],
-            allocs: vec![],
+            edits: Vec::with_capacity(n),
+            allocs: Vec::with_capacity(4 * n),
             inst_alloc_offsets: vec![],
             num_spillslots: 0,
             safepoint_slots: vec![],
@@ -835,14 +826,17 @@ impl<'a, F: Function> Env<'a, F> {
             range,
             vreg: VRegIndex::invalid(),
             bundle: LiveBundleIndex::invalid(),
-            uses_spill_weight: 0,
-            num_fixed_uses_and_flags: 0,
+            uses_spill_weight_and_flags: 0,
+
             first_use: UseIndex::invalid(),
             last_use: UseIndex::invalid(),
+
             next_in_bundle: LiveRangeIndex::invalid(),
             next_in_reg: LiveRangeIndex::invalid(),
+
             merged_into: LiveRangeIndex::invalid(),
         });
+
         LiveRangeIndex::new(idx)
     }
 
@@ -1003,19 +997,16 @@ impl<'a, F: Function> Env<'a, F> {
         debug_assert!(u.is_valid());
         let usedata = &self.uses[u.index()];
         let lrdata = &mut self.ranges[from.index()];
-        if let OperandPolicy::FixedReg(_) = usedata.operand.policy() {
-            lrdata.dec_num_fixed_uses();
-        }
         log::debug!(
             "  -> subtract {} from uses_spill_weight {}; now {}",
             spill_weight_from_policy(usedata.operand.policy()),
-            lrdata.uses_spill_weight,
-            lrdata.uses_spill_weight - spill_weight_from_policy(usedata.operand.policy()),
+            lrdata.uses_spill_weight(),
+            lrdata.uses_spill_weight() - spill_weight_from_policy(usedata.operand.policy()),
         );
 
-        lrdata.uses_spill_weight -= spill_weight_from_policy(usedata.operand.policy());
+        lrdata.uses_spill_weight_and_flags -= spill_weight_from_policy(usedata.operand.policy());
         if usedata.operand.kind() == OperandKind::Def {
-            lrdata.uses_spill_weight -= 2000;
+            lrdata.uses_spill_weight_and_flags -= 2000;
         }
     }
 
@@ -1056,20 +1047,17 @@ impl<'a, F: Function> Env<'a, F> {
 
         // Update stats.
         let policy = self.uses[u.index()].operand.policy();
-        if let OperandPolicy::FixedReg(_) = policy {
-            self.ranges[into.index()].inc_num_fixed_uses();
-        }
         log::debug!(
             "insert use {:?} into lr {:?} with weight {}",
             u,
             into,
             spill_weight_from_policy(policy)
         );
-        self.ranges[into.index()].uses_spill_weight += spill_weight_from_policy(policy);
+        self.ranges[into.index()].uses_spill_weight_and_flags += spill_weight_from_policy(policy);
         if self.uses[u.index()].operand.kind() == OperandKind::Def {
-            self.ranges[into.index()].uses_spill_weight += 2000;
+            self.ranges[into.index()].uses_spill_weight_and_flags += 2000;
         }
-        log::debug!("  -> now {}", self.ranges[into.index()].uses_spill_weight);
+        log::debug!("  -> now {}", self.ranges[into.index()].uses_spill_weight());
     }
 
     fn find_vreg_liverange_for_pos(
@@ -1940,9 +1928,11 @@ impl<'a, F: Function> Env<'a, F> {
                 to_vreg.index(),
                 from_vreg.index()
             );
-            let to_bundle = self.ranges[self.vregs[to_vreg.index()].first_range.index()].bundle;
+            let to_bundle =
+                self.ranges[self.vregs[to_vreg.index()].first_range.index()].bundle;
             assert!(to_bundle.is_valid());
-            let from_bundle = self.ranges[self.vregs[from_vreg.index()].first_range.index()].bundle;
+            let from_bundle =
+                self.ranges[self.vregs[from_vreg.index()].first_range.index()].bundle;
             assert!(from_bundle.is_valid());
             log::debug!(
                 " -> from bundle{} to bundle{}",
@@ -2097,23 +2087,22 @@ impl<'a, F: Function> Env<'a, F> {
             log::debug!("vreg{}: first_range={:?}", i, v.first_range,);
         }
         log::debug!("Ranges:");
-        for (i, r) in self.ranges.iter().enumerate() {
+        for (i, (r, rc)) in self.ranges.iter().zip(self.ranges.iter()).enumerate() {
             log::debug!(
                 concat!(
                     "range{}: range={:?} vreg={:?} bundle={:?} ",
-                    "weight={} fixed={} first_use={:?} last_use={:?} ",
+                    "weight={} first_use={:?} last_use={:?} ",
                     "next_in_bundle={:?} next_in_reg={:?}"
                 ),
                 i,
                 r.range,
-                r.vreg,
-                r.bundle,
-                r.uses_spill_weight,
-                r.num_fixed_uses(),
+                rc.vreg,
+                rc.bundle,
+                r.uses_spill_weight(),
                 r.first_use,
-                r.last_use,
+                rc.last_use,
                 r.next_in_bundle,
-                r.next_in_reg
+                rc.next_in_reg
             );
         }
         log::debug!("Uses:");
@@ -2210,7 +2199,10 @@ impl<'a, F: Function> Env<'a, F> {
             {
                 log::debug!(" -> btree contains range {:?} that overlaps", preg_range);
                 if self.ranges[preg_range.index()].vreg.is_valid() {
-                    log::debug!("   -> from vreg {:?}", self.ranges[preg_range.index()].vreg);
+                    log::debug!(
+                        "   -> from vreg {:?}",
+                        self.ranges[preg_range.index()].vreg
+                    );
                     // range from an allocated bundle: find the bundle and add to
                     // conflicts list.
                     let conflict_bundle = self.ranges[preg_range.index()].bundle;
@@ -2361,8 +2353,11 @@ impl<'a, F: Function> Env<'a, F> {
             let mut range = self.bundles[bundle.index()].first_range;
             while range.is_valid() {
                 let range_data = &self.ranges[range.index()];
-                log::debug!("  -> uses spill weight: +{}", range_data.uses_spill_weight);
-                total += range_data.uses_spill_weight;
+                log::debug!(
+                    "  -> uses spill weight: +{}",
+                    range_data.uses_spill_weight()
+                );
+                total += range_data.uses_spill_weight();
                 range = range_data.next_in_bundle;
             }
 
@@ -2798,7 +2793,8 @@ impl<'a, F: Function> Env<'a, F> {
                 // tail-pointer so we do not need to update that.)
                 let rest_lr = self.create_liverange(rest_range);
                 self.ranges[rest_lr.index()].vreg = self.ranges[iter.index()].vreg;
-                self.ranges[rest_lr.index()].next_in_reg = self.ranges[iter.index()].next_in_reg;
+                self.ranges[rest_lr.index()].next_in_reg =
+                    self.ranges[iter.index()].next_in_reg;
                 self.ranges[iter.index()].next_in_reg = rest_lr;
 
                 log::debug!(
@@ -2812,7 +2808,6 @@ impl<'a, F: Function> Env<'a, F> {
                 // moves to the rest range.
                 let mut last_use_in_first_range = UseIndex::invalid();
                 let mut use_iter = self.ranges[iter.index()].first_use;
-                let mut num_fixed_uses = 0;
                 let mut uses_spill_weight = 0;
                 while use_iter.is_valid() {
                     if self.uses[use_iter.index()].pos >= split_point {
@@ -2825,9 +2820,6 @@ impl<'a, F: Function> Env<'a, F> {
                         use_iter,
                         policy
                     );
-                    if let OperandPolicy::FixedReg(_) = policy {
-                        num_fixed_uses += 1;
-                    }
                     uses_spill_weight += spill_weight_from_policy(policy);
                     log::debug!("   -> use {:?} remains in orig", use_iter);
                     use_iter = self.uses[use_iter.index()].next_use;
@@ -2841,7 +2833,8 @@ impl<'a, F: Function> Env<'a, F> {
                         use_iter
                     );
                     self.ranges[rest_lr.index()].first_use = use_iter;
-                    self.ranges[rest_lr.index()].last_use = self.ranges[iter.index()].last_use;
+                    self.ranges[rest_lr.index()].last_use =
+                        self.ranges[iter.index()].last_use;
 
                     self.ranges[iter.index()].last_use = last_use_in_first_range;
                     if last_use_in_first_range.is_valid() {
@@ -2850,13 +2843,10 @@ impl<'a, F: Function> Env<'a, F> {
                         self.ranges[iter.index()].first_use = UseIndex::invalid();
                     }
 
-                    let rest_fixed_uses =
-                        self.ranges[iter.index()].num_fixed_uses() - num_fixed_uses;
-                    self.ranges[rest_lr.index()].set_num_fixed_uses(rest_fixed_uses);
-                    self.ranges[rest_lr.index()].uses_spill_weight =
-                        self.ranges[iter.index()].uses_spill_weight - uses_spill_weight;
-                    self.ranges[iter.index()].set_num_fixed_uses(num_fixed_uses);
-                    self.ranges[iter.index()].uses_spill_weight = uses_spill_weight;
+                    let new_spill_weight =
+                        self.ranges[iter.index()].uses_spill_weight() - uses_spill_weight;
+                    self.ranges[rest_lr.index()].set_uses_spill_weight(new_spill_weight);
+                    self.ranges[iter.index()].set_uses_spill_weight(uses_spill_weight);
                 }
 
                 log::debug!(
@@ -3458,9 +3448,8 @@ impl<'a, F: Function> Env<'a, F> {
             }
         }
 
-        let mut half_moves: Vec<HalfMove> = vec![];
-
-        let mut reuse_input_insts = vec![];
+        let mut half_moves: Vec<HalfMove> = Vec::with_capacity(6 * self.func.insts());
+        let mut reuse_input_insts = Vec::with_capacity(self.func.insts() / 2);
 
         let mut blockparam_in_idx = 0;
         let mut blockparam_out_idx = 0;
@@ -4129,7 +4118,8 @@ impl<'a, F: Function> Env<'a, F> {
         }
 
         // Ensure edits are in sorted ProgPoint order.
-        self.edits.sort_unstable_by_key(|&(pos, prio, _)| (pos, prio));
+        self.edits
+            .sort_unstable_by_key(|&(pos, prio, _)| (pos, prio));
         self.stats.edits_count = self.edits.len();
 
         // Add debug annotations.
