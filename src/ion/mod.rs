@@ -1718,6 +1718,13 @@ impl<'a, F: Function> Env<'a, F> {
             return false;
         }
 
+        // If either bundle is already assigned (due to a pinned vreg), don't merge.
+        if !self.bundles[from.index()].allocation.is_none()
+            || !self.bundles[to.index()].allocation.is_none()
+        {
+            return false;
+        }
+
         #[cfg(debug)]
         {
             // Sanity check: both bundles should contain only ranges with appropriate VReg classes.
@@ -1882,6 +1889,22 @@ impl<'a, F: Function> Env<'a, F> {
                 range = self.ranges[range.index()].next_in_reg;
             }
             log::debug!("vreg v{} gets bundle{}", vreg.index(), bundle.index());
+
+            // If this vreg is pinned, assign the allocation and block the PRegs.
+            if let Some(preg) = self.func.is_pinned_vreg(self.vreg_regs[vreg.index()]) {
+                self.bundles[bundle.index()].allocation = Allocation::reg(preg);
+
+                let mut iter = self.bundles[bundle.index()].first_range;
+                while iter.is_valid() {
+                    let range = self.ranges[iter.index()].range;
+                    // Create a new LiveRange for the PReg
+                    // reservation, unaffiliated with the VReg, to
+                    // reserve it (like a clobber) without the
+                    // possibility of eviction.
+                    self.add_liverange_to_preg(range, preg);
+                    iter = self.ranges[iter.index()].next_in_bundle;
+                }
+            }
         }
 
         for inst in 0..self.func.insts() {
@@ -2006,6 +2029,11 @@ impl<'a, F: Function> Env<'a, F> {
             let mut lr = self.vregs[vreg.index()].first_range;
             while lr.is_valid() {
                 let bundle = self.ranges[lr.index()].bundle;
+                if !self.bundles[bundle.index()].allocation.is_none() {
+                    // Pinned VReg -- already allocated, so skip.
+                    lr = self.ranges[lr.index()].next_in_bundle;
+                    continue;
+                }
                 if self.bundles[bundle.index()].first_range == lr {
                     // First time seeing `bundle`: allocate a spillslot for it,
                     // compute its priority, and enqueue it.
