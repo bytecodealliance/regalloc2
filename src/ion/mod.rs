@@ -326,18 +326,15 @@ struct PRegData {
 /*
  * Environment setup:
  *
- * We have seven fundamental objects: LiveRange, LiveBundle, SpillSet, Use, Def, VReg, PReg.
+ * We have seven fundamental objects: LiveRange, LiveBundle, SpillSet, Use, VReg, PReg.
  *
  * The relationship is as follows:
  *
  * LiveRange --(vreg)--> shared(VReg)
  * LiveRange --(bundle)--> shared(LiveBundle)
- * LiveRange --(def)--> owns(Def)
  * LiveRange --(use) --> list(Use)
  *
  * Use --(vreg)--> shared(VReg)
- *
- * Def --(vreg) --> owns(VReg)
  *
  * LiveBundle --(range)--> list(LiveRange)
  * LiveBundle --(spillset)--> shared(SpillSet)
@@ -565,6 +562,7 @@ enum Requirement {
     Any(RegClass),
 }
 impl Requirement {
+    #[inline(always)]
     fn class(self) -> RegClass {
         match self {
             Requirement::Fixed(preg) => preg.class(),
@@ -573,7 +571,7 @@ impl Requirement {
             }
         }
     }
-
+    #[inline(always)]
     fn merge(self, other: Requirement) -> Option<Requirement> {
         if self.class() != other.class() {
             return None;
@@ -590,6 +588,7 @@ impl Requirement {
             _ => None,
         }
     }
+    #[inline(always)]
     fn from_operand(op: Operand) -> Requirement {
         match op.policy() {
             OperandPolicy::FixedReg(preg) => Requirement::Fixed(preg),
@@ -1034,7 +1033,7 @@ impl<'a, F: Function> Env<'a, F> {
         );
 
         lrdata.uses_spill_weight_and_flags -= spill_weight_from_policy(usedata.operand.policy());
-        if usedata.operand.kind() == OperandKind::Def {
+        if usedata.operand.kind() != OperandKind::Use {
             lrdata.uses_spill_weight_and_flags -= 2000;
         }
     }
@@ -1083,7 +1082,7 @@ impl<'a, F: Function> Env<'a, F> {
             spill_weight_from_policy(policy)
         );
         self.ranges[into.index()].uses_spill_weight_and_flags += spill_weight_from_policy(policy);
-        if self.uses[u.index()].operand.kind() == OperandKind::Def {
+        if self.uses[u.index()].operand.kind() != OperandKind::Use {
             self.ranges[into.index()].uses_spill_weight_and_flags += 2000;
         }
         log::debug!("  -> now {}", self.ranges[into.index()].uses_spill_weight());
@@ -1149,11 +1148,11 @@ impl<'a, F: Function> Env<'a, F> {
                     live.set(dst.vreg(), false);
                     live.set(src.vreg(), true);
                 }
-                for pos in &[OperandPos::After, OperandPos::Both, OperandPos::Before] {
+                for pos in &[OperandPos::After, OperandPos::Before] {
                     for op in self.func.inst_operands(inst) {
                         if op.pos() == *pos {
                             match op.kind() {
-                                OperandKind::Use => {
+                                OperandKind::Use | OperandKind::Mod => {
                                     live.set(op.vreg().vreg(), true);
                                 }
                                 OperandKind::Def => {
@@ -1355,11 +1354,12 @@ impl<'a, F: Function> Env<'a, F> {
                     // don't borrow `self`
                     let operand = self.func.inst_operands(inst)[i];
                     match operand.kind() {
-                        OperandKind::Def => {
+                        OperandKind::Def | OperandKind::Mod => {
                             // Create the Def object.
-                            let pos = match operand.pos() {
-                                OperandPos::Before | OperandPos::Both => ProgPoint::before(inst),
-                                OperandPos::After => ProgPoint::after(inst),
+                            let pos = match (operand.kind(), operand.pos()) {
+                                (OperandKind::Mod, _) => ProgPoint::before(inst),
+                                (_, OperandPos::Before) => ProgPoint::before(inst),
+                                (_, OperandPos::After) => ProgPoint::after(inst),
                             };
                             let u = UseIndex(self.uses.len() as u32);
                             self.uses
@@ -1370,11 +1370,6 @@ impl<'a, F: Function> Env<'a, F> {
                             // Fill in vreg's actual data.
                             self.vreg_regs[operand.vreg().vreg()] = operand.vreg();
 
-                            // Trim the range for this vreg to start
-                            // at `pos` if it previously ended at the
-                            // start of this block (i.e. was not
-                            // merged into some larger LiveRange due
-                            // to out-of-order blocks).
                             let mut lr = vreg_ranges[operand.vreg().vreg()];
                             log::debug!(" -> has existing LR {:?}", lr);
                             // If there was no liverange (dead def), create a trivial one.
@@ -1389,22 +1384,34 @@ impl<'a, F: Function> Env<'a, F> {
                                 );
                                 log::debug!(" -> invalid; created {:?}", lr);
                             }
-                            if self.ranges[lr.index()].range.from
-                                == self.cfginfo.block_entry[block.index()]
-                            {
-                                log::debug!(" -> started at block start; trimming to {:?}", pos);
-                                self.ranges[lr.index()].range.from = pos;
-                            }
                             self.insert_use_into_liverange_and_update_stats(lr, u);
-                            // Remove from live-set.
-                            live.set(operand.vreg().vreg(), false);
-                            vreg_ranges[operand.vreg().vreg()] = LiveRangeIndex::invalid();
+
+                            if operand.kind() == OperandKind::Def {
+                                // Trim the range for this vreg to start
+                                // at `pos` if it previously ended at the
+                                // start of this block (i.e. was not
+                                // merged into some larger LiveRange due
+                                // to out-of-order blocks).
+                                if self.ranges[lr.index()].range.from
+                                    == self.cfginfo.block_entry[block.index()]
+                                {
+                                    log::debug!(
+                                        " -> started at block start; trimming to {:?}",
+                                        pos
+                                    );
+                                    self.ranges[lr.index()].range.from = pos;
+                                }
+
+                                // Remove from live-set.
+                                live.set(operand.vreg().vreg(), false);
+                                vreg_ranges[operand.vreg().vreg()] = LiveRangeIndex::invalid();
+                            }
                         }
                         OperandKind::Use => {
                             // Establish where the use occurs.
                             let mut pos = match operand.pos() {
                                 OperandPos::Before => ProgPoint::before(inst),
-                                OperandPos::Both | OperandPos::After => ProgPoint::after(inst),
+                                OperandPos::After => ProgPoint::after(inst),
                             };
                             // If there are any reused inputs in this
                             // instruction, and this is *not* the
@@ -2612,8 +2619,9 @@ impl<'a, F: Function> Env<'a, F> {
                     // the def so we don't need to insert a move.
                     use_data.pos
                 } else {
-                    // For an use, split before the instruction --
-                    // this allows us to insert a move if necessary.
+                    // For an use or mod, split before the instruction
+                    // -- this allows us to insert a move if
+                    // necessary.
                     ProgPoint::before(use_data.pos.inst())
                 };
                 let after_use_inst = ProgPoint::before(use_data.pos.inst().next());
@@ -4118,9 +4126,11 @@ impl<'a, F: Function> Env<'a, F> {
             );
         }
 
-        // Ensure edits are in sorted ProgPoint order.
-        self.edits
-            .sort_unstable_by_key(|&(pos, prio, _)| (pos, prio));
+        // Ensure edits are in sorted ProgPoint order. N.B.: this must
+        // be a stable sort! We have to keep the order produced by the
+        // parallel-move resolver for all moves within a single sort
+        // key.
+        self.edits.sort_by_key(|&(pos, prio, _)| (pos, prio));
         self.stats.edits_count = self.edits.len();
 
         // Add debug annotations.

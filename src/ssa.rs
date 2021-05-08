@@ -47,6 +47,12 @@ pub fn validate_ssa<F: Function>(f: &F, cfginfo: &CFGInfo) -> Result<(), RegAllo
                         }
                         defined[operand.vreg().vreg()] = true;
                     }
+                    OperandKind::Mod => {
+                        // Mod (modify) operands are not used in SSA,
+                        // but can be used by non-SSA code (e.g. with
+                        // the regalloc.rs compatibility shim).
+                        return Err(RegAllocError::SSA(operand.vreg(), iix));
+                    }
                 }
             }
         }

@@ -209,7 +209,7 @@ pub struct Operand {
     /// so that clients, if they wish, can track just one `u32` per
     /// register slot and edit it in-place after allocation.
     ///
-    /// policy:3 kind:1 pos:2 class:1 preg:5 vreg:20
+    /// policy:3 kind:2 pos:1 class:1 preg:5 vreg:20
     bits: u32,
 }
 
@@ -237,7 +237,7 @@ impl Operand {
                 | (preg_field << 20)
                 | (class_field << 25)
                 | (pos_field << 26)
-                | (kind_field << 28)
+                | (kind_field << 27)
                 | (policy_field << 29),
         }
     }
@@ -253,7 +253,12 @@ impl Operand {
     }
     #[inline(always)]
     pub fn reg_use_at_end(vreg: VReg) -> Self {
-        Operand::new(vreg, OperandPolicy::Reg, OperandKind::Use, OperandPos::Both)
+        Operand::new(
+            vreg,
+            OperandPolicy::Reg,
+            OperandKind::Use,
+            OperandPos::After,
+        )
     }
     #[inline(always)]
     pub fn reg_def(vreg: VReg) -> Self {
@@ -266,11 +271,21 @@ impl Operand {
     }
     #[inline(always)]
     pub fn reg_def_at_start(vreg: VReg) -> Self {
-        Operand::new(vreg, OperandPolicy::Reg, OperandKind::Def, OperandPos::Both)
+        Operand::new(
+            vreg,
+            OperandPolicy::Reg,
+            OperandKind::Def,
+            OperandPos::Before,
+        )
     }
     #[inline(always)]
     pub fn reg_temp(vreg: VReg) -> Self {
-        Operand::new(vreg, OperandPolicy::Reg, OperandKind::Def, OperandPos::Both)
+        Operand::new(
+            vreg,
+            OperandPolicy::Reg,
+            OperandKind::Def,
+            OperandPos::Before,
+        )
     }
     #[inline(always)]
     pub fn reg_reuse_def(vreg: VReg, idx: usize) -> Self {
@@ -278,7 +293,7 @@ impl Operand {
             vreg,
             OperandPolicy::Reuse(idx),
             OperandKind::Def,
-            OperandPos::Both,
+            OperandPos::After,
         )
     }
     #[inline(always)]
@@ -318,21 +333,21 @@ impl Operand {
 
     #[inline(always)]
     pub fn kind(self) -> OperandKind {
-        let kind_field = (self.bits >> 28) & 1;
+        let kind_field = (self.bits >> 27) & 3;
         match kind_field {
             0 => OperandKind::Def,
-            1 => OperandKind::Use,
+            1 => OperandKind::Mod,
+            2 => OperandKind::Use,
             _ => unreachable!(),
         }
     }
 
     #[inline(always)]
     pub fn pos(self) -> OperandPos {
-        let pos_field = (self.bits >> 26) & 3;
+        let pos_field = (self.bits >> 26) & 1;
         match pos_field {
             0 => OperandPos::Before,
             1 => OperandPos::After,
-            2 => OperandPos::Both,
             _ => unreachable!(),
         }
     }
@@ -415,14 +430,14 @@ impl std::fmt::Display for OperandPolicy {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OperandKind {
     Def = 0,
-    Use = 1,
+    Mod = 1,
+    Use = 2,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OperandPos {
     Before = 0,
     After = 1,
-    Both = 2,
 }
 
 /// An Allocation represents the end result of regalloc for an
@@ -585,7 +600,8 @@ impl OperandOrAllocation {
         let bits = alloc.bits()
             | match kind {
                 OperandKind::Def => 0,
-                OperandKind::Use => 1 << 28,
+                OperandKind::Mod => 1 << 27,
+                OperandKind::Use => 2 << 27,
             };
         Self { bits }
     }
@@ -604,11 +620,11 @@ impl OperandOrAllocation {
     }
     pub fn as_allocation(&self) -> Option<Allocation> {
         if self.is_allocation() {
-            // Remove the def/use bit -- the canonical `Allocation`
-            // does not have this, and we want allocs to continue to
-            // be comparable whether they are used for reads or
-            // writes.
-            Some(Allocation::from_bits(self.bits & !(1 << 28)))
+            // Remove the kind (def/use/mod) bits -- the canonical
+            // `Allocation` does not have this, and we want allocs to
+            // continue to be comparable whether they are used for
+            // reads or writes.
+            Some(Allocation::from_bits(self.bits & !(3 << 27)))
         } else {
             None
         }
@@ -618,7 +634,8 @@ impl OperandOrAllocation {
         let kind_field = (self.bits >> 28) & 1;
         match kind_field {
             0 => OperandKind::Def,
-            1 => OperandKind::Use,
+            1 => OperandKind::Mod,
+            2 => OperandKind::Use,
             _ => unreachable!(),
         }
     }

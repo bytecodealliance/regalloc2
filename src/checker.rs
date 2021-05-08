@@ -297,10 +297,8 @@ impl CheckerState {
                 // the requirements of the OperandPolicy.
                 for (op, alloc) in operands.iter().zip(allocs.iter()) {
                     let is_here = match (op.pos(), pos) {
-                        (OperandPos::Before, InstPosition::Before)
-                        | (OperandPos::Both, InstPosition::Before) => true,
-                        (OperandPos::After, InstPosition::After)
-                        | (OperandPos::Both, InstPosition::After) => true,
+                        (OperandPos::Before, InstPosition::Before) => true,
+                        (OperandPos::After, InstPosition::After) => true,
                         _ => false,
                     };
                     if !is_here {
