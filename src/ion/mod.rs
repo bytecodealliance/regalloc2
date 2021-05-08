@@ -3441,6 +3441,12 @@ impl<'a, F: Function> Env<'a, F> {
             "insert_move: pos {:?} prio {:?} from_alloc {:?} to_alloc {:?}",
             pos, prio, from_alloc, to_alloc
         );
+        match (from_alloc.as_reg(), to_alloc.as_reg()) {
+            (Some(from), Some(to)) => {
+                assert_eq!(from.class(), to.class());
+            }
+            _ => {}
+        }
         self.inserted_moves.push(InsertedMove {
             pos,
             prio,
@@ -4145,28 +4151,51 @@ impl<'a, F: Function> Env<'a, F> {
             }
             let moves = &self.inserted_moves[start..i];
 
-            // Get the regclass from one of the moves.
-            let regclass = moves[0].from_alloc.class();
+            // Gather all the moves with Int class and Float class
+            // separately. These cannot interact, so it is safe to
+            // have two separate ParallelMove instances. They need to
+            // be separate because moves between the two classes are
+            // impossible. (We could enhance ParallelMoves to
+            // understand register classes and take multiple scratch
+            // regs, but this seems simpler.)
+            let mut int_moves: SmallVec<[InsertedMove; 8]> = smallvec![];
+            let mut float_moves: SmallVec<[InsertedMove; 8]> = smallvec![];
 
-            // All moves in `moves` semantically happen in
-            // parallel. Let's resolve these to a sequence of moves
-            // that can be done one at a time.
-            let mut parallel_moves = ParallelMoves::new(Allocation::reg(
-                self.env.scratch_by_class[regclass as u8 as usize],
-            ));
-            log::debug!("parallel moves at pos {:?} prio {:?}", pos, prio);
             for m in moves {
-                if m.from_alloc != m.to_alloc {
-                    log::debug!(" {} -> {}", m.from_alloc, m.to_alloc,);
-                    parallel_moves.add(m.from_alloc, m.to_alloc);
+                assert_eq!(m.from_alloc.class(), m.to_alloc.class());
+                match m.from_alloc.class() {
+                    RegClass::Int => {
+                        int_moves.push(m.clone());
+                    }
+                    RegClass::Float => {
+                        float_moves.push(m.clone());
+                    }
                 }
             }
 
-            let resolved = parallel_moves.resolve();
+            for &(regclass, moves) in
+                &[(RegClass::Int, &int_moves), (RegClass::Float, &float_moves)]
+            {
+                // All moves in `moves` semantically happen in
+                // parallel. Let's resolve these to a sequence of moves
+                // that can be done one at a time.
+                let mut parallel_moves = ParallelMoves::new(Allocation::reg(
+                    self.env.scratch_by_class[regclass as u8 as usize],
+                ));
+                log::debug!("parallel moves at pos {:?} prio {:?}", pos, prio);
+                for m in moves {
+                    if m.from_alloc != m.to_alloc {
+                        log::debug!(" {} -> {}", m.from_alloc, m.to_alloc,);
+                        parallel_moves.add(m.from_alloc, m.to_alloc);
+                    }
+                }
 
-            for (src, dst) in resolved {
-                log::debug!("  resolved: {} -> {}", src, dst);
-                self.add_edit(pos, prio, Edit::Move { from: src, to: dst });
+                let resolved = parallel_moves.resolve();
+
+                for (src, dst) in resolved {
+                    log::debug!("  resolved: {} -> {}", src, dst);
+                    self.add_edit(pos, prio, Edit::Move { from: src, to: dst });
+                }
             }
         }
 
@@ -4233,6 +4262,9 @@ impl<'a, F: Function> Env<'a, F> {
     fn add_edit(&mut self, pos: ProgPoint, prio: InsertMovePrio, edit: Edit) {
         match &edit {
             &Edit::Move { from, to } if from == to => return,
+            &Edit::Move { from, to } if from.is_reg() && to.is_reg() => {
+                assert_eq!(from.as_reg().unwrap().class(), to.as_reg().unwrap().class());
+            }
             _ => {}
         }
 
