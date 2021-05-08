@@ -1476,7 +1476,7 @@ impl<'a, F: Function> Env<'a, F> {
             }
         }
 
-        self.safepoints.sort();
+        self.safepoints.sort_unstable();
 
         // Insert safepoint virtual stack uses, if needed.
         for vreg in self.func.reftype_vregs() {
@@ -1638,9 +1638,9 @@ impl<'a, F: Function> Env<'a, F> {
             }
         }
 
-        self.clobbers.sort();
-        self.blockparam_ins.sort();
-        self.blockparam_outs.sort();
+        self.clobbers.sort_unstable();
+        self.blockparam_ins.sort_unstable();
+        self.blockparam_outs.sort_unstable();
         self.prog_move_srcs.sort_unstable_by_key(|(pos, _)| *pos);
         self.prog_move_dsts.sort_unstable_by_key(|(pos, _)| *pos);
 
@@ -2634,7 +2634,7 @@ impl<'a, F: Function> Env<'a, F> {
 
             iter = rangedata.next_in_bundle;
         }
-        splits.sort();
+        splits.sort_unstable();
         log::debug!(" -> final splits: {:?}", splits);
         splits
     }
@@ -3831,7 +3831,7 @@ impl<'a, F: Function> Env<'a, F> {
         // Sort the half-moves list. For each (from, to,
         // from-vreg) tuple, find the from-alloc and all the
         // to-allocs, and insert moves on the block edge.
-        half_moves.sort_by_key(|h| h.key);
+        half_moves.sort_unstable_by_key(|h| h.key);
         log::debug!("halfmoves: {:?}", half_moves);
         self.stats.halfmoves_count = half_moves.len();
 
@@ -4060,7 +4060,7 @@ impl<'a, F: Function> Env<'a, F> {
         // resolve (see cases below).
         let mut i = 0;
         self.inserted_moves
-            .sort_by_key(|m| (m.pos.to_index(), m.prio));
+            .sort_unstable_by_key(|m| (m.pos.to_index(), m.prio));
         while i < self.inserted_moves.len() {
             let start = i;
             let pos = self.inserted_moves[i].pos;
@@ -4101,7 +4101,7 @@ impl<'a, F: Function> Env<'a, F> {
         // Add edits to describe blockparam locations too. This is
         // required by the checker. This comes after any edge-moves.
         self.blockparam_allocs
-            .sort_by_key(|&(block, idx, _, _)| (block, idx));
+            .sort_unstable_by_key(|&(block, idx, _, _)| (block, idx));
         self.stats.blockparam_allocs_count = self.blockparam_allocs.len();
         let mut i = 0;
         while i < self.blockparam_allocs.len() {
@@ -4129,7 +4129,7 @@ impl<'a, F: Function> Env<'a, F> {
         }
 
         // Ensure edits are in sorted ProgPoint order.
-        self.edits.sort_by_key(|&(pos, prio, _)| (pos, prio));
+        self.edits.sort_unstable_by_key(|&(pos, prio, _)| (pos, prio));
         self.stats.edits_count = self.edits.len();
 
         // Add debug annotations.
@@ -4190,7 +4190,7 @@ impl<'a, F: Function> Env<'a, F> {
                 .iter()
                 .map(|&inst| ProgPoint::before(inst))
                 .collect();
-            safepoints.sort();
+            safepoints.sort_unstable();
             log::debug!(" -> live over safepoints: {:?}", safepoints);
 
             let mut safepoint_idx = 0;
@@ -4217,7 +4217,7 @@ impl<'a, F: Function> Env<'a, F> {
             }
         }
 
-        self.safepoint_slots.sort();
+        self.safepoint_slots.sort_unstable();
         log::debug!("final safepoint slots info: {:?}", self.safepoint_slots);
     }
 
