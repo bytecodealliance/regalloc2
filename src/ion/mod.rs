@@ -68,29 +68,36 @@ pub struct CodeRange {
 }
 
 impl CodeRange {
+    #[inline(always)]
     pub fn is_empty(&self) -> bool {
         self.from == self.to
     }
+    #[inline(always)]
     pub fn contains(&self, other: &Self) -> bool {
         other.from >= self.from && other.to <= self.to
     }
+    #[inline(always)]
     pub fn contains_point(&self, other: ProgPoint) -> bool {
         other >= self.from && other < self.to
     }
+    #[inline(always)]
     pub fn overlaps(&self, other: &Self) -> bool {
         other.to > self.from && other.from < self.to
     }
+    #[inline(always)]
     pub fn len(&self) -> usize {
         self.to.inst().index() - self.from.inst().index()
     }
 }
 
 impl std::cmp::PartialOrd for CodeRange {
+    #[inline(always)]
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 impl std::cmp::Ord for CodeRange {
+    #[inline(always)]
     fn cmp(&self, other: &Self) -> Ordering {
         if self.to <= other.from {
             Ordering::Less
@@ -1609,6 +1616,9 @@ impl<'a, F: Function> Env<'a, F> {
         // have to split the multiple uses at the same progpoint into
         // different bundles, which breaks invariants related to
         // disjoint ranges and bundles).
+        let mut seen_fixed_for_vreg: SmallVec<[VReg; 16]> = smallvec![];
+        let mut first_preg: SmallVec<[PRegIndex; 16]> = smallvec![];
+        let mut extra_clobbers: SmallVec<[(PReg, Inst); 8]> = smallvec![];
         for vreg in 0..self.vregs.len() {
             let mut iter = self.vregs[vreg].first_range;
             while iter.is_valid() {
@@ -1618,9 +1628,6 @@ impl<'a, F: Function> Env<'a, F> {
                     iter
                 );
                 let mut last_point = None;
-                let mut seen_fixed_for_vreg: SmallVec<[VReg; 16]> = smallvec![];
-                let mut first_preg: SmallVec<[PRegIndex; 16]> = smallvec![];
-                let mut extra_clobbers: SmallVec<[(PReg, Inst); 8]> = smallvec![];
                 let mut fixup_multi_fixed_vregs = |pos: ProgPoint,
                                                    slot: usize,
                                                    op: &mut Operand,
@@ -1684,13 +1691,17 @@ impl<'a, F: Function> Env<'a, F> {
                     use_iter = self.uses[use_iter.index()].next_use();
                 }
 
-                for (clobber, inst) in extra_clobbers {
+                for &(clobber, inst) in &extra_clobbers {
                     let range = CodeRange {
                         from: ProgPoint::before(inst),
                         to: ProgPoint::before(inst.next()),
                     };
                     self.add_liverange_to_preg(range, clobber);
                 }
+
+                extra_clobbers.clear();
+                first_preg.clear();
+                seen_fixed_for_vreg.clear();
 
                 iter = self.ranges[iter.index()].next_in_reg;
             }
