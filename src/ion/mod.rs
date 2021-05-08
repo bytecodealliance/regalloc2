@@ -113,8 +113,13 @@ define_index!(SpillSlotIndex);
 type LiveBundleVec = SmallVec<[LiveBundleIndex; 4]>;
 
 #[derive(Clone, Debug)]
-struct LiveRange {
+struct LiveRangeHot {
     range: CodeRange,
+    next_in_bundle: LiveRangeIndex,
+}
+
+#[derive(Clone, Debug)]
+struct LiveRange {
     vreg: VRegIndex,
     bundle: LiveBundleIndex,
     uses_spill_weight_and_flags: u32,
@@ -122,7 +127,6 @@ struct LiveRange {
     first_use: UseIndex,
     last_use: UseIndex,
 
-    next_in_bundle: LiveRangeIndex,
     next_in_reg: LiveRangeIndex,
 
     merged_into: LiveRangeIndex,
@@ -171,11 +175,11 @@ impl Use {
     #[inline(always)]
     fn new(operand: Operand, pos: ProgPoint, next_use: UseIndex, slot: u8) -> Self {
         debug_assert!(next_use.is_invalid() || next_use.index() < ((1 << 24) - 1));
-        let next_use = next_use.0 & 0x00ff_ffff;
+        let next_use = (next_use.0 as usize) & 0x00ff_ffff;
         Self {
             operand,
             pos,
-            next_use_and_slot: next_use | ((slot as u32) << 24),
+            next_use_and_slot: (next_use as u32) | ((slot as u32) << 24),
         }
     }
     #[inline(always)]
@@ -183,7 +187,7 @@ impl Use {
         let val = self.next_use_and_slot & 0x00ff_ffff;
         // Sign-extend 0x00ff_ffff to INVALID (0xffff_ffff).
         let val = ((val as i32) << 8) >> 8;
-        UseIndex(val as u32)
+        UseIndex::new(val as usize)
     }
     #[inline(always)]
     fn slot(&self) -> u8 {
@@ -192,8 +196,8 @@ impl Use {
     #[inline(always)]
     fn set_next_use(&mut self, u: UseIndex) {
         debug_assert!(u.is_invalid() || u.index() < ((1 << 24) - 1));
-        let u = u.0 & 0x00ff_ffff;
-        self.next_use_and_slot = (self.next_use_and_slot & 0xff00_0000) | u;
+        let u = (u.0 as usize) & 0x00ff_ffff;
+        self.next_use_and_slot = (self.next_use_and_slot & 0xff00_0000) | (u as u32);
     }
 }
 
@@ -371,6 +375,7 @@ struct Env<'a, F: Function> {
     blockparam_allocs: Vec<(Block, u32, VRegIndex, Allocation)>,
 
     ranges: Vec<LiveRange>,
+    ranges_hot: Vec<LiveRangeHot>,
     range_ranges: Vec<CodeRange>,
     bundles: Vec<LiveBundle>,
     spillsets: Vec<SpillSet>,
@@ -770,6 +775,7 @@ impl<'a, F: Function> Env<'a, F> {
             blockparam_allocs: vec![],
             bundles: Vec::with_capacity(n),
             ranges: Vec::with_capacity(4 * n),
+            ranges_hot: Vec::with_capacity(4 * n),
             range_ranges: Vec::with_capacity(4 * n),
             spillsets: Vec::with_capacity(n),
             uses: Vec::with_capacity(4 * n),
@@ -850,8 +856,12 @@ impl<'a, F: Function> Env<'a, F> {
 
     fn create_liverange(&mut self, range: CodeRange) -> LiveRangeIndex {
         let idx = self.ranges.len();
-        self.ranges.push(LiveRange {
+        self.ranges_hot.push(LiveRangeHot {
             range,
+            next_in_bundle: LiveRangeIndex::invalid(),
+        });
+
+        self.ranges.push(LiveRange {
             vreg: VRegIndex::invalid(),
             bundle: LiveBundleIndex::invalid(),
             uses_spill_weight_and_flags: 0,
@@ -859,7 +869,6 @@ impl<'a, F: Function> Env<'a, F> {
             first_use: UseIndex::invalid(),
             last_use: UseIndex::invalid(),
 
-            next_in_bundle: LiveRangeIndex::invalid(),
             next_in_reg: LiveRangeIndex::invalid(),
 
             merged_into: LiveRangeIndex::invalid(),
@@ -889,40 +898,40 @@ impl<'a, F: Function> Env<'a, F> {
         let mut iter = self.vregs[vreg.index()].first_range;
         let mut prev = LiveRangeIndex::invalid();
         while iter.is_valid() {
-            let existing = &mut self.ranges[iter.index()];
-            log::debug!(" -> existing range: {:?}", existing);
-            if range.from >= existing.range.to && *num_ranges < COALESCE_LIMIT {
+            log::debug!(" -> existing range: {:?}", self.ranges[iter.index()]);
+            if range.from >= self.ranges_hot[iter.index()].range.to && *num_ranges < COALESCE_LIMIT
+            {
                 // New range comes fully after this one -- record it as a lower bound.
                 insert_after = iter;
                 prev = iter;
-                iter = existing.next_in_reg;
+                iter = self.ranges[iter.index()].next_in_reg;
                 log::debug!("    -> lower bound");
                 continue;
             }
-            if range.to <= existing.range.from {
+            if range.to <= self.ranges_hot[iter.index()].range.from {
                 // New range comes fully before this one -- we're found our spot.
                 log::debug!("    -> upper bound (break search loop)");
                 break;
             }
             // If we're here, then we overlap with at least one endpoint of the range.
             log::debug!("    -> must overlap");
-            debug_assert!(range.overlaps(&existing.range));
+            debug_assert!(range.overlaps(&self.ranges_hot[iter.index()].range));
             if merged.is_invalid() {
                 // This is the first overlapping range. Extend to simply cover the new range.
                 merged = iter;
-                if range.from < existing.range.from {
-                    existing.range.from = range.from;
+                if range.from < self.ranges_hot[iter.index()].range.from {
+                    self.ranges_hot[iter.index()].range.from = range.from;
                 }
-                if range.to > existing.range.to {
-                    existing.range.to = range.to;
+                if range.to > self.ranges_hot[iter.index()].range.to {
+                    self.ranges_hot[iter.index()].range.to = range.to;
                 }
                 log::debug!(
                     "    -> extended range of existing range to {:?}",
-                    existing.range
+                    self.ranges_hot[iter.index()].range
                 );
                 // Continue; there may be more ranges to merge with.
                 prev = iter;
-                iter = existing.next_in_reg;
+                iter = self.ranges[iter.index()].next_in_reg;
                 continue;
             }
             // We overlap but we've already extended the first overlapping existing liverange, so
@@ -934,10 +943,11 @@ impl<'a, F: Function> Env<'a, F> {
                 self.ranges[merged.index()]
             );
             debug_assert!(
-                self.ranges[iter.index()].range.from >= self.ranges[merged.index()].range.from
+                self.ranges_hot[iter.index()].range.from
+                    >= self.ranges_hot[merged.index()].range.from
             ); // Because we see LRs in order.
-            if self.ranges[iter.index()].range.to > self.ranges[merged.index()].range.to {
-                self.ranges[merged.index()].range.to = self.ranges[iter.index()].range.to;
+            if self.ranges_hot[iter.index()].range.to > self.ranges_hot[merged.index()].range.to {
+                self.ranges_hot[merged.index()].range.to = self.ranges_hot[iter.index()].range.to;
             }
             self.distribute_liverange_uses(iter, merged);
             log::debug!(
@@ -983,7 +993,7 @@ impl<'a, F: Function> Env<'a, F> {
             self.ranges[from.index()].vreg,
             self.ranges[into.index()].vreg
         );
-        let into_range = self.ranges[into.index()].range;
+        let into_range = self.ranges_hot[into.index()].range;
         // For every use in `from`...
         let mut prev = UseIndex::invalid();
         let mut iter = self.ranges[from.index()].first_use;
@@ -1095,7 +1105,7 @@ impl<'a, F: Function> Env<'a, F> {
     ) -> Option<LiveRangeIndex> {
         let mut range = self.vregs[vreg.index()].first_range;
         while range.is_valid() {
-            if self.ranges[range.index()].range.contains_point(pos) {
+            if self.ranges_hot[range.index()].range.contains_point(pos) {
                 return Some(range);
             }
             range = self.ranges[range.index()].next_in_reg;
@@ -1306,11 +1316,11 @@ impl<'a, F: Function> Env<'a, F> {
                     } else {
                         log::debug!(" -> has existing LR {:?}", dst_lr);
                     }
-                    if self.ranges[dst_lr.index()].range.from
+                    if self.ranges_hot[dst_lr.index()].range.from
                         == self.cfginfo.block_entry[block.index()]
                     {
                         log::debug!(" -> started at block start; trimming to {:?}", pos);
-                        self.ranges[dst_lr.index()].range.from = pos;
+                        self.ranges_hot[dst_lr.index()].range.from = pos;
                     }
                     live.set(dst.vreg(), false);
                     vreg_ranges[dst.vreg()] = LiveRangeIndex::invalid();
@@ -1393,7 +1403,7 @@ impl<'a, F: Function> Env<'a, F> {
                         match operand.kind() {
                             OperandKind::Def | OperandKind::Mod => {
                                 // Create the use object.
-                                let u = UseIndex(self.uses.len() as u32);
+                                let u = UseIndex::new(self.uses.len());
                                 self.uses.push(Use::new(
                                     operand,
                                     pos,
@@ -1433,14 +1443,14 @@ impl<'a, F: Function> Env<'a, F> {
                                     // start of this block (i.e. was not
                                     // merged into some larger LiveRange due
                                     // to out-of-order blocks).
-                                    if self.ranges[lr.index()].range.from
+                                    if self.ranges_hot[lr.index()].range.from
                                         == self.cfginfo.block_entry[block.index()]
                                     {
                                         log::debug!(
                                             " -> started at block start; trimming to {:?}",
                                             pos
                                         );
-                                        self.ranges[lr.index()].range.from = pos;
+                                        self.ranges_hot[lr.index()].range.from = pos;
                                     }
 
                                     // Remove from live-set.
@@ -1450,7 +1460,7 @@ impl<'a, F: Function> Env<'a, F> {
                             }
                             OperandKind::Use => {
                                 // Create the use object.
-                                let u = UseIndex(self.uses.len() as u32);
+                                let u = UseIndex::new(self.uses.len());
                                 self.uses.push(Use::new(
                                     operand,
                                     pos,
@@ -1537,8 +1547,7 @@ impl<'a, F: Function> Env<'a, F> {
             let mut iter = self.vregs[vreg.index()].first_range;
             let mut safepoint_idx = 0;
             while iter.is_valid() {
-                let rangedata = &self.ranges[iter.index()];
-                let range = rangedata.range;
+                let range = self.ranges_hot[iter.index()].range;
                 while safepoint_idx < self.safepoints.len()
                     && ProgPoint::before(self.safepoints[safepoint_idx]) < range.from
                 {
@@ -1557,7 +1566,7 @@ impl<'a, F: Function> Env<'a, F> {
                     );
 
                     // Create the actual use object.
-                    let u = UseIndex(self.uses.len() as u32);
+                    let u = UseIndex::new(self.uses.len());
                     self.uses
                         .push(Use::new(operand, pos, UseIndex::invalid(), SLOT_NONE));
 
@@ -1781,13 +1790,13 @@ impl<'a, F: Function> Env<'a, F> {
             while iter.is_valid() {
                 let vreg = self.ranges[iter.index()].vreg;
                 assert_eq!(rc, self.vregs[vreg.index()].reg.class());
-                iter = self.ranges[iter.index()].next_in_bundle;
+                iter = self.ranges_hot[iter.index()].next_in_bundle;
             }
             let mut iter = self.bundles[to.index()].first_range;
             while iter.is_valid() {
                 let vreg = self.ranges[iter.index()].vreg;
                 assert_eq!(rc, self.vregs[vreg.index()].reg.class());
-                iter = self.ranges[iter.index()].next_in_bundle;
+                iter = self.ranges_hot[iter.index()].next_in_bundle;
             }
         }
 
@@ -1802,10 +1811,13 @@ impl<'a, F: Function> Env<'a, F> {
                 return false;
             }
 
-            if self.ranges[iter0.index()].range.from >= self.ranges[iter1.index()].range.to {
-                iter1 = self.ranges[iter1.index()].next_in_bundle;
-            } else if self.ranges[iter1.index()].range.from >= self.ranges[iter0.index()].range.to {
-                iter0 = self.ranges[iter0.index()].next_in_bundle;
+            if self.ranges_hot[iter0.index()].range.from >= self.ranges_hot[iter1.index()].range.to
+            {
+                iter1 = self.ranges_hot[iter1.index()].next_in_bundle;
+            } else if self.ranges_hot[iter1.index()].range.from
+                >= self.ranges_hot[iter0.index()].range.to
+            {
+                iter0 = self.ranges_hot[iter0.index()].next_in_bundle;
             } else {
                 // Overlap -- cannot merge.
                 return false;
@@ -1832,7 +1844,7 @@ impl<'a, F: Function> Env<'a, F> {
             self.bundles[from.index()].last_range = LiveRangeIndex::invalid();
             while iter0.is_valid() {
                 self.ranges[iter0.index()].bundle = from;
-                iter0 = self.ranges[iter0.index()].next_in_bundle;
+                iter0 = self.ranges_hot[iter0.index()].next_in_bundle;
             }
             return true;
         }
@@ -1844,8 +1856,8 @@ impl<'a, F: Function> Env<'a, F> {
             // Pick the next range.
             let next_range_iter = if iter0.is_valid() {
                 if iter1.is_valid() {
-                    if self.ranges[iter0.index()].range.from
-                        <= self.ranges[iter1.index()].range.from
+                    if self.ranges_hot[iter0.index()].range.from
+                        <= self.ranges_hot[iter1.index()].range.from
                     {
                         &mut iter0
                     } else {
@@ -1858,11 +1870,11 @@ impl<'a, F: Function> Env<'a, F> {
                 &mut iter1
             };
             let next = *next_range_iter;
-            *next_range_iter = self.ranges[next.index()].next_in_bundle;
+            *next_range_iter = self.ranges_hot[next.index()].next_in_bundle;
 
             // link from prev.
             if prev.is_valid() {
-                self.ranges[prev.index()].next_in_bundle = next;
+                self.ranges_hot[prev.index()].next_in_bundle = next;
             } else {
                 self.bundles[to.index()].first_range = next;
             }
@@ -1882,42 +1894,42 @@ impl<'a, F: Function> Env<'a, F> {
             lr,
             bundle
         );
-        self.ranges[lr.index()].next_in_bundle = LiveRangeIndex::invalid();
+        self.ranges_hot[lr.index()].next_in_bundle = LiveRangeIndex::invalid();
         self.ranges[lr.index()].bundle = bundle;
         if self.bundles[bundle.index()].first_range.is_invalid() {
             // Empty bundle.
             self.bundles[bundle.index()].first_range = lr;
             self.bundles[bundle.index()].last_range = lr;
-        } else if self.ranges[self.bundles[bundle.index()].first_range.index()]
+        } else if self.ranges_hot[self.bundles[bundle.index()].first_range.index()]
             .range
             .to
-            <= self.ranges[lr.index()].range.from
+            <= self.ranges_hot[lr.index()].range.from
         {
             // After last range in bundle.
             let last = self.bundles[bundle.index()].last_range;
-            self.ranges[last.index()].next_in_bundle = lr;
+            self.ranges_hot[last.index()].next_in_bundle = lr;
             self.bundles[bundle.index()].last_range = lr;
         } else {
             // Find location to insert.
             let mut iter = self.bundles[bundle.index()].first_range;
             let mut insert_after = LiveRangeIndex::invalid();
-            let insert_range = self.ranges[lr.index()].range;
+            let insert_range = self.ranges_hot[lr.index()].range;
             while iter.is_valid() {
-                debug_assert!(!self.ranges[iter.index()].range.overlaps(&insert_range));
-                if self.ranges[iter.index()].range.to <= insert_range.from {
+                debug_assert!(!self.ranges_hot[iter.index()].range.overlaps(&insert_range));
+                if self.ranges_hot[iter.index()].range.to <= insert_range.from {
                     break;
                 }
                 insert_after = iter;
-                iter = self.ranges[iter.index()].next_in_bundle;
+                iter = self.ranges_hot[iter.index()].next_in_bundle;
             }
             if insert_after.is_valid() {
-                self.ranges[insert_after.index()].next_in_bundle = lr;
+                self.ranges_hot[insert_after.index()].next_in_bundle = lr;
                 if self.bundles[bundle.index()].last_range == insert_after {
                     self.bundles[bundle.index()].last_range = lr;
                 }
             } else {
                 let next = self.bundles[bundle.index()].first_range;
-                self.ranges[lr.index()].next_in_bundle = next;
+                self.ranges_hot[lr.index()].next_in_bundle = next;
                 self.bundles[bundle.index()].first_range = lr;
             }
         }
@@ -1945,13 +1957,13 @@ impl<'a, F: Function> Env<'a, F> {
 
                 let mut iter = self.bundles[bundle.index()].first_range;
                 while iter.is_valid() {
-                    let range = self.ranges[iter.index()].range;
+                    let range = self.ranges_hot[iter.index()].range;
                     // Create a new LiveRange for the PReg
                     // reservation, unaffiliated with the VReg, to
                     // reserve it (like a clobber) without the
                     // possibility of eviction.
                     self.add_liverange_to_preg(range, preg);
-                    iter = self.ranges[iter.index()].next_in_bundle;
+                    iter = self.ranges_hot[iter.index()].next_in_bundle;
                 }
                 continue;
             }
@@ -2039,16 +2051,16 @@ impl<'a, F: Function> Env<'a, F> {
             let mut iter = self.bundles[bundle.index()].first_range;
             let start_idx = self.range_ranges.len();
             let start_pos = if iter.is_valid() {
-                self.ranges[iter.index()].range.from
+                self.ranges_hot[iter.index()].range.from
             } else {
                 ProgPoint::from_index(0)
             };
             let mut end_pos = start_pos;
             while iter.is_valid() {
-                let range = self.ranges[iter.index()].range;
+                let range = self.ranges_hot[iter.index()].range;
                 end_pos = range.to;
                 self.range_ranges.push(range);
-                iter = self.ranges[iter.index()].next_in_bundle;
+                iter = self.ranges_hot[iter.index()].next_in_bundle;
             }
             let end_idx = self.range_ranges.len();
             let bound = CodeRange {
@@ -2080,8 +2092,8 @@ impl<'a, F: Function> Env<'a, F> {
         let mut iter = self.bundles[bundle.index()].first_range;
         let mut total = 0;
         while iter.is_valid() {
-            total += self.ranges[iter.index()].range.len() as u32;
-            iter = self.ranges[iter.index()].next_in_bundle;
+            total += self.ranges_hot[iter.index()].range.len() as u32;
+            iter = self.ranges_hot[iter.index()].next_in_bundle;
         }
         total
     }
@@ -2136,7 +2148,7 @@ impl<'a, F: Function> Env<'a, F> {
             log::debug!("vreg{}: first_range={:?}", i, v.first_range,);
         }
         log::debug!("Ranges:");
-        for (i, (r, rc)) in self.ranges.iter().zip(self.ranges.iter()).enumerate() {
+        for (i, (r, rh)) in self.ranges.iter().zip(self.ranges_hot.iter()).enumerate() {
             log::debug!(
                 concat!(
                     "range{}: range={:?} vreg={:?} bundle={:?} ",
@@ -2144,14 +2156,14 @@ impl<'a, F: Function> Env<'a, F> {
                     "next_in_bundle={:?} next_in_reg={:?}"
                 ),
                 i,
-                r.range,
-                rc.vreg,
-                rc.bundle,
+                rh.range,
+                r.vreg,
+                r.bundle,
                 r.uses_spill_weight(),
                 r.first_use,
-                rc.last_use,
-                r.next_in_bundle,
-                rc.next_in_reg
+                r.last_use,
+                rh.next_in_bundle,
+                r.next_in_reg
             );
         }
         log::debug!("Uses:");
@@ -2184,8 +2196,9 @@ impl<'a, F: Function> Env<'a, F> {
 
         let mut iter = self.bundles[bundle.index()].first_range;
         while iter.is_valid() {
+            let range_hot = &self.ranges_hot[iter.index()];
             let range = &self.ranges[iter.index()];
-            log::debug!(" -> range {:?}", range.range);
+            log::debug!(" -> range {:?}", range_hot.range);
             let mut use_iter = range.first_use;
             while use_iter.is_valid() {
                 let usedata = &self.uses[use_iter.index()];
@@ -2196,7 +2209,7 @@ impl<'a, F: Function> Env<'a, F> {
                 log::debug!("   -> needed {:?}", needed);
                 use_iter = usedata.next_use();
             }
-            iter = range.next_in_bundle;
+            iter = range_hot.next_in_bundle;
         }
 
         log::debug!(" -> final needed: {:?}", needed);
@@ -2210,8 +2223,8 @@ impl<'a, F: Function> Env<'a, F> {
             return None;
         }
         Some(CodeRange {
-            from: self.ranges[first_range.index()].range.from,
-            to: self.ranges[last_range.index()].range.to,
+            from: self.ranges_hot[first_range.index()].range.from,
+            to: self.ranges_hot[last_range.index()].range.to,
         })
     }
 
@@ -2287,7 +2300,7 @@ impl<'a, F: Function> Env<'a, F> {
         self.bundles[bundle.index()].allocation = Allocation::reg(preg);
         let mut iter = self.bundles[bundle.index()].first_range;
         while iter.is_valid() {
-            let range = &self.ranges[iter.index()];
+            let range = &self.ranges_hot[iter.index()];
             self.pregs[reg.index()]
                 .allocations
                 .btree
@@ -2322,8 +2335,10 @@ impl<'a, F: Function> Env<'a, F> {
             self.pregs[preg_idx.index()]
                 .allocations
                 .btree
-                .remove(&LiveRangeKey::from_range(&self.ranges[iter.index()].range));
-            iter = self.ranges[iter.index()].next_in_bundle;
+                .remove(&LiveRangeKey::from_range(
+                    &self.ranges_hot[iter.index()].range,
+                ));
+            iter = self.ranges_hot[iter.index()].next_in_bundle;
         }
         let prio = self.bundles[bundle.index()].prio;
         log::debug!(" -> prio {}; back into queue", prio);
@@ -2354,6 +2369,7 @@ impl<'a, F: Function> Env<'a, F> {
         let mut fixed = false;
         let bundledata = &self.bundles[bundle.index()];
         let first_range = &self.ranges[bundledata.first_range.index()];
+        let first_range_hot = &self.ranges_hot[bundledata.first_range.index()];
 
         log::debug!("recompute bundle properties: bundle {:?}", bundle);
 
@@ -2376,13 +2392,13 @@ impl<'a, F: Function> Env<'a, F> {
             // the range covers only one instruction. Note that it
             // could cover just one ProgPoint, i.e. X.Before..X.After,
             // or two ProgPoints, i.e. X.Before..X+1.Before.
-            log::debug!("  -> first range has range {:?}", first_range.range);
+            log::debug!("  -> first range has range {:?}", first_range_hot.range);
             log::debug!(
                 "  -> first range has next in bundle {:?}",
-                first_range.next_in_bundle
+                first_range_hot.next_in_bundle
             );
-            minimal = first_range.next_in_bundle.is_invalid()
-                && first_range.range.from.inst() == first_range.range.to.prev().inst();
+            minimal = first_range_hot.next_in_bundle.is_invalid()
+                && first_range_hot.range.from.inst() == first_range_hot.range.to.prev().inst();
             log::debug!("  -> minimal: {}", minimal);
         }
 
@@ -2404,7 +2420,7 @@ impl<'a, F: Function> Env<'a, F> {
                     range_data.uses_spill_weight()
                 );
                 total += range_data.uses_spill_weight();
-                range = range_data.next_in_bundle;
+                range = self.ranges_hot[range.index()].next_in_bundle;
             }
 
             if self.bundles[bundle.index()].prio > 0 {
@@ -2472,12 +2488,12 @@ impl<'a, F: Function> Env<'a, F> {
         let (conflict_from, conflict_to) = if conflicting.is_valid() {
             (
                 Some(
-                    self.ranges[self.bundles[conflicting.index()].first_range.index()]
+                    self.ranges_hot[self.bundles[conflicting.index()].first_range.index()]
                         .range
                         .from,
                 ),
                 Some(
-                    self.ranges[self.bundles[conflicting.index()].last_range.index()]
+                    self.ranges_hot[self.bundles[conflicting.index()].last_range.index()]
                         .range
                         .to,
                 ),
@@ -2487,14 +2503,14 @@ impl<'a, F: Function> Env<'a, F> {
         };
 
         let bundle_start = if self.bundles[bundle.index()].first_range.is_valid() {
-            self.ranges[self.bundles[bundle.index()].first_range.index()]
+            self.ranges_hot[self.bundles[bundle.index()].first_range.index()]
                 .range
                 .from
         } else {
             ProgPoint::before(Inst::new(0))
         };
         let bundle_end = if self.bundles[bundle.index()].last_range.is_valid() {
-            self.ranges[self.bundles[bundle.index()].last_range.index()]
+            self.ranges_hot[self.bundles[bundle.index()].last_range.index()]
                 .range
                 .to
         } else {
@@ -2505,7 +2521,7 @@ impl<'a, F: Function> Env<'a, F> {
         let mut clobberidx = 0;
         while our_iter.is_valid() {
             // Probe the hot-code tree.
-            let our_range = self.ranges[our_iter.index()].range;
+            let our_range = self.ranges_hot[our_iter.index()].range;
             log::debug!(" -> range {:?}", our_range);
             if let Some(hot_range_idx) = self
                 .hot_code
@@ -2516,7 +2532,7 @@ impl<'a, F: Function> Env<'a, F> {
 
                 // There may be cold code in our range on either side of the hot
                 // range. Record the transition points if so.
-                let hot_range = self.ranges[hot_range_idx.index()].range;
+                let hot_range = self.ranges_hot[hot_range_idx.index()].range;
                 log::debug!("   -> overlaps with hot-code range {:?}", hot_range);
                 let start_cold = our_range.from < hot_range.from;
                 let end_cold = our_range.to > hot_range.to;
@@ -2585,7 +2601,7 @@ impl<'a, F: Function> Env<'a, F> {
                 use_idx = use_data.next_use();
             }
 
-            our_iter = self.ranges[our_iter.index()].next_in_bundle;
+            our_iter = self.ranges_hot[our_iter.index()].next_in_bundle;
         }
         log::debug!(
             "  -> first use/def after conflict range: {:?}",
@@ -2634,7 +2650,7 @@ impl<'a, F: Function> Env<'a, F> {
         let mut iter = self.bundles[bundle.index()].first_range;
         log::debug!("finding all use/def splits for {:?}", bundle);
         let bundle_start = if iter.is_valid() {
-            self.ranges[iter.index()].range.from
+            self.ranges_hot[iter.index()].range.from
         } else {
             ProgPoint::before(Inst::new(0))
         };
@@ -2644,9 +2660,12 @@ impl<'a, F: Function> Env<'a, F> {
         // the middle* of an instruction, because we would not be able
         // to insert moves to reify such an assignment.
         while iter.is_valid() {
-            let rangedata = &self.ranges[iter.index()];
-            log::debug!(" -> range {:?}: {:?}", iter, rangedata.range);
-            let mut use_idx = rangedata.first_use;
+            log::debug!(
+                " -> range {:?}: {:?}",
+                iter,
+                self.ranges_hot[iter.index()].range
+            );
+            let mut use_idx = self.ranges[iter.index()].first_use;
             while use_idx.is_valid() {
                 let use_data = &self.uses[use_idx.index()];
                 log::debug!("  -> use: {:?}", use_data);
@@ -2674,7 +2693,7 @@ impl<'a, F: Function> Env<'a, F> {
                 use_idx = use_data.next_use();
             }
 
-            iter = rangedata.next_in_bundle;
+            iter = self.ranges_hot[iter.index()].next_in_bundle;
         }
         splits.sort_unstable();
         log::debug!(" -> final splits: {:?}", splits);
@@ -2741,7 +2760,7 @@ impl<'a, F: Function> Env<'a, F> {
         // at the start of the first range in the bundle.
         let first_range = self.bundles[bundle.index()].first_range;
         let bundle_start = if first_range.is_valid() {
-            self.ranges[first_range.index()].range.from
+            self.ranges_hot[first_range.index()].range.from
         } else {
             ProgPoint::before(Inst::new(0))
         };
@@ -2757,10 +2776,10 @@ impl<'a, F: Function> Env<'a, F> {
         let mut range_summary_idx = self.bundles[bundle.index()].range_summary.from;
         while iter.is_valid() {
             // Read `next` link now and then clear it -- we rebuild the list below.
-            let next = self.ranges[iter.index()].next_in_bundle;
-            self.ranges[iter.index()].next_in_bundle = LiveRangeIndex::invalid();
+            let next = self.ranges_hot[iter.index()].next_in_bundle;
+            self.ranges_hot[iter.index()].next_in_bundle = LiveRangeIndex::invalid();
 
-            let mut range = self.ranges[iter.index()].range;
+            let mut range = self.ranges_hot[iter.index()].range;
             log::debug!(" -> has range {:?} (LR {:?})", range, iter);
 
             // If any splits occur before this range, create a new
@@ -2784,8 +2803,8 @@ impl<'a, F: Function> Env<'a, F> {
             // Link into current bundle.
             self.ranges[iter.index()].bundle = cur_bundle;
             if self.bundles[cur_bundle.index()].first_range.is_valid() {
-                self.ranges[self.bundles[cur_bundle.index()].last_range.index()].next_in_bundle =
-                    iter;
+                self.ranges_hot[self.bundles[cur_bundle.index()].last_range.index()]
+                    .next_in_bundle = iter;
             } else {
                 self.bundles[cur_bundle.index()].first_range = iter;
             }
@@ -2825,14 +2844,14 @@ impl<'a, F: Function> Env<'a, F> {
                 debug_assert!(range.from < split_point && split_point < range.to);
                 let rest_range = CodeRange {
                     from: split_point,
-                    to: self.ranges[iter.index()].range.to,
+                    to: self.ranges_hot[iter.index()].range.to,
                 };
-                self.ranges[iter.index()].range.to = split_point;
+                self.ranges_hot[iter.index()].range.to = split_point;
                 range = rest_range;
                 log::debug!(
                     " -> range of {:?} now {:?}",
                     iter,
-                    self.ranges[iter.index()].range
+                    self.ranges_hot[iter.index()].range
                 );
 
                 // Create the rest-range and insert it into the vreg's
@@ -2898,7 +2917,7 @@ impl<'a, F: Function> Env<'a, F> {
                 log::debug!(
                     " -> range {:?} next-in-bundle is {:?}",
                     iter,
-                    self.ranges[iter.index()].next_in_bundle
+                    self.ranges_hot[iter.index()].next_in_bundle
                 );
 
                 // Create a new bundle to hold the rest-range.
@@ -2943,12 +2962,12 @@ impl<'a, F: Function> Env<'a, F> {
     fn fixup_range_summary_bound(&mut self, bundle: LiveBundleIndex) {
         let bundledata = &mut self.bundles[bundle.index()];
         let from = if bundledata.first_range.is_valid() {
-            self.ranges[bundledata.first_range.index()].range.from
+            self.ranges_hot[bundledata.first_range.index()].range.from
         } else {
             ProgPoint::from_index(0)
         };
         let to = if bundledata.last_range.is_valid() {
-            self.ranges[bundledata.last_range.index()].range.to
+            self.ranges_hot[bundledata.last_range.index()].range.to
         } else {
             ProgPoint::from_index(0)
         };
@@ -2963,8 +2982,11 @@ impl<'a, F: Function> Env<'a, F> {
                 .range_summary
                 .iter(&self.range_ranges[..]);
             while iter.is_valid() {
-                assert_eq!(summary_iter.next(), Some(self.ranges[iter.index()].range));
-                iter = self.ranges[iter.index()].next_in_bundle;
+                assert_eq!(
+                    summary_iter.next(),
+                    Some(self.ranges_hot[iter.index()].range)
+                );
+                iter = self.ranges_hot[iter.index()].next_in_bundle;
             }
             assert_eq!(summary_iter.next(), None);
         }
@@ -3032,11 +3054,12 @@ impl<'a, F: Function> Env<'a, F> {
                     // location in the code and by the bundle we're
                     // considering. This has the effect of spreading
                     // demand more evenly across registers.
-                    let scan_offset = self.ranges[self.bundles[bundle.index()].first_range.index()]
-                        .range
-                        .from
-                        .inst()
-                        .index()
+                    let scan_offset = self.ranges_hot
+                        [self.bundles[bundle.index()].first_range.index()]
+                    .range
+                    .from
+                    .inst()
+                    .index()
                         + bundle.index();
 
                     // If the bundle is more than one range, see if we
@@ -3235,7 +3258,7 @@ impl<'a, F: Function> Env<'a, F> {
         for &bundle in &self.spillsets[spillset.index()].bundles {
             let mut iter = self.bundles[bundle.index()].first_range;
             while iter.is_valid() {
-                let range = self.ranges[iter.index()].range;
+                let range = self.ranges_hot[iter.index()].range;
                 if self.spillslots[spillslot.index()]
                     .ranges
                     .btree
@@ -3243,7 +3266,7 @@ impl<'a, F: Function> Env<'a, F> {
                 {
                     return false;
                 }
-                iter = self.ranges[iter.index()].next_in_bundle;
+                iter = self.ranges_hot[iter.index()].next_in_bundle;
             }
         }
         true
@@ -3271,14 +3294,14 @@ impl<'a, F: Function> Env<'a, F> {
                     spillslot,
                     iter,
                     bundle,
-                    self.ranges[iter.index()].range
+                    self.ranges_hot[iter.index()].range
                 );
-                let range = self.ranges[iter.index()].range;
+                let range = self.ranges_hot[iter.index()].range;
                 self.spillslots[spillslot.index()]
                     .ranges
                     .btree
                     .insert(LiveRangeKey::from_range(&range), iter);
-                iter = self.ranges[iter.index()].next_in_bundle;
+                iter = self.ranges_hot[iter.index()].next_in_bundle;
             }
         }
     }
@@ -3512,7 +3535,7 @@ impl<'a, F: Function> Env<'a, F> {
             let mut prev = LiveRangeIndex::invalid();
             while iter.is_valid() {
                 let alloc = self.get_alloc_for_range(iter);
-                let range = self.ranges[iter.index()].range;
+                let range = self.ranges_hot[iter.index()].range;
                 log::debug!(
                     "apply_allocations: vreg {:?} LR {:?} with range {:?} has alloc {:?}",
                     vreg,
@@ -3565,7 +3588,7 @@ impl<'a, F: Function> Env<'a, F> {
                 // instruction).
                 if prev.is_valid() {
                     let prev_alloc = self.get_alloc_for_range(prev);
-                    let prev_range = self.ranges[prev.index()].range;
+                    let prev_range = self.ranges_hot[prev.index()].range;
                     let first_use = self.ranges[iter.index()].first_use;
                     let first_is_def = if first_use.is_valid() {
                         self.uses[first_use.index()].operand.kind() == OperandKind::Def
@@ -4235,8 +4258,7 @@ impl<'a, F: Function> Env<'a, F> {
             let mut safepoint_idx = 0;
             let mut iter = self.vregs[vreg.index()].first_range;
             while iter.is_valid() {
-                let rangedata = &self.ranges[iter.index()];
-                let range = rangedata.range;
+                let range = self.ranges_hot[iter.index()].range;
                 let alloc = self.get_alloc_for_range(iter);
                 log::debug!(" -> range {:?}: alloc {}", range, alloc);
                 while safepoint_idx < safepoints.len() && safepoints[safepoint_idx] < range.to {
@@ -4252,7 +4274,7 @@ impl<'a, F: Function> Env<'a, F> {
                     self.safepoint_slots.push((safepoints[safepoint_idx], slot));
                     safepoint_idx += 1;
                 }
-                iter = rangedata.next_in_reg;
+                iter = self.ranges[iter.index()].next_in_reg;
             }
         }
 
