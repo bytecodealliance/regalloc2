@@ -1301,69 +1301,78 @@ impl<'a, F: Function> Env<'a, F> {
 
                 // If this is a move, handle specially.
                 if let Some((src, dst)) = self.func.is_move(inst) {
-                    log::debug!(" -> move inst{}: src {} -> dst {}", inst.index(), src, dst);
-                    assert_eq!(src.class(), dst.class());
+                    if src != dst {
+                        log::debug!(" -> move inst{}: src {} -> dst {}", inst.index(), src, dst);
+                        assert_eq!(src.class(), dst.class());
 
-                    // Handle the def w.r.t. liveranges: trim the
-                    // start of the range and mark it dead at this
-                    // point in our backward scan.
-                    let pos = ProgPoint::after(inst);
-                    let mut dst_lr = vreg_ranges[dst.vreg()];
-                    // If there was no liverange (dead def), create a trivial one.
-                    if !live.get(dst.vreg()) {
-                        dst_lr = self.add_liverange_to_vreg(
-                            VRegIndex::new(dst.vreg()),
-                            CodeRange {
-                                from: pos,
-                                to: pos.next(),
-                            },
+                        // Handle the def w.r.t. liveranges: trim the
+                        // start of the range and mark it dead at this
+                        // point in our backward scan.
+                        let pos = ProgPoint::before(inst); // See note below re: pos of use.
+                        let mut dst_lr = vreg_ranges[dst.vreg()];
+                        // If there was no liverange (dead def), create a trivial one.
+                        if !live.get(dst.vreg()) {
+                            dst_lr = self.add_liverange_to_vreg(
+                                VRegIndex::new(dst.vreg()),
+                                CodeRange {
+                                    from: pos,
+                                    to: pos.next(),
+                                },
+                                &mut num_ranges,
+                            );
+                            log::debug!(" -> invalid; created {:?}", dst_lr);
+                        } else {
+                            log::debug!(" -> has existing LR {:?}", dst_lr);
+                        }
+                        if self.ranges_hot[dst_lr.index()].range.from
+                            == self.cfginfo.block_entry[block.index()]
+                        {
+                            log::debug!(" -> started at block start; trimming to {:?}", pos);
+                            self.ranges_hot[dst_lr.index()].range.from = pos;
+                        }
+                        live.set(dst.vreg(), false);
+                        vreg_ranges[dst.vreg()] = LiveRangeIndex::invalid();
+                        self.vreg_regs[dst.vreg()] = dst;
+
+                        // Handle the use w.r.t. liveranges: make it live
+                        // and create an initial LR back to the start of
+                        // the block.
+                        let pos = ProgPoint::before(inst);
+                        let range = CodeRange {
+                            from: self.cfginfo.block_entry[block.index()],
+                            // Live up to end of previous inst. Because
+                            // the move isn't actually reading the
+                            // value as part of the inst, all we need
+                            // to do is to decide where to join the
+                            // LRs; and we want this to be at an inst
+                            // boundary, not in the middle, so that
+                            // the move-insertion logic remains happy.
+                            to: pos,
+                        };
+                        let src_lr = self.add_liverange_to_vreg(
+                            VRegIndex::new(src.vreg()),
+                            range,
                             &mut num_ranges,
                         );
-                        log::debug!(" -> invalid; created {:?}", dst_lr);
-                    } else {
-                        log::debug!(" -> has existing LR {:?}", dst_lr);
+                        vreg_ranges[src.vreg()] = src_lr;
+
+                        log::debug!(" -> src LR {:?}", src_lr);
+
+                        // Add to live-set.
+                        let src_is_dead_after_move = !live.get(src.vreg());
+                        live.set(src.vreg(), true);
+
+                        // Add to program-moves lists.
+                        self.prog_move_srcs
+                            .push(((VRegIndex::new(src.vreg()), inst), Allocation::none()));
+                        self.prog_move_dsts
+                            .push(((VRegIndex::new(dst.vreg()), inst), Allocation::none()));
+                        if src_is_dead_after_move {
+                            self.prog_move_merges.push((src_lr, dst_lr));
+                        }
+
+                        continue;
                     }
-                    if self.ranges_hot[dst_lr.index()].range.from
-                        == self.cfginfo.block_entry[block.index()]
-                    {
-                        log::debug!(" -> started at block start; trimming to {:?}", pos);
-                        self.ranges_hot[dst_lr.index()].range.from = pos;
-                    }
-                    live.set(dst.vreg(), false);
-                    vreg_ranges[dst.vreg()] = LiveRangeIndex::invalid();
-                    self.vreg_regs[dst.vreg()] = dst;
-
-                    // Handle the use w.r.t. liveranges: make it live
-                    // and create an initial LR back to the start of
-                    // the block.
-                    let pos = ProgPoint::before(inst);
-                    let range = CodeRange {
-                        from: self.cfginfo.block_entry[block.index()],
-                        to: pos.next(),
-                    };
-                    let src_lr = self.add_liverange_to_vreg(
-                        VRegIndex::new(src.vreg()),
-                        range,
-                        &mut num_ranges,
-                    );
-                    vreg_ranges[src.vreg()] = src_lr;
-
-                    log::debug!(" -> src LR {:?}", src_lr);
-
-                    // Add to live-set.
-                    let src_is_dead_after_move = !live.get(src.vreg());
-                    live.set(src.vreg(), true);
-
-                    // Add to program-moves lists.
-                    self.prog_move_srcs
-                        .push(((VRegIndex::new(src.vreg()), inst), Allocation::none()));
-                    self.prog_move_dsts
-                        .push(((VRegIndex::new(dst.vreg()), inst), Allocation::none()));
-                    if src_is_dead_after_move {
-                        self.prog_move_merges.push((src_lr, dst_lr));
-                    }
-
-                    continue;
                 }
 
                 // Process defs and uses.
