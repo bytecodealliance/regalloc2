@@ -1316,7 +1316,7 @@ impl<'a, F: Function> Env<'a, F> {
                                 VRegIndex::new(dst.vreg()),
                                 CodeRange {
                                     from: pos,
-                                    to: pos.next(),
+                                    to: pos.next().next(),
                                 },
                                 &mut num_ranges,
                             );
@@ -3851,11 +3851,7 @@ impl<'a, F: Function> Env<'a, F> {
                 } else {
                     (vreg, range.from.inst().next())
                 };
-                let move_src_end = if range.to.pos() == InstPosition::Before {
-                    (vreg, range.to.inst())
-                } else {
-                    (vreg, range.to.inst().next())
-                };
+                let move_src_end = (vreg, range.to.inst().next());
                 log::debug!(
                     "vreg {:?} range {:?}: looking for program-move sources from {:?} to {:?}",
                     vreg,
