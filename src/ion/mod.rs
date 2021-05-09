@@ -1165,8 +1165,8 @@ impl<'a, F: Function> Env<'a, F> {
             let mut live = self.liveouts[block.index()].clone();
             for inst in self.func.block_insns(block).rev().iter() {
                 if let Some((src, dst)) = self.func.is_move(inst) {
-                    live.set(dst.vreg(), false);
-                    live.set(src.vreg(), true);
+                    live.set(dst.vreg().vreg(), false);
+                    live.set(src.vreg().vreg(), true);
                 }
                 for pos in &[OperandPos::After, OperandPos::Before] {
                     for op in self.func.inst_operands(inst) {
@@ -1304,19 +1304,23 @@ impl<'a, F: Function> Env<'a, F> {
 
                 // If this is a move, handle specially.
                 if let Some((src, dst)) = self.func.is_move(inst) {
-                    if src != dst {
+                    if src.vreg() != dst.vreg() {
                         log::debug!(" -> move inst{}: src {} -> dst {}", inst.index(), src, dst);
                         assert_eq!(src.class(), dst.class());
+                        assert_eq!(src.kind(), OperandKind::Use);
+                        assert_eq!(src.pos(), OperandPos::Before);
+                        assert_eq!(dst.kind(), OperandKind::Def);
+                        assert_eq!(dst.pos(), OperandPos::After);
 
                         // Handle the def w.r.t. liveranges: trim the
                         // start of the range and mark it dead at this
                         // point in our backward scan.
                         let pos = ProgPoint::after(inst);
-                        let mut dst_lr = vreg_ranges[dst.vreg()];
+                        let mut dst_lr = vreg_ranges[dst.vreg().vreg()];
                         // If there was no liverange (dead def), create a trivial one.
-                        if !live.get(dst.vreg()) {
+                        if !live.get(dst.vreg().vreg()) {
                             dst_lr = self.add_liverange_to_vreg(
-                                VRegIndex::new(dst.vreg()),
+                                VRegIndex::new(dst.vreg().vreg()),
                                 CodeRange {
                                     from: pos,
                                     to: pos.next(),
@@ -1333,22 +1337,13 @@ impl<'a, F: Function> Env<'a, F> {
                             log::debug!(" -> started at block start; trimming to {:?}", pos);
                             self.ranges_hot[dst_lr.index()].range.from = pos;
                         }
-                        live.set(dst.vreg(), false);
-                        vreg_ranges[dst.vreg()] = LiveRangeIndex::invalid();
-                        self.vreg_regs[dst.vreg()] = dst;
+                        live.set(dst.vreg().vreg(), false);
+                        vreg_ranges[dst.vreg().vreg()] = LiveRangeIndex::invalid();
+                        self.vreg_regs[dst.vreg().vreg()] = dst.vreg();
 
                         let u = UseIndex::new(self.uses.len());
-                        self.uses.push(Use::new(
-                            Operand::new(
-                                dst,
-                                OperandPolicy::Any,
-                                OperandKind::Def,
-                                OperandPos::After,
-                            ),
-                            pos,
-                            UseIndex::invalid(),
-                            SLOT_NONE as u8,
-                        ));
+                        self.uses
+                            .push(Use::new(dst, pos, UseIndex::invalid(), SLOT_NONE as u8));
                         self.insert_use_into_liverange_and_update_stats(dst_lr, u);
 
                         // Handle the use w.r.t. liveranges: make it live
@@ -1360,37 +1355,32 @@ impl<'a, F: Function> Env<'a, F> {
                             to: pos.next(),
                         };
                         let src_lr = self.add_liverange_to_vreg(
-                            VRegIndex::new(src.vreg()),
+                            VRegIndex::new(src.vreg().vreg()),
                             range,
                             &mut num_ranges,
                         );
-                        vreg_ranges[src.vreg()] = src_lr;
+                        vreg_ranges[src.vreg().vreg()] = src_lr;
 
                         log::debug!(" -> src LR {:?}", src_lr);
 
                         let u = UseIndex::new(self.uses.len());
-                        self.uses.push(Use::new(
-                            Operand::new(
-                                dst,
-                                OperandPolicy::Any,
-                                OperandKind::Use,
-                                OperandPos::Before,
-                            ),
-                            pos,
-                            UseIndex::invalid(),
-                            SLOT_NONE as u8,
-                        ));
+                        self.uses
+                            .push(Use::new(src, pos, UseIndex::invalid(), SLOT_NONE as u8));
                         self.insert_use_into_liverange_and_update_stats(src_lr, u);
 
                         // Add to live-set.
-                        let src_is_dead_after_move = !live.get(src.vreg());
-                        live.set(src.vreg(), true);
+                        let src_is_dead_after_move = !live.get(src.vreg().vreg());
+                        live.set(src.vreg().vreg(), true);
 
                         // Add to program-moves lists.
-                        self.prog_move_srcs
-                            .push(((VRegIndex::new(src.vreg()), inst), Allocation::none()));
-                        self.prog_move_dsts
-                            .push(((VRegIndex::new(dst.vreg()), inst), Allocation::none()));
+                        self.prog_move_srcs.push((
+                            (VRegIndex::new(src.vreg().vreg()), inst),
+                            Allocation::none(),
+                        ));
+                        self.prog_move_dsts.push((
+                            (VRegIndex::new(dst.vreg().vreg()), inst),
+                            Allocation::none(),
+                        ));
                         if src_is_dead_after_move {
                             self.prog_move_merges.push((src_lr, dst_lr));
                         }
@@ -3859,7 +3849,11 @@ impl<'a, F: Function> Env<'a, F> {
                 } else {
                     (vreg, range.from.inst().next())
                 };
-                let move_src_end = (vreg, range.to.inst());
+                let move_src_end = if range.to.pos() == InstPosition::Before {
+                    (vreg, range.to.inst())
+                } else {
+                    (vreg, range.to.inst().next())
+                };
                 log::debug!(
                     "vreg {:?} range {:?}: looking for program-move sources from {:?} to {:?}",
                     vreg,

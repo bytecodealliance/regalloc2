@@ -708,8 +708,8 @@ pub trait Function {
     }
 
     /// Determine whether an instruction is a move; if so, return the
-    /// vregs for (src, dst).
-    fn is_move(&self, insn: Inst) -> Option<(VReg, VReg)>;
+    /// Operands for (src, dst).
+    fn is_move(&self, insn: Inst) -> Option<(Operand, Operand)>;
 
     // --------------------------
     // Instruction register slots
