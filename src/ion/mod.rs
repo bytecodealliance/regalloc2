@@ -4154,7 +4154,9 @@ impl<'a, F: Function> Env<'a, F> {
             let mut float_moves: SmallVec<[InsertedMove; 8]> = smallvec![];
 
             for m in moves {
-                assert_eq!(m.from_alloc.class(), m.to_alloc.class());
+                if m.from_alloc.is_reg() && m.to_alloc.is_reg() {
+                    assert_eq!(m.from_alloc.class(), m.to_alloc.class());
+                }
                 match m.from_alloc.class() {
                     RegClass::Int => {
                         int_moves.push(m.clone());
