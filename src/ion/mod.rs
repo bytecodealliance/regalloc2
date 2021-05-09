@@ -3859,7 +3859,7 @@ impl<'a, F: Function> Env<'a, F> {
                 } else {
                     (vreg, range.from.inst().next())
                 };
-                let move_src_end = (vreg, range.to.inst().next());
+                let move_src_end = (vreg, range.to.inst());
                 log::debug!(
                     "vreg {:?} range {:?}: looking for program-move sources from {:?} to {:?}",
                     vreg,
