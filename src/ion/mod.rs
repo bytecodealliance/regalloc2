@@ -3949,22 +3949,25 @@ impl<'a, F: Function> Env<'a, F> {
 
             let (insertion_point, prio) = if to_ins > 1 && from_outs <= 1 {
                 (
-                    // N.B.: "after" the branch should be interpreted
-                    // by the user as happening before the actual
-                    // branching action, but after the branch reads
-                    // all necessary inputs. It's necessary to do this
-                    // rather than to place the moves before the
-                    // branch because the branch may have other
-                    // actions than just the control-flow transfer,
-                    // and these other actions may require other
-                    // inputs (which should be read before the "edge"
-                    // moves).
-                    //
-                    // Edits will only appear after the last (branch)
-                    // instruction if the block has only a single
-                    // successor; we do not expect the user to somehow
-                    // duplicate or predicate these.
-                    ProgPoint::after(from_last_insn),
+                    // N.B.: though semantically the edge moves happen
+                    // after the branch, we must insert them before
+                    // the branch because otherwise, of course, they
+                    // would never execute. This is correct even in
+                    // the presence of branches that read register
+                    // inputs (e.g. conditional branches on some RISCs
+                    // that branch on reg zero/not-zero, or any
+                    // indirect branch), but for a very subtle reason:
+                    // all cases of such branches will (or should)
+                    // have multiple successors, and thus due to
+                    // critical-edge splitting, their successors will
+                    // have only the single predecessor, and we prefer
+                    // to insert at the head of the successor in that
+                    // case (rather than here). We make this a
+                    // requirement, in fact: the user of this library
+                    // shall not read registers in a branch
+                    // instruction of there is only one successor per
+                    // the given CFG information.
+                    ProgPoint::before(from_last_insn),
                     InsertMovePrio::OutEdgeMoves,
                 )
             } else if to_ins <= 1 {
