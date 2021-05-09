@@ -958,6 +958,8 @@ impl Output {
 /// An error that prevents allocation.
 #[derive(Clone, Debug)]
 pub enum RegAllocError {
+    /// Critical edge is not split between given blocks.
+    CritEdge(Block, Block),
     /// Invalid SSA for given vreg at given inst: multiple defs or
     /// illegal use. `inst` may be `Inst::invalid()` if this concerns
     /// a block param.

@@ -5,7 +5,7 @@
 
 //! Lightweight CFG analyses.
 
-use crate::{domtree, postorder, Block, Function, Inst, OperandKind, ProgPoint};
+use crate::{domtree, postorder, Block, Function, Inst, OperandKind, ProgPoint, RegAllocError};
 
 #[derive(Clone, Debug)]
 pub struct CFGInfo {
@@ -37,7 +37,7 @@ pub struct CFGInfo {
 }
 
 impl CFGInfo {
-    pub fn new<F: Function>(f: &F) -> CFGInfo {
+    pub fn new<F: Function>(f: &F) -> Result<CFGInfo, RegAllocError> {
         let postorder =
             postorder::calculate(f.blocks(), f.entry_block(), |block| f.block_succs(block));
         let domtree = domtree::calculate(
@@ -74,20 +74,16 @@ impl CFGInfo {
 
             if f.block_preds(block).len() > 1 {
                 for (i, &pred) in f.block_preds(block).iter().enumerate() {
-                    // Assert critical edge condition.
-                    assert_eq!(
-                        f.block_succs(pred).len(),
-                        1,
-                        "Edge {} -> {} is critical",
-                        pred.index(),
-                        block.index(),
-                    );
+                    // Check critical edge condition.
+                    if f.block_succs(pred).len() > 1 {
+                        return Err(RegAllocError::CritEdge(pred, block));
+                    }
                     pred_pos[pred.index()] = i;
                 }
             }
         }
 
-        CFGInfo {
+        Ok(CFGInfo {
             postorder,
             domtree,
             insn_block,
@@ -96,7 +92,7 @@ impl CFGInfo {
             block_entry,
             block_exit,
             pred_pos,
-        }
+        })
     }
 
     pub fn dominates(&self, a: Block, b: Block) -> bool {

@@ -4445,7 +4445,7 @@ impl<'a, F: Function> Env<'a, F> {
 }
 
 pub fn run<F: Function>(func: &F, mach_env: &MachineEnv) -> Result<Output, RegAllocError> {
-    let cfginfo = CFGInfo::new(func);
+    let cfginfo = CFGInfo::new(func)?;
 
     let mut env = Env::new(func, mach_env, cfginfo);
     env.init()?;
