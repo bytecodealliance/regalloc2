@@ -2994,24 +2994,6 @@ impl<'a, F: Function> Env<'a, F> {
             ProgPoint::from_index(0)
         };
         bundledata.range_summary.bound = CodeRange { from, to };
-
-        #[cfg(debug_assertions)]
-        {
-            // Sanity check: ensure that ranges returned by the range
-            // summary correspond to actual ranges.
-            let mut iter = self.bundles[bundle.index()].first_range;
-            let mut summary_iter = self.bundles[bundle.index()]
-                .range_summary
-                .iter(&self.range_ranges[..]);
-            while iter.is_valid() {
-                assert_eq!(
-                    summary_iter.next(),
-                    Some(self.ranges_hot[iter.index()].range)
-                );
-                iter = self.ranges_hot[iter.index()].next_in_bundle;
-            }
-            assert_eq!(summary_iter.next(), None);
-        }
     }
 
     fn process_bundle(&mut self, bundle: LiveBundleIndex) {
