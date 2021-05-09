@@ -294,6 +294,9 @@ impl<'a> std::iter::Iterator for RangeSummaryIter<'a> {
         while self.idx < self.limit && self.arr[self.idx].to <= self.bound.from {
             self.idx += 1;
         }
+        if self.idx == self.limit {
+            return None;
+        }
         let mut cur = self.arr[self.idx];
         if cur.from >= self.bound.to {
             self.idx = self.limit;
@@ -3216,6 +3219,7 @@ impl<'a, F: Function> Env<'a, F> {
     }
 
     fn try_allocating_regs_for_spilled_bundles(&mut self) {
+        log::debug!("allocating regs for spilled bundles");
         for i in 0..self.spilled_bundles.len() {
             let bundle = self.spilled_bundles[i]; // don't borrow self
             let any_vreg = self.vreg_regs[self.ranges
@@ -3232,6 +3236,7 @@ impl<'a, F: Function> Env<'a, F> {
                 PReg::invalid(),
                 bundle.index(),
             ) {
+                log::debug!("trying bundle {:?} to preg {:?}", bundle, preg);
                 let preg_idx = PRegIndex::new(preg.index());
                 if let AllocRegResult::Allocated(_) =
                     self.try_to_allocate_bundle_to_reg(bundle, preg_idx)
