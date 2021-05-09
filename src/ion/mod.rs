@@ -1311,7 +1311,7 @@ impl<'a, F: Function> Env<'a, F> {
                         // Handle the def w.r.t. liveranges: trim the
                         // start of the range and mark it dead at this
                         // point in our backward scan.
-                        let pos = ProgPoint::before(inst); // See note below re: pos of use.
+                        let pos = ProgPoint::after(inst);
                         let mut dst_lr = vreg_ranges[dst.vreg()];
                         // If there was no liverange (dead def), create a trivial one.
                         if !live.get(dst.vreg()) {
@@ -1319,7 +1319,7 @@ impl<'a, F: Function> Env<'a, F> {
                                 VRegIndex::new(dst.vreg()),
                                 CodeRange {
                                     from: pos,
-                                    to: pos.next().next(),
+                                    to: pos.next(),
                                 },
                                 &mut num_ranges,
                             );
@@ -1337,20 +1337,27 @@ impl<'a, F: Function> Env<'a, F> {
                         vreg_ranges[dst.vreg()] = LiveRangeIndex::invalid();
                         self.vreg_regs[dst.vreg()] = dst;
 
+                        let u = UseIndex::new(self.uses.len());
+                        self.uses.push(Use::new(
+                            Operand::new(
+                                dst,
+                                OperandPolicy::Any,
+                                OperandKind::Def,
+                                OperandPos::After,
+                            ),
+                            pos,
+                            UseIndex::invalid(),
+                            SLOT_NONE as u8,
+                        ));
+                        self.insert_use_into_liverange_and_update_stats(dst_lr, u);
+
                         // Handle the use w.r.t. liveranges: make it live
                         // and create an initial LR back to the start of
                         // the block.
                         let pos = ProgPoint::before(inst);
                         let range = CodeRange {
                             from: self.cfginfo.block_entry[block.index()],
-                            // Live up to end of previous inst. Because
-                            // the move isn't actually reading the
-                            // value as part of the inst, all we need
-                            // to do is to decide where to join the
-                            // LRs; and we want this to be at an inst
-                            // boundary, not in the middle, so that
-                            // the move-insertion logic remains happy.
-                            to: pos,
+                            to: pos.next(),
                         };
                         let src_lr = self.add_liverange_to_vreg(
                             VRegIndex::new(src.vreg()),
@@ -1360,6 +1367,20 @@ impl<'a, F: Function> Env<'a, F> {
                         vreg_ranges[src.vreg()] = src_lr;
 
                         log::debug!(" -> src LR {:?}", src_lr);
+
+                        let u = UseIndex::new(self.uses.len());
+                        self.uses.push(Use::new(
+                            Operand::new(
+                                dst,
+                                OperandPolicy::Any,
+                                OperandKind::Use,
+                                OperandPos::Before,
+                            ),
+                            pos,
+                            UseIndex::invalid(),
+                            SLOT_NONE as u8,
+                        ));
+                        self.insert_use_into_liverange_and_update_stats(src_lr, u);
 
                         // Add to live-set.
                         let src_is_dead_after_move = !live.get(src.vreg());
