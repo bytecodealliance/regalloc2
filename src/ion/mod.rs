@@ -2305,19 +2305,6 @@ impl<'a, F: Function> Env<'a, F> {
                     if !conflicts.iter().any(|b| *b == conflict_bundle) {
                         conflicts.push(conflict_bundle);
                     }
-
-                    // Empirically, it seems to be essentially as good
-                    // to return only one conflicting bundle as all of
-                    // them; it is very rare that the combination of
-                    // all conflicting bundles yields a maximum spill
-                    // weight that is enough to keep them in place
-                    // when a single conflict does not. It is also a
-                    // quite significant compile-time win to *stop
-                    // scanning* as soon as we have a conflict. To
-                    // experiment with this, however, just remove this
-                    // `break`; the rest of the code will do the right
-                    // thing.
-                    break;
                 } else {
                     log::debug!("   -> conflict with fixed reservation");
                     // range from a direct use of the PReg (due to clobber).
