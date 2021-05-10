@@ -549,18 +549,24 @@ impl<'a, F: Function> Checker<'a, F> {
                     self.bb_insts.get_mut(&block).unwrap().push(checkinst);
                 }
 
-                // Instruction itself.
-                let operands: Vec<_> = self.f.inst_operands(inst).iter().cloned().collect();
-                let allocs: Vec<_> = out.inst_allocs(inst).iter().cloned().collect();
-                let clobbers: Vec<_> = self.f.inst_clobbers(inst).iter().cloned().collect();
-                let checkinst = CheckerInst::Op {
-                    inst,
-                    operands,
-                    allocs,
-                    clobbers,
-                };
-                debug!("checker: adding inst {:?}", checkinst);
-                self.bb_insts.get_mut(&block).unwrap().push(checkinst);
+                // Skip if this is a branch: the blockparams do not
+                // exist in post-regalloc code, and the edge-moves
+                // have to be inserted before the branch rather than
+                // after.
+                if !self.f.is_branch(inst) {
+                    // Instruction itself.
+                    let operands: Vec<_> = self.f.inst_operands(inst).iter().cloned().collect();
+                    let allocs: Vec<_> = out.inst_allocs(inst).iter().cloned().collect();
+                    let clobbers: Vec<_> = self.f.inst_clobbers(inst).iter().cloned().collect();
+                    let checkinst = CheckerInst::Op {
+                        inst,
+                        operands,
+                        allocs,
+                        clobbers,
+                    };
+                    debug!("checker: adding inst {:?}", checkinst);
+                    self.bb_insts.get_mut(&block).unwrap().push(checkinst);
+                }
 
                 // Any inserted edits after instruction.
                 self.handle_edits(block, out, &mut insert_idx, ProgPoint::after(inst));
