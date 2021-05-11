@@ -643,7 +643,6 @@ enum InsertMovePrio {
     MultiFixedReg,
     ReusedInput,
     OutEdgeMoves,
-    ProgramMove,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -667,6 +666,7 @@ pub struct Stats {
     splits_clobbers: usize,
     splits_hot: usize,
     splits_conflicts: usize,
+    splits_defs: usize,
     splits_all: usize,
     final_liverange_count: usize,
     final_bundle_count: usize,
@@ -1076,7 +1076,7 @@ impl<'a, F: Function> Env<'a, F> {
             let mut prev = UseIndex::invalid();
             let mut iter = first;
             while iter.is_valid() {
-                if self.uses[iter.index()].pos > insert_pos {
+                if self.uses[iter.index()].pos >= insert_pos {
                     break;
                 }
                 prev = iter;
@@ -1304,6 +1304,9 @@ impl<'a, F: Function> Env<'a, F> {
 
                 // If this is a move, handle specially.
                 if let Some((src, dst)) = self.func.is_move(inst) {
+                    // We can completely skip the move if it is
+                    // trivial (vreg to same vreg) or its output is
+                    // dead.
                     if src.vreg() != dst.vreg() {
                         log::debug!(" -> move inst{}: src {} -> dst {}", inst.index(), src, dst);
                         assert_eq!(src.class(), dst.class());
@@ -1312,25 +1315,70 @@ impl<'a, F: Function> Env<'a, F> {
                         assert_eq!(dst.kind(), OperandKind::Def);
                         assert_eq!(dst.pos(), OperandPos::After);
 
+                        // Redefine src and dst operands to have
+                        // positions of After and Before respectively
+                        // (see note below), and to have Any
+                        // constraints if they were originally Reg.
+                        let src_policy = match src.policy() {
+                            OperandPolicy::Reg => OperandPolicy::Any,
+                            x => x,
+                        };
+                        let dst_policy = match dst.policy() {
+                            OperandPolicy::Reg => OperandPolicy::Any,
+                            x => x,
+                        };
+                        let src = Operand::new(
+                            src.vreg(),
+                            src_policy,
+                            OperandKind::Use,
+                            OperandPos::After,
+                        );
+                        let dst = Operand::new(
+                            dst.vreg(),
+                            dst_policy,
+                            OperandKind::Def,
+                            OperandPos::Before,
+                        );
+
+                        // N.B.: in order to integrate with the move
+                        // resolution that joins LRs in general, we
+                        // conceptually treat the move as happening
+                        // between the move inst's After and the next
+                        // inst's Before. Thus the src LR goes up to
+                        // (exclusive) next-inst-pre, and the dst LR
+                        // starts at next-inst-pre. We have to take
+                        // care in our move insertion to handle this
+                        // like other inter-inst moves, i.e., at
+                        // `Regular` priority, so it properly happens
+                        // in parallel with other inter-LR moves.
+                        //
+                        // Why the progpoint between move and next
+                        // inst, and not the progpoint between prev
+                        // inst and move? Because a move can be the
+                        // first inst in a block, but cannot be the
+                        // last; so the following progpoint is always
+                        // within the same block, while the previous
+                        // one may be an inter-block point (and the
+                        // After of the prev inst in a different
+                        // block).
+
                         // Handle the def w.r.t. liveranges: trim the
                         // start of the range and mark it dead at this
                         // point in our backward scan.
-                        let pos = ProgPoint::after(inst);
+                        let pos = ProgPoint::before(inst.next());
                         let mut dst_lr = vreg_ranges[dst.vreg().vreg()];
-                        // If there was no liverange (dead def), create a trivial one.
                         if !live.get(dst.vreg().vreg()) {
+                            let from = pos;
+                            let to = pos.next();
                             dst_lr = self.add_liverange_to_vreg(
                                 VRegIndex::new(dst.vreg().vreg()),
-                                CodeRange {
-                                    from: pos,
-                                    to: pos.next(),
-                                },
+                                CodeRange { from, to },
                                 &mut num_ranges,
                             );
-                            log::debug!(" -> invalid; created {:?}", dst_lr);
-                        } else {
-                            log::debug!(" -> has existing LR {:?}", dst_lr);
+                            log::debug!(" -> invalid LR for def; created {:?}", dst_lr);
                         }
+                        log::debug!(" -> has existing LR {:?}", dst_lr);
+                        // Trim the LR to start here.
                         if self.ranges_hot[dst_lr.index()].range.from
                             == self.cfginfo.block_entry[block.index()]
                         {
@@ -1349,7 +1397,7 @@ impl<'a, F: Function> Env<'a, F> {
                         // Handle the use w.r.t. liveranges: make it live
                         // and create an initial LR back to the start of
                         // the block.
-                        let pos = ProgPoint::before(inst);
+                        let pos = ProgPoint::after(inst);
                         let range = CodeRange {
                             from: self.cfginfo.block_entry[block.index()],
                             to: pos.next(),
@@ -1378,15 +1426,15 @@ impl<'a, F: Function> Env<'a, F> {
                             Allocation::none(),
                         ));
                         self.prog_move_dsts.push((
-                            (VRegIndex::new(dst.vreg().vreg()), inst),
+                            (VRegIndex::new(dst.vreg().vreg()), inst.next()),
                             Allocation::none(),
                         ));
                         if src_is_dead_after_move {
                             self.prog_move_merges.push((src_lr, dst_lr));
                         }
-
-                        continue;
                     }
+
+                    continue;
                 }
 
                 // Process defs and uses.
@@ -1809,6 +1857,7 @@ impl<'a, F: Function> Env<'a, F> {
         // each bundle.
         let rc = self.vreg_regs[vreg_from.index()].class();
         if rc != self.vreg_regs[vreg_to.index()].class() {
+            log::debug!(" -> mismatching reg classes");
             return false;
         }
 
@@ -1816,6 +1865,7 @@ impl<'a, F: Function> Env<'a, F> {
         if !self.bundles[from.index()].allocation.is_none()
             || !self.bundles[to.index()].allocation.is_none()
         {
+            log::debug!("one of the bundles is already assigned (pinned)");
             return false;
         }
 
@@ -1843,6 +1893,10 @@ impl<'a, F: Function> Env<'a, F> {
         while iter0.is_valid() && iter1.is_valid() {
             range_count += 1;
             if range_count > 200 {
+                log::debug!(
+                    "reached merge complexity (range_count = {}); exiting",
+                    range_count
+                );
                 // Limit merge complexity.
                 return false;
             }
@@ -1856,9 +1910,12 @@ impl<'a, F: Function> Env<'a, F> {
                 iter0 = self.ranges_hot[iter0.index()].next_in_bundle;
             } else {
                 // Overlap -- cannot merge.
+                log::debug!(" -> overlap between {:?} and {:?}, exiting", iter0, iter1);
                 return false;
             }
         }
+
+        log::debug!(" -> committing to merge");
 
         // If we reach here, then the bundles do not overlap -- merge them!
         // We do this with a merge-sort-like scan over both chains, removing
@@ -2234,7 +2291,12 @@ impl<'a, F: Function> Env<'a, F> {
         while iter.is_valid() {
             let range_hot = &self.ranges_hot[iter.index()];
             let range = &self.ranges[iter.index()];
-            log::debug!(" -> range {:?}", range_hot.range);
+            log::debug!(
+                " -> range LR {} ({:?}): {:?}",
+                iter.index(),
+                iter,
+                range_hot.range
+            );
             let mut use_iter = range.first_use;
             while use_iter.is_valid() {
                 let usedata = &self.uses[use_iter.index()];
@@ -2489,6 +2551,8 @@ impl<'a, F: Function> Env<'a, F> {
         //
         // Then choose one of the above kinds of splits, in priority order.
 
+        let mut def_splits: SmallVec<[ProgPoint; 4]> = smallvec![];
+        let mut seen_defs = 0;
         let mut cold_hot_splits: SmallVec<[ProgPoint; 4]> = smallvec![];
         let mut clobber_splits: SmallVec<[ProgPoint; 4]> = smallvec![];
         let mut last_before_conflict: Option<ProgPoint> = None;
@@ -2621,6 +2685,12 @@ impl<'a, F: Function> Env<'a, F> {
                 let use_data = &self.uses[use_idx.index()];
                 log::debug!("   -> range has use at {:?}", use_data.pos);
                 update_with_pos(use_data.pos);
+                if use_data.operand.kind() == OperandKind::Def {
+                    if seen_defs > 0 {
+                        def_splits.push(use_data.pos);
+                    }
+                    seen_defs += 1;
+                }
                 use_idx = use_data.next_use();
             }
 
@@ -2661,6 +2731,10 @@ impl<'a, F: Function> Env<'a, F> {
             self.stats.splits_conflicts += 1;
             log::debug!(" going with last before conflict");
             smallvec![last_before_conflict.unwrap()]
+        } else if def_splits.len() > 0 {
+            log::debug!(" going with non-first def splits: {:?}", def_splits);
+            self.stats.splits_defs += 1;
+            def_splits
         } else {
             self.stats.splits_all += 1;
             log::debug!(" splitting at all uses");
@@ -3831,16 +3905,19 @@ impl<'a, F: Function> Env<'a, F> {
                 }
 
                 // Scan over program move srcs/dsts to fill in allocations.
-                let move_src_start = if range.from.pos() == InstPosition::Before {
-                    (vreg, range.from.inst())
-                } else {
-                    (vreg, range.from.inst().next())
-                };
-                let move_src_end = if range.to.pos() == InstPosition::Before {
-                    (vreg, range.to.inst())
-                } else {
-                    (vreg, range.to.inst().next())
-                };
+
+                // Move srcs happen at `After` of a given
+                // inst. Compute [from, to) semi-inclusive range of
+                // inst indices for which we should fill in the source
+                // with this LR's allocation.
+                //
+                // range from inst-Before or inst-After covers cur
+                // inst's After; so includes move srcs from inst.
+                let move_src_start = (vreg, range.from.inst());
+                // range to (exclusive) inst-Before or inst-After
+                // covers only prev inst's After; so includes move
+                // srcs to (exclusive) inst.
+                let move_src_end = (vreg, range.to.inst());
                 log::debug!(
                     "vreg {:?} range {:?}: looking for program-move sources from {:?} to {:?}",
                     vreg,
@@ -3867,8 +3944,23 @@ impl<'a, F: Function> Env<'a, F> {
                     prog_move_src_idx += 1;
                 }
 
-                let move_dst_start = (vreg, range.from.inst());
-                let move_dst_end = (vreg, range.to.inst());
+                // move dsts happen at Before point.
+                //
+                // Range from inst-Before includes cur inst, while inst-After includes only next inst.
+                let move_dst_start = if range.from.pos() == InstPosition::Before {
+                    (vreg, range.from.inst())
+                } else {
+                    (vreg, range.from.inst().next())
+                };
+                // Range to (exclusive) inst-Before includes prev
+                // inst, so to (exclusive) cur inst; range to
+                // (exclusive) inst-After includes cur inst, so to
+                // (exclusive) next inst.
+                let move_dst_end = if range.to.pos() == InstPosition::Before {
+                    (vreg, range.to.inst())
+                } else {
+                    (vreg, range.to.inst().next())
+                };
                 log::debug!(
                     "vreg {:?} range {:?}: looking for program-move dests from {:?} to {:?}",
                     vreg,
@@ -4105,7 +4197,7 @@ impl<'a, F: Function> Env<'a, F> {
         self.prog_move_srcs
             .sort_unstable_by_key(|((_, inst), _)| *inst);
         self.prog_move_dsts
-            .sort_unstable_by_key(|((_, inst), _)| *inst);
+            .sort_unstable_by_key(|((_, inst), _)| inst.prev());
         let prog_move_srcs = std::mem::replace(&mut self.prog_move_srcs, vec![]);
         let prog_move_dsts = std::mem::replace(&mut self.prog_move_dsts, vec![]);
         assert_eq!(prog_move_srcs.len(), prog_move_dsts.len());
@@ -4120,10 +4212,15 @@ impl<'a, F: Function> Env<'a, F> {
             );
             assert!(!from_alloc.is_none());
             assert!(!to_alloc.is_none());
-            assert_eq!(from_inst, to_inst);
+            assert_eq!(from_inst, to_inst.prev());
+            // N.B.: these moves happen with the *same* priority as
+            // LR-to-LR moves, because they work just like them: they
+            // connect a use at one progpoint (move-After) with a def
+            // at an adjacent progpoint (move+1-Before), so they must
+            // happen in parallel with all other LR-to-LR moves.
             self.insert_move(
-                ProgPoint::before(from_inst),
-                InsertMovePrio::ProgramMove,
+                ProgPoint::before(to_inst),
+                InsertMovePrio::Regular,
                 from_alloc,
                 to_alloc,
             );
