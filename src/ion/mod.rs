@@ -651,6 +651,10 @@ pub struct Stats {
     livein_iterations: usize,
     initial_liverange_count: usize,
     merged_bundle_count: usize,
+    prog_moves: usize,
+    prog_moves_dead_src: usize,
+    prog_move_merge_attempt: usize,
+    prog_move_merge_success: usize,
     process_bundle_count: usize,
     process_bundle_reg_probes_fixed: usize,
     process_bundle_reg_success_fixed: usize,
@@ -1429,7 +1433,9 @@ impl<'a, F: Function> Env<'a, F> {
                             (VRegIndex::new(dst.vreg().vreg()), inst.next()),
                             Allocation::none(),
                         ));
+                        self.stats.prog_moves += 1;
                         if src_is_dead_after_move {
+                            self.stats.prog_moves_dead_src += 1;
                             self.prog_move_merges.push((src_lr, dst_lr));
                         }
                     }
@@ -2135,7 +2141,10 @@ impl<'a, F: Function> Env<'a, F> {
             assert!(src_bundle.is_valid());
             let dest_bundle = self.ranges[dst.index()].bundle;
             assert!(dest_bundle.is_valid());
-            self.merge_bundles(/* from */ dest_bundle, /* to */ src_bundle);
+            self.stats.prog_move_merge_attempt += 1;
+            if self.merge_bundles(/* from */ dest_bundle, /* to */ src_bundle) {
+                self.stats.prog_move_merge_success += 1;
+            }
         }
 
         // Now create range summaries for all bundles.
