@@ -1163,7 +1163,7 @@ impl<'a, F: Function> Env<'a, F> {
         self.liveins[block.index()].get(vreg.index())
     }
 
-    fn compute_liveness(&mut self) {
+    fn compute_liveness(&mut self) -> Result<(), RegAllocError> {
         // Create initial LiveIn and LiveOut bitsets.
         for _ in 0..self.func.blocks() {
             self.liveins.push(BitVec::new());
@@ -1224,6 +1224,17 @@ impl<'a, F: Function> Env<'a, F> {
 
             log::debug!("computed liveins at block{}: {:?}", block.index(), live);
             self.liveins[block.index()] = live;
+        }
+
+        // Check that there are no liveins to the entry block. (The
+        // client should create a virtual intsruction that defines any
+        // PReg liveins if necessary.)
+        if self.liveins[self.func.entry_block().index()]
+            .iter()
+            .next()
+            .is_some()
+        {
+            return Err(RegAllocError::EntryLivein);
         }
 
         let mut num_ranges = 0;
@@ -1827,6 +1838,8 @@ impl<'a, F: Function> Env<'a, F> {
         self.stats.initial_liverange_count = self.ranges.len();
         self.stats.blockparam_ins_count = self.blockparam_ins.len();
         self.stats.blockparam_outs_count = self.blockparam_outs.len();
+
+        Ok(())
     }
 
     fn compute_hot_code(&mut self) {
@@ -4549,7 +4562,7 @@ impl<'a, F: Function> Env<'a, F> {
     pub(crate) fn init(&mut self) -> Result<(), RegAllocError> {
         self.create_pregs_and_vregs();
         self.compute_hot_code();
-        self.compute_liveness();
+        self.compute_liveness()?;
         self.merge_vreg_bundles();
         self.queue_bundles();
         if log::log_enabled!(log::Level::Debug) {

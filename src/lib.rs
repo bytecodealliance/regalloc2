@@ -981,6 +981,8 @@ pub enum RegAllocError {
     /// Invalid branch: operand count does not match sum of block
     /// params of successor blocks.
     Branch(Inst),
+    /// A VReg is live-in on entry; this is not allowed.
+    EntryLivein,
 }
 
 impl std::fmt::Display for RegAllocError {
