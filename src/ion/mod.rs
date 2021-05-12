@@ -561,10 +561,11 @@ impl LiveRangeSet {
 }
 
 #[inline(always)]
-fn spill_weight_from_policy(policy: OperandPolicy) -> u32 {
+fn spill_weight_from_policy(policy: OperandPolicy, is_hot: bool) -> u32 {
+    let bonus = if is_hot { 10000 } else { 0 };
     match policy {
-        OperandPolicy::Any => 1000,
-        OperandPolicy::Reg | OperandPolicy::FixedReg(_) => 2000,
+        OperandPolicy::Any => 1000 + bonus,
+        OperandPolicy::Reg | OperandPolicy::FixedReg(_) => 2000 + bonus,
         _ => 0,
     }
 }
@@ -1049,14 +1050,24 @@ impl<'a, F: Function> Env<'a, F> {
         debug_assert!(u.is_valid());
         let usedata = &self.uses[u.index()];
         let lrdata = &mut self.ranges[from.index()];
+        let pos = usedata.pos;
+        let is_hot = self
+            .hot_code
+            .btree
+            .contains_key(&LiveRangeKey::from_range(&CodeRange {
+                from: pos,
+                to: pos.next(),
+            }));
+        let policy = usedata.operand.policy();
+        let weight = spill_weight_from_policy(policy, is_hot);
         log::debug!(
             "  -> subtract {} from uses_spill_weight {}; now {}",
-            spill_weight_from_policy(usedata.operand.policy()),
+            weight,
             lrdata.uses_spill_weight(),
-            lrdata.uses_spill_weight() - spill_weight_from_policy(usedata.operand.policy()),
+            lrdata.uses_spill_weight() - weight,
         );
 
-        lrdata.uses_spill_weight_and_flags -= spill_weight_from_policy(usedata.operand.policy());
+        lrdata.uses_spill_weight_and_flags -= weight;
         if usedata.operand.kind() != OperandKind::Use {
             lrdata.uses_spill_weight_and_flags -= 2000;
         }
@@ -1099,13 +1110,22 @@ impl<'a, F: Function> Env<'a, F> {
 
         // Update stats.
         let policy = self.uses[u.index()].operand.policy();
+        let is_hot = self
+            .hot_code
+            .btree
+            .contains_key(&LiveRangeKey::from_range(&CodeRange {
+                from: insert_pos,
+                to: insert_pos.next(),
+            }));
+        let weight = spill_weight_from_policy(policy, is_hot);
         log::debug!(
             "insert use {:?} into lr {:?} with weight {}",
             u,
             into,
-            spill_weight_from_policy(policy)
+            weight,
         );
-        self.ranges[into.index()].uses_spill_weight_and_flags += spill_weight_from_policy(policy);
+
+        self.ranges[into.index()].uses_spill_weight_and_flags += weight;
         if self.uses[u.index()].operand.kind() != OperandKind::Use {
             self.ranges[into.index()].uses_spill_weight_and_flags += 2000;
         }
@@ -2991,7 +3011,16 @@ impl<'a, F: Function> Env<'a, F> {
                         use_iter,
                         policy
                     );
-                    uses_spill_weight += spill_weight_from_policy(policy);
+                    let pos = self.uses[use_iter.index()].pos;
+                    let is_hot =
+                        self.hot_code
+                            .btree
+                            .contains_key(&LiveRangeKey::from_range(&CodeRange {
+                                from: pos,
+                                to: pos.next(),
+                            }));
+                    let weight = spill_weight_from_policy(policy, is_hot);
+                    uses_spill_weight += weight;
                     log::debug!("   -> use {:?} remains in orig", use_iter);
                     use_iter = self.uses[use_iter.index()].next_use();
                 }
@@ -4434,8 +4463,8 @@ impl<'a, F: Function> Env<'a, F> {
 
     pub(crate) fn init(&mut self) -> Result<(), RegAllocError> {
         self.create_pregs_and_vregs();
-        self.compute_liveness();
         self.compute_hot_code();
+        self.compute_liveness();
         self.merge_vreg_bundles();
         self.queue_bundles();
         if log::log_enabled!(log::Level::Debug) {
