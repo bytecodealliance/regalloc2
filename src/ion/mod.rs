@@ -1333,6 +1333,19 @@ impl<'a, F: Function> Env<'a, F> {
                     // dead.
                     if src.vreg() != dst.vreg() {
                         log::debug!(" -> move inst{}: src {} -> dst {}", inst.index(), src, dst);
+                        if log::log_enabled!(log::Level::Debug) {
+                            self.annotate(
+                                ProgPoint::after(inst),
+                                format!(
+                                    " prog-move v{} ({:?}) -> v{} ({:?})",
+                                    src.vreg().vreg(),
+                                    src.policy(),
+                                    dst.vreg().vreg(),
+                                    dst.policy(),
+                                ),
+                            );
+                        }
+
                         assert_eq!(src.class(), dst.class());
                         assert_eq!(src.kind(), OperandKind::Use);
                         assert_eq!(src.pos(), OperandPos::Before);
@@ -1963,6 +1976,19 @@ impl<'a, F: Function> Env<'a, F> {
             self.bundles[from.index()].last_range = LiveRangeIndex::invalid();
             while iter0.is_valid() {
                 self.ranges[iter0.index()].bundle = from;
+
+                if log::log_enabled!(log::Level::Debug) {
+                    self.annotate(
+                        self.ranges_hot[iter0.index()].range.from,
+                        format!(
+                            " MERGE range{} from bundle{} to bundle{}",
+                            iter0.index(),
+                            from.index(),
+                            to.index(),
+                        ),
+                    );
+                }
+
                 iter0 = self.ranges_hot[iter0.index()].next_in_bundle;
             }
             return true;
@@ -1990,6 +2016,20 @@ impl<'a, F: Function> Env<'a, F> {
             };
             let next = *next_range_iter;
             *next_range_iter = self.ranges_hot[next.index()].next_in_bundle;
+
+            if self.ranges[next.index()].bundle == from {
+                if log::log_enabled!(log::Level::Debug) {
+                    self.annotate(
+                        self.ranges_hot[next.index()].range.from,
+                        format!(
+                            " MERGE range{} from bundle{} to bundle{}",
+                            next.index(),
+                            from.index(),
+                            to.index(),
+                        ),
+                    );
+                }
+            }
 
             // link from prev.
             if prev.is_valid() {
@@ -2919,8 +2959,23 @@ impl<'a, F: Function> Env<'a, F> {
                 );
                 self.bundles[cur_bundle.index()].spillset = self.bundles[bundle.index()].spillset;
                 new_bundles.push(cur_bundle);
-                split_idx += 1;
+
                 self.bundles[cur_bundle.index()].range_summary.from = range_summary_idx;
+
+                if log::log_enabled!(log::Level::Debug) {
+                    self.annotate(
+                        range.from,
+                        format!(
+                            " SPLIT bundle{} / range{} -> bundle{} / range{}",
+                            bundle.index(),
+                            iter.index(),
+                            cur_bundle.index(),
+                            iter.index(),
+                        ),
+                    );
+                }
+
+                split_idx += 1;
             }
             while split_idx < split_points.len() && split_points[split_idx] <= range.from {
                 split_idx += 1;
@@ -3058,6 +3113,7 @@ impl<'a, F: Function> Env<'a, F> {
                 // Create a new bundle to hold the rest-range.
                 let rest_bundle = self.create_bundle();
                 self.bundles[cur_bundle.index()].range_summary.to = range_summary_idx + 1;
+                let old_bundle = cur_bundle;
                 cur_bundle = rest_bundle;
                 self.bundles[cur_bundle.index()].range_summary.from = range_summary_idx;
                 self.bundles[cur_bundle.index()].range_summary.to = range_summary_idx + 1;
@@ -3067,6 +3123,19 @@ impl<'a, F: Function> Env<'a, F> {
                 self.bundles[rest_bundle.index()].spillset = self.bundles[bundle.index()].spillset;
                 self.ranges[rest_lr.index()].bundle = rest_bundle;
                 log::debug!(" -> new bundle {:?} for LR {:?}", rest_bundle, rest_lr);
+
+                if log::log_enabled!(log::Level::Debug) {
+                    self.annotate(
+                        split_point,
+                        format!(
+                            " SPLIT bundle{} / range{} -> bundle{} / range{}",
+                            old_bundle.index(),
+                            iter.index(),
+                            cur_bundle.index(),
+                            rest_lr.index(),
+                        ),
+                    );
+                }
 
                 iter = rest_lr;
             }
@@ -3674,19 +3743,21 @@ impl<'a, F: Function> Env<'a, F> {
                     self.annotate(
                         range.from,
                         format!(
-                            " <<< start v{} in {} (LR {})",
+                            " <<< start v{} in {} (range{}) (bundle{})",
                             vreg.index(),
                             alloc,
-                            iter.index()
+                            iter.index(),
+                            self.ranges[iter.index()].bundle.index(),
                         ),
                     );
                     self.annotate(
                         range.to,
                         format!(
-                            "     end   v{} in {} (LR {}) >>>",
+                            "     end   v{} in {} (range{}) (bundle{}) >>>",
                             vreg.index(),
                             alloc,
-                            iter.index()
+                            iter.index(),
+                            self.ranges[iter.index()].bundle.index(),
                         ),
                     );
                 }
