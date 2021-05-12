@@ -41,7 +41,7 @@ fuzz_target!(|testcase: TestCase| {
     let scratch = Allocation::reg(PReg::new(31, RegClass::Int));
     let mut par = ParallelMoves::new(scratch);
     for &(src, dst) in &testcase.moves {
-        par.add(src, dst);
+        par.add(src, dst, ());
     }
     let moves = par.resolve();
 
@@ -59,7 +59,7 @@ fuzz_target!(|testcase: TestCase| {
     for i in 0..32 {
         regfile[i] = Some(i);
     }
-    for (src, dst) in moves {
+    for (src, dst, _) in moves {
         if let (Some(preg_src), Some(preg_dst)) = (src.as_reg(), dst.as_reg()) {
             let data = regfile[preg_src.hw_enc()];
             regfile[preg_dst.hw_enc()] = data;

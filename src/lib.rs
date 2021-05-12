@@ -879,7 +879,18 @@ impl ProgPoint {
 pub enum Edit {
     /// Move one allocation to another. Each allocation may be a
     /// register or a stack slot (spillslot).
-    Move { from: Allocation, to: Allocation },
+    ///
+    /// `to_vreg`, if defined, is useful as metadata: it indicates
+    /// that the moved value is a def of a new vreg.
+    ///
+    /// `Move` edits will be generated even if src and dst allocation
+    /// are the same if the vreg changes; this allows proper metadata
+    /// tracking even when moves are elided.
+    Move {
+        from: Allocation,
+        to: Allocation,
+        to_vreg: Option<VReg>,
+    },
     /// Define blockparams' locations. Note that this is not typically
     /// turned into machine code, but can be useful metadata (e.g. for
     /// the checker).

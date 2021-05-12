@@ -144,30 +144,31 @@ struct LiveRange {
 enum LiveRangeFlag {
     Minimal = 1,
     Fixed = 2,
+    StartsAtDef = 4,
 }
 
 impl LiveRange {
     #[inline(always)]
     pub fn set_flag(&mut self, flag: LiveRangeFlag) {
-        self.uses_spill_weight_and_flags |= (flag as u32) << 30;
+        self.uses_spill_weight_and_flags |= (flag as u32) << 29;
     }
     #[inline(always)]
     pub fn clear_flag(&mut self, flag: LiveRangeFlag) {
-        self.uses_spill_weight_and_flags &= !((flag as u32) << 30);
+        self.uses_spill_weight_and_flags &= !((flag as u32) << 29);
     }
     #[inline(always)]
     pub fn has_flag(&self, flag: LiveRangeFlag) -> bool {
-        self.uses_spill_weight_and_flags & ((flag as u32) << 30) != 0
+        self.uses_spill_weight_and_flags & ((flag as u32) << 29) != 0
     }
     #[inline(always)]
     pub fn uses_spill_weight(&self) -> u32 {
-        self.uses_spill_weight_and_flags & 0x3fff_ffff
+        self.uses_spill_weight_and_flags & 0x1fff_ffff
     }
     #[inline(always)]
     pub fn set_uses_spill_weight(&mut self, weight: u32) {
-        assert!(weight < (1 << 30));
+        assert!(weight < (1 << 29));
         self.uses_spill_weight_and_flags =
-            (self.uses_spill_weight_and_flags & 0xc000_0000) | weight;
+            (self.uses_spill_weight_and_flags & 0xe000_0000) | weight;
     }
 }
 
@@ -634,6 +635,7 @@ struct InsertedMove {
     prio: InsertMovePrio,
     from_alloc: Allocation,
     to_alloc: Allocation,
+    to_vreg: Option<VReg>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -1333,18 +1335,6 @@ impl<'a, F: Function> Env<'a, F> {
                     // dead.
                     if src.vreg() != dst.vreg() {
                         log::debug!(" -> move inst{}: src {} -> dst {}", inst.index(), src, dst);
-                        if log::log_enabled!(log::Level::Debug) {
-                            self.annotate(
-                                ProgPoint::after(inst),
-                                format!(
-                                    " prog-move v{} ({:?}) -> v{} ({:?})",
-                                    src.vreg().vreg(),
-                                    src.policy(),
-                                    dst.vreg().vreg(),
-                                    dst.policy(),
-                                ),
-                            );
-                        }
 
                         assert_eq!(src.class(), dst.class());
                         assert_eq!(src.kind(), OperandKind::Use);
@@ -1376,6 +1366,19 @@ impl<'a, F: Function> Env<'a, F> {
                             OperandKind::Def,
                             OperandPos::Before,
                         );
+
+                        if log::log_enabled!(log::Level::Debug) {
+                            self.annotate(
+                                ProgPoint::after(inst),
+                                format!(
+                                    " prog-move v{} ({:?}) -> v{} ({:?})",
+                                    src.vreg().vreg(),
+                                    src_policy,
+                                    dst.vreg().vreg(),
+                                    dst_policy,
+                                ),
+                            );
+                        }
 
                         // N.B.: in order to integrate with the move
                         // resolution that joins LRs in general, we
@@ -1422,14 +1425,10 @@ impl<'a, F: Function> Env<'a, F> {
                             log::debug!(" -> started at block start; trimming to {:?}", pos);
                             self.ranges_hot[dst_lr.index()].range.from = pos;
                         }
+                        self.ranges[dst_lr.index()].set_flag(LiveRangeFlag::StartsAtDef);
                         live.set(dst.vreg().vreg(), false);
                         vreg_ranges[dst.vreg().vreg()] = LiveRangeIndex::invalid();
                         self.vreg_regs[dst.vreg().vreg()] = dst.vreg();
-
-                        let u = UseIndex::new(self.uses.len());
-                        self.uses
-                            .push(Use::new(dst, pos, UseIndex::invalid(), SLOT_NONE as u8));
-                        self.insert_use_into_liverange_and_update_stats(dst_lr, u);
 
                         // Handle the use w.r.t. liveranges: make it live
                         // and create an initial LR back to the start of
@@ -1447,11 +1446,6 @@ impl<'a, F: Function> Env<'a, F> {
                         vreg_ranges[src.vreg().vreg()] = src_lr;
 
                         log::debug!(" -> src LR {:?}", src_lr);
-
-                        let u = UseIndex::new(self.uses.len());
-                        self.uses
-                            .push(Use::new(src, pos, UseIndex::invalid(), SLOT_NONE as u8));
-                        self.insert_use_into_liverange_and_update_stats(src_lr, u);
 
                         // Add to live-set.
                         let src_is_dead_after_move = !live.get(src.vreg().vreg());
@@ -1571,6 +1565,8 @@ impl<'a, F: Function> Env<'a, F> {
                                         );
                                         self.ranges_hot[lr.index()].range.from = pos;
                                     }
+
+                                    self.ranges[lr.index()].set_flag(LiveRangeFlag::StartsAtDef);
 
                                     // Remove from live-set.
                                     live.set(operand.vreg().vreg(), false);
@@ -1981,8 +1977,9 @@ impl<'a, F: Function> Env<'a, F> {
                     self.annotate(
                         self.ranges_hot[iter0.index()].range.from,
                         format!(
-                            " MERGE range{} from bundle{} to bundle{}",
+                            " MERGE range{} v{} from bundle{} to bundle{}",
                             iter0.index(),
+                            self.ranges[iter0.index()].vreg.index(),
                             from.index(),
                             to.index(),
                         ),
@@ -2022,8 +2019,9 @@ impl<'a, F: Function> Env<'a, F> {
                     self.annotate(
                         self.ranges_hot[next.index()].range.from,
                         format!(
-                            " MERGE range{} from bundle{} to bundle{}",
+                            " MERGE range{} v{} from bundle{} to bundle{}",
                             next.index(),
+                            self.ranges[next.index()].vreg.index(),
                             from.index(),
                             to.index(),
                         ),
@@ -3611,6 +3609,7 @@ impl<'a, F: Function> Env<'a, F> {
         prio: InsertMovePrio,
         from_alloc: Allocation,
         to_alloc: Allocation,
+        to_vreg: Option<VReg>,
     ) {
         debug!(
             "insert_move: pos {:?} prio {:?} from_alloc {:?} to_alloc {:?}",
@@ -3627,6 +3626,7 @@ impl<'a, F: Function> Env<'a, F> {
             prio,
             from_alloc,
             to_alloc,
+            to_vreg,
         });
     }
 
@@ -3785,12 +3785,8 @@ impl<'a, F: Function> Env<'a, F> {
                 if prev.is_valid() {
                     let prev_alloc = self.get_alloc_for_range(prev);
                     let prev_range = self.ranges_hot[prev.index()].range;
-                    let first_use = self.ranges[iter.index()].first_use;
-                    let first_is_def = if first_use.is_valid() {
-                        self.uses[first_use.index()].operand.kind() == OperandKind::Def
-                    } else {
-                        false
-                    };
+                    let first_is_def =
+                        self.ranges[iter.index()].has_flag(LiveRangeFlag::StartsAtDef);
                     debug_assert!(prev_alloc != Allocation::none());
                     if prev_range.to == range.from
                         && !self.is_start_of_block(range.from)
@@ -3805,7 +3801,13 @@ impl<'a, F: Function> Env<'a, F> {
                             vreg.index()
                         );
                         assert_eq!(range.from.pos(), InstPosition::Before);
-                        self.insert_move(range.from, InsertMovePrio::Regular, prev_alloc, alloc);
+                        self.insert_move(
+                            range.from,
+                            InsertMovePrio::Regular,
+                            prev_alloc,
+                            alloc,
+                            None,
+                        );
                     }
                 }
 
@@ -4192,7 +4194,7 @@ impl<'a, F: Function> Env<'a, F> {
                 if last == Some(dest.alloc) {
                     continue;
                 }
-                self.insert_move(insertion_point, prio, src.alloc, dest.alloc);
+                self.insert_move(insertion_point, prio, src.alloc, dest.alloc, None);
                 last = Some(dest.alloc);
             }
         }
@@ -4212,6 +4214,7 @@ impl<'a, F: Function> Env<'a, F> {
                 InsertMovePrio::MultiFixedReg,
                 Allocation::reg(self.pregs[from_preg.index()].reg),
                 Allocation::reg(self.pregs[to_preg.index()].reg),
+                None,
             );
             self.set_alloc(
                 progpoint.inst(),
@@ -4294,6 +4297,7 @@ impl<'a, F: Function> Env<'a, F> {
                             InsertMovePrio::ReusedInput,
                             input_alloc,
                             output_alloc,
+                            None,
                         );
                         self.set_alloc(inst, input_idx, output_alloc);
                     }
@@ -4310,14 +4314,15 @@ impl<'a, F: Function> Env<'a, F> {
         let prog_move_srcs = std::mem::replace(&mut self.prog_move_srcs, vec![]);
         let prog_move_dsts = std::mem::replace(&mut self.prog_move_dsts, vec![]);
         assert_eq!(prog_move_srcs.len(), prog_move_dsts.len());
-        for (&((_, from_inst), from_alloc), &((_, to_inst), to_alloc)) in
+        for (&((_, from_inst), from_alloc), &((to_vreg, to_inst), to_alloc)) in
             prog_move_srcs.iter().zip(prog_move_dsts.iter())
         {
             log::debug!(
-                "program move at inst {:?}: alloc {:?} -> {:?}",
+                "program move at inst {:?}: alloc {:?} -> {:?} (v{})",
                 from_inst,
                 from_alloc,
-                to_alloc
+                to_alloc,
+                to_vreg.index(),
             );
             assert!(!from_alloc.is_none());
             assert!(!to_alloc.is_none());
@@ -4332,6 +4337,7 @@ impl<'a, F: Function> Env<'a, F> {
                 InsertMovePrio::Regular,
                 from_alloc,
                 to_alloc,
+                Some(self.vreg_regs[to_vreg.index()]),
             );
         }
     }
@@ -4389,17 +4395,25 @@ impl<'a, F: Function> Env<'a, F> {
                 ));
                 log::debug!("parallel moves at pos {:?} prio {:?}", pos, prio);
                 for m in moves {
-                    if m.from_alloc != m.to_alloc {
+                    if (m.from_alloc != m.to_alloc) || m.to_vreg.is_some() {
                         log::debug!(" {} -> {}", m.from_alloc, m.to_alloc,);
-                        parallel_moves.add(m.from_alloc, m.to_alloc);
+                        parallel_moves.add(m.from_alloc, m.to_alloc, m.to_vreg);
                     }
                 }
 
                 let resolved = parallel_moves.resolve();
 
-                for (src, dst) in resolved {
-                    log::debug!("  resolved: {} -> {}", src, dst);
-                    self.add_edit(pos, prio, Edit::Move { from: src, to: dst });
+                for (src, dst, to_vreg) in resolved {
+                    log::debug!("  resolved: {} -> {} ({:?})", src, dst, to_vreg);
+                    self.add_edit(
+                        pos,
+                        prio,
+                        Edit::Move {
+                            from: src,
+                            to: dst,
+                            to_vreg,
+                        },
+                    );
                 }
             }
         }
@@ -4446,10 +4460,10 @@ impl<'a, F: Function> Env<'a, F> {
             for i in 0..self.edits.len() {
                 let &(pos, _, ref edit) = &self.edits[i];
                 match edit {
-                    &Edit::Move { from, to } => {
+                    &Edit::Move { from, to, to_vreg } => {
                         self.annotate(
                             ProgPoint::from_index(pos),
-                            format!("move {} -> {}", from, to),
+                            format!("move {} -> {} ({:?})", from, to, to_vreg),
                         );
                     }
                     &Edit::BlockParams {
@@ -4466,8 +4480,8 @@ impl<'a, F: Function> Env<'a, F> {
 
     fn add_edit(&mut self, pos: ProgPoint, prio: InsertMovePrio, edit: Edit) {
         match &edit {
-            &Edit::Move { from, to } if from == to => return,
-            &Edit::Move { from, to } if from.is_reg() && to.is_reg() => {
+            &Edit::Move { from, to, to_vreg } if from == to && to_vreg.is_none() => return,
+            &Edit::Move { from, to, .. } if from.is_reg() && to.is_reg() => {
                 assert_eq!(from.as_reg().unwrap().class(), to.as_reg().unwrap().class());
             }
             _ => {}

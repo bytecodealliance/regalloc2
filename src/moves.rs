@@ -6,7 +6,7 @@
 use crate::Allocation;
 use smallvec::{smallvec, SmallVec};
 
-pub type MoveVec = SmallVec<[(Allocation, Allocation); 16]>;
+pub type MoveVec<T> = SmallVec<[(Allocation, Allocation, T); 16]>;
 
 /// A `ParallelMoves` represents a list of alloc-to-alloc moves that
 /// must happen in parallel -- i.e., all reads of sources semantically
@@ -14,12 +14,12 @@ pub type MoveVec = SmallVec<[(Allocation, Allocation); 16]>;
 /// allowed to overwrite sources. It can compute a list of sequential
 /// moves that will produce the equivalent data movement, possibly
 /// using a scratch register if one is necessary.
-pub struct ParallelMoves {
-    parallel_moves: MoveVec,
+pub struct ParallelMoves<T: Clone + Copy + Default> {
+    parallel_moves: MoveVec<T>,
     scratch: Allocation,
 }
 
-impl ParallelMoves {
+impl<T: Clone + Copy + Default> ParallelMoves<T> {
     pub fn new(scratch: Allocation) -> Self {
         Self {
             parallel_moves: smallvec![],
@@ -27,16 +27,16 @@ impl ParallelMoves {
         }
     }
 
-    pub fn add(&mut self, from: Allocation, to: Allocation) {
-        self.parallel_moves.push((from, to));
+    pub fn add(&mut self, from: Allocation, to: Allocation, t: T) {
+        self.parallel_moves.push((from, to, t));
     }
 
     fn sources_overlap_dests(&self) -> bool {
         // Assumes `parallel_moves` has already been sorted in `resolve()` below.
-        for &(_, dst) in &self.parallel_moves {
+        for &(_, dst, _) in &self.parallel_moves {
             if self
                 .parallel_moves
-                .binary_search_by_key(&dst, |&(src, _)| src)
+                .binary_search_by_key(&dst, |&(src, _, _)| src)
                 .is_ok()
             {
                 return true;
@@ -45,7 +45,7 @@ impl ParallelMoves {
         false
     }
 
-    pub fn resolve(mut self) -> MoveVec {
+    pub fn resolve(mut self) -> MoveVec<T> {
         // Easy case: zero or one move. Just return our vec.
         if self.parallel_moves.len() <= 1 {
             return self.parallel_moves;
@@ -53,7 +53,7 @@ impl ParallelMoves {
 
         // Sort moves by source so that we can efficiently test for
         // presence.
-        self.parallel_moves.sort();
+        self.parallel_moves.sort_by_key(|&(src, dst, _)| (src, dst));
 
         // Do any dests overlap sources? If not, we can also just
         // return the list.
@@ -77,10 +77,10 @@ impl ParallelMoves {
 
         // Sort moves by destination and check that each destination
         // has only one writer.
-        self.parallel_moves.sort_by_key(|&(_, dst)| dst);
+        self.parallel_moves.sort_by_key(|&(_, dst, _)| dst);
         if cfg!(debug) {
             let mut last_dst = None;
-            for &(_, dst) in &self.parallel_moves {
+            for &(_, dst, _) in &self.parallel_moves {
                 if last_dst.is_some() {
                     assert!(last_dst.unwrap() != dst);
                 }
@@ -94,10 +94,10 @@ impl ParallelMoves {
         // above so we can efficiently find such a move, if any.
         let mut must_come_before: SmallVec<[Option<usize>; 16]> =
             smallvec![None; self.parallel_moves.len()];
-        for (i, &(src, _)) in self.parallel_moves.iter().enumerate() {
+        for (i, &(src, _, _)) in self.parallel_moves.iter().enumerate() {
             if let Ok(move_to_dst_idx) = self
                 .parallel_moves
-                .binary_search_by_key(&src, |&(_, dst)| dst)
+                .binary_search_by_key(&src, |&(_, dst, _)| dst)
             {
                 must_come_before[i] = Some(move_to_dst_idx);
             }
@@ -107,7 +107,7 @@ impl ParallelMoves {
         // then reverse at the end for RPO. Unlike Tarjan's SCC
         // algorithm, we can emit a cycle as soon as we find one, as
         // noted above.
-        let mut ret: MoveVec = smallvec![];
+        let mut ret: MoveVec<T> = smallvec![];
         let mut stack: SmallVec<[usize; 16]> = smallvec![];
         let mut visited: SmallVec<[bool; 16]> = smallvec![false; self.parallel_moves.len()];
         let mut onstack: SmallVec<[bool; 16]> = smallvec![false; self.parallel_moves.len()];
@@ -176,14 +176,14 @@ impl ParallelMoves {
                     let mut scratch_src = None;
                     while let Some(move_idx) = stack.pop() {
                         onstack[move_idx] = false;
-                        let (mut src, dst) = self.parallel_moves[move_idx];
+                        let (mut src, dst, dst_t) = self.parallel_moves[move_idx];
                         if last_dst.is_none() {
                             scratch_src = Some(src);
                             src = self.scratch;
                         } else {
                             assert_eq!(last_dst.unwrap(), src);
                         }
-                        ret.push((src, dst));
+                        ret.push((src, dst, dst_t));
 
                         last_dst = Some(dst);
 
@@ -192,7 +192,7 @@ impl ParallelMoves {
                         }
                     }
                     if let Some(src) = scratch_src {
-                        ret.push((src, self.scratch));
+                        ret.push((src, self.scratch, T::default()));
                     }
                 }
             }
