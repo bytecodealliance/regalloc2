@@ -983,6 +983,12 @@ pub enum RegAllocError {
     Branch(Inst),
     /// A VReg is live-in on entry; this is not allowed.
     EntryLivein,
+    /// A branch has non-blockparam arg(s) and at least one of the
+    /// successor blocks has more than one predecessor, forcing
+    /// edge-moves before this branch. This is disallowed because it
+    /// places a use after the edge moves occur; insert an edge block
+    /// to avoid the situation.
+    DisallowedBranchArg(Inst),
 }
 
 impl std::fmt::Display for RegAllocError {

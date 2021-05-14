@@ -72,15 +72,36 @@ impl CFGInfo {
             block_entry[block.index()] = ProgPoint::before(f.block_insns(block).first());
             block_exit[block.index()] = ProgPoint::after(f.block_insns(block).last());
 
+            // Check critical edge condition: if there is more than
+            // one predecessor, each must have only one successor
+            // (this block).
             let preds = f.block_preds(block).len() + if block == f.entry_block() { 1 } else { 0 };
             if preds > 1 {
                 for (i, &pred) in f.block_preds(block).iter().enumerate() {
-                    // Check critical edge condition.
                     let succs = f.block_succs(pred).len();
                     if succs > 1 {
                         return Err(RegAllocError::CritEdge(pred, block));
                     }
                     pred_pos[pred.index()] = i;
+                }
+            }
+
+            // Check branch-arg condition: if any successors have more
+            // than one predecessor (given above, there will only be
+            // one such successor), then the last instruction of this
+            // block (the branch) cannot have any args other than the
+            // blockparams.
+            let mut require_no_branch_args = false;
+            for &succ in f.block_succs(block) {
+                let preds = f.block_preds(succ).len() + if succ == f.entry_block() { 1 } else { 0 };
+                if preds > 1 {
+                    require_no_branch_args = true;
+                }
+            }
+            if require_no_branch_args {
+                let last = f.block_insns(block).last();
+                if f.branch_blockparam_arg_offset(block, last) > 0 {
+                    return Err(RegAllocError::DisallowedBranchArg(last));
                 }
             }
         }
