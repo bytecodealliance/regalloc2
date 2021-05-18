@@ -2448,7 +2448,7 @@ impl<'a, F: Function> Env<'a, F> {
             self.stats.splits_conflicts += 1;
             log::debug!(" going with last before conflict");
             smallvec![last_before_conflict.unwrap()]
-        } else if def_splits.len() > 0 {
+        } else if def_splits.len() > 0 && def_splits[0] > bundle_start {
             log::debug!(" going with non-first def splits: {:?}", def_splits);
             self.stats.splits_defs += 1;
             def_splits
