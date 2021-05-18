@@ -758,15 +758,6 @@ pub trait Function {
         &[]
     }
 
-    /// Is the given VReg pinned permanently to a PReg? Note that the
-    /// input program must not contain constraints that contradict
-    /// this (e.g., using another VReg with a fixed-reg policy to a
-    /// given preg at the same time as using a VReg pinned to that
-    /// preg) or else allocation may be impossible.
-    fn is_pinned_vreg(&self, _: VReg) -> Option<PReg> {
-        None
-    }
-
     // --------------
     // Spills/reloads
     // --------------
