@@ -163,6 +163,14 @@ impl LiveRange {
         self.uses_spill_weight_and_flags & ((flag as u32) << 29) != 0
     }
     #[inline(always)]
+    pub fn flag_word(&self) -> u32 {
+        self.uses_spill_weight_and_flags & 0xe000_0000
+    }
+    #[inline(always)]
+    pub fn merge_flags(&mut self, flag_word: u32) {
+        self.uses_spill_weight_and_flags |= flag_word;
+    }
+    #[inline(always)]
     pub fn uses_spill_weight(&self) -> u32 {
         self.uses_spill_weight_and_flags & 0x1fff_ffff
     }
@@ -801,25 +809,56 @@ impl<'a, F: Function> Env<'a, F> {
     /// Mark `range` as live for the given `vreg`.
     ///
     /// Returns the liverange that contains the given range.
-    fn add_liverange_to_vreg(&mut self, vreg: VRegIndex, range: CodeRange) -> LiveRangeIndex {
+    fn add_liverange_to_vreg(&mut self, vreg: VRegIndex, mut range: CodeRange) -> LiveRangeIndex {
         log::debug!("add_liverange_to_vreg: vreg {:?} range {:?}", vreg, range);
-        if let Some(last) = self.vregs[vreg.index()].ranges.last_mut() {
-            if last.range.from == range.to {
-                log::debug!(" -> abuts existing range {:?}, extending", last.index);
-                last.range.from = range.from;
-                self.ranges[last.index.index()].range.from = range.from;
-                return last.index;
+
+        // Check for abutting or overlapping ranges.
+        let mut merged = None;
+        let mut i = 0;
+        while i < self.vregs[vreg.index()].ranges.len() {
+            let entry = self.vregs[vreg.index()].ranges[i];
+            if entry.range.overlaps(&range) {
+                if entry.range.from < range.from {
+                    range.from = entry.range.from;
+                }
+                if entry.range.to > range.to {
+                    range.to = entry.range.to;
+                }
+                if merged.is_none() {
+                    merged = Some(i);
+                    self.ranges[entry.index.index()].range = range;
+                    self.vregs[vreg.index()].ranges[i].range = range;
+                    i += 1;
+                } else {
+                    let merge_from = entry.index;
+                    let merge_into = self.vregs[vreg.index()].ranges[merged.unwrap()].index;
+                    self.ranges[merge_from.index()].merged_into = merge_into;
+                    let mut uses =
+                        std::mem::replace(&mut self.ranges[merge_from.index()].uses, smallvec![]);
+                    self.ranges[merge_into.index()].uses.extend(uses.drain(..));
+                    let f = self.ranges[merge_from.index()].flag_word();
+                    self.ranges[merge_into.index()].merge_flags(f);
+                    self.ranges[merge_into.index()].range = range;
+                    self.vregs[vreg.index()].ranges[merged.unwrap()].range = range;
+                    self.vregs[vreg.index()].ranges.remove(i);
+                }
+            } else {
+                i += 1;
             }
         }
 
         // If we get here and did not merge into an existing liverange or liveranges, then we need
         // to create a new one.
-        let lr = self.create_liverange(range);
-        self.ranges[lr.index()].vreg = vreg;
-        self.vregs[vreg.index()]
-            .ranges
-            .push(LiveRangeListEntry { range, index: lr });
-        lr
+        if merged.is_none() {
+            let lr = self.create_liverange(range);
+            self.ranges[lr.index()].vreg = vreg;
+            self.vregs[vreg.index()]
+                .ranges
+                .push(LiveRangeListEntry { range, index: lr });
+            lr
+        } else {
+            self.vregs[vreg.index()].ranges[merged.unwrap()].index
+        }
     }
 
     fn insert_use_into_liverange(&mut self, into: LiveRangeIndex, mut u: Use) {
@@ -1351,13 +1390,12 @@ impl<'a, F: Function> Env<'a, F> {
 
         self.safepoints.sort_unstable();
 
-        // Sort ranges in each vreg, and uses in each range, and merge
-        // overlapping ranges, so we can iterate over them in order
-        // below. The ordering invariant is always maintained for uses
-        // and always for ranges in bundles (which are initialized
-        // later), but not always for ranges in vregs; those are
-        // sorted only when needed, here and then again at the end of
-        // allocation when resolving moves.
+        // Sort ranges in each vreg, and uses in each range, so we can
+        // iterate over them in order below. The ordering invariant is
+        // always maintained for uses and always for ranges in bundles
+        // (which are initialized later), but not always for ranges in
+        // vregs; those are sorted only when needed, here and then
+        // again at the end of allocation when resolving moves.
         for vreg in &mut self.vregs {
             for entry in &mut vreg.ranges {
                 // Ranges may have been truncated above at defs. We
@@ -1365,43 +1403,6 @@ impl<'a, F: Function> Env<'a, F> {
                 entry.range = self.ranges[entry.index.index()].range;
             }
             vreg.ranges.sort_unstable_by_key(|entry| entry.range.from);
-
-            // Merge overlapping ranges.
-            let mut last: Option<usize> = None;
-            let mut i = 0;
-            while i < vreg.ranges.len() {
-                if last.is_some() {
-                    if vreg.ranges[i].range.from <= vreg.ranges[last.unwrap()].range.to {
-                        // Move uses over.
-                        let mut uses = std::mem::replace(
-                            &mut self.ranges[vreg.ranges[i].index.index()].uses,
-                            smallvec![],
-                        );
-                        self.ranges[vreg.ranges[last.unwrap()].index.index()]
-                            .uses
-                            .extend(uses.drain(..));
-                        self.ranges[vreg.ranges[i].index.index()].merged_into =
-                            vreg.ranges[last.unwrap()].index;
-                        // Extend end of range to subsume this one.
-                        vreg.ranges[last.unwrap()].range.to = std::cmp::max(
-                            vreg.ranges[last.unwrap()].range.to,
-                            vreg.ranges[i].range.to,
-                        );
-                        // Remove the merged-from range.
-                        vreg.ranges.remove(i);
-                    } else {
-                        // This range is beyond the last one.
-                        last = Some(i);
-                        i += 1;
-                    }
-                } else {
-                    last = Some(i);
-                    i += 1;
-                }
-            }
-            for entry in &vreg.ranges {
-                self.ranges[entry.index.index()].range = entry.range;
-            }
         }
 
         for range in 0..self.ranges.len() {
