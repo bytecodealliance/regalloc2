@@ -987,6 +987,10 @@ impl<'a, F: Function> Env<'a, F> {
             .next()
             .is_some()
         {
+            log::debug!(
+                "non-empty liveins to entry block: {:?}",
+                self.liveins[self.func.entry_block().index()]
+            );
             return Err(RegAllocError::EntryLivein);
         }
 
