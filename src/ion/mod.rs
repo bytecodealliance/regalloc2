@@ -803,15 +803,6 @@ impl<'a, F: Function> Env<'a, F> {
     /// Returns the liverange that contains the given range.
     fn add_liverange_to_vreg(&mut self, vreg: VRegIndex, range: CodeRange) -> LiveRangeIndex {
         log::debug!("add_liverange_to_vreg: vreg {:?} range {:?}", vreg, range);
-
-        // When we use this function, the LR lists in VRegs are not
-        // yet sorted. We can extend an existing LR if we happen to
-        // see that one abuts the new range -- we check the end,
-        // because this one should be the earliest given how we build
-        // liveness (but we don't claim or uphold this as an
-        // invariant) -- or we can just append to the end. After we
-        // add all ranges, we will sort the lists.
-
         if let Some(last) = self.vregs[vreg.index()].ranges.last_mut() {
             if last.range.from == range.to {
                 log::debug!(" -> abuts existing range {:?}, extending", last.index);
@@ -1360,12 +1351,13 @@ impl<'a, F: Function> Env<'a, F> {
 
         self.safepoints.sort_unstable();
 
-        // Sort ranges in each vreg, and uses in each range, so we can
-        // iterate over them in order below. The ordering invariant is
-        // always maintained for uses and always for ranges in bundles
-        // (which are initialized later), but not always for ranges in
-        // vregs; those are sorted only when needed, here and then
-        // again at the end of allocation when resolving moves.
+        // Sort ranges in each vreg, and uses in each range, and merge
+        // overlapping ranges, so we can iterate over them in order
+        // below. The ordering invariant is always maintained for uses
+        // and always for ranges in bundles (which are initialized
+        // later), but not always for ranges in vregs; those are
+        // sorted only when needed, here and then again at the end of
+        // allocation when resolving moves.
         for vreg in &mut self.vregs {
             for entry in &mut vreg.ranges {
                 // Ranges may have been truncated above at defs. We
@@ -1373,6 +1365,43 @@ impl<'a, F: Function> Env<'a, F> {
                 entry.range = self.ranges[entry.index.index()].range;
             }
             vreg.ranges.sort_unstable_by_key(|entry| entry.range.from);
+
+            // Merge overlapping ranges.
+            let mut last: Option<usize> = None;
+            let mut i = 0;
+            while i < vreg.ranges.len() {
+                if last.is_some() {
+                    if vreg.ranges[i].range.from <= vreg.ranges[last.unwrap()].range.to {
+                        // Move uses over.
+                        let mut uses = std::mem::replace(
+                            &mut self.ranges[vreg.ranges[i].index.index()].uses,
+                            smallvec![],
+                        );
+                        self.ranges[vreg.ranges[last.unwrap()].index.index()]
+                            .uses
+                            .extend(uses.drain(..));
+                        self.ranges[vreg.ranges[i].index.index()].merged_into =
+                            vreg.ranges[last.unwrap()].index;
+                        // Extend end of range to subsume this one.
+                        vreg.ranges[last.unwrap()].range.to = std::cmp::max(
+                            vreg.ranges[last.unwrap()].range.to,
+                            vreg.ranges[i].range.to,
+                        );
+                        // Remove the merged-from range.
+                        vreg.ranges.remove(i);
+                    } else {
+                        // This range is beyond the last one.
+                        last = Some(i);
+                        i += 1;
+                    }
+                } else {
+                    last = Some(i);
+                    i += 1;
+                }
+            }
+            for entry in &vreg.ranges {
+                self.ranges[entry.index.index()].range = entry.range;
+            }
         }
 
         for range in 0..self.ranges.len() {
@@ -1698,6 +1727,11 @@ impl<'a, F: Function> Env<'a, F> {
         // Two non-empty lists of LiveRanges: traverse both simultaneously and
         // merge ranges into `merged`.
         let mut merged: LiveRangeList = smallvec![];
+        log::debug!(
+            "merging: ranges_from = {:?} ranges_to = {:?}",
+            ranges_from,
+            ranges_to
+        );
         while idx_from < ranges_from.len() || idx_to < ranges_to.len() {
             if idx_from < ranges_from.len() && idx_to < ranges_to.len() {
                 if ranges_from[idx_from].range.from <= ranges_to[idx_to].range.from {
@@ -1716,7 +1750,14 @@ impl<'a, F: Function> Env<'a, F> {
                 break;
             }
         }
+        log::debug!("merging: merged = {:?}", merged);
+        let mut last_range = None;
         for entry in &merged {
+            if last_range.is_some() {
+                assert!(last_range.unwrap() < entry.range);
+            }
+            last_range = Some(entry.range);
+
             if self.ranges[entry.index.index()].bundle == from {
                 if log::log_enabled!(log::Level::Debug) {
                     self.annotate(
@@ -1758,7 +1799,11 @@ impl<'a, F: Function> Env<'a, F> {
             self.bundles[bundle.index()].ranges = self.vregs[vreg.index()].ranges.clone();
             log::debug!("vreg v{} gets bundle{}", vreg.index(), bundle.index());
             for entry in &self.bundles[bundle.index()].ranges {
-                log::debug!(" -> with LR range{}", entry.index.index());
+                log::debug!(
+                    " -> with LR range{}: {:?}",
+                    entry.index.index(),
+                    entry.range
+                );
                 self.ranges[entry.index.index()].bundle = bundle;
             }
 
