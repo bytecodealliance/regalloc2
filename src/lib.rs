@@ -758,6 +758,23 @@ pub trait Function {
         &[]
     }
 
+    /// Is the given vreg pinned to a preg? If so, every use of the
+    /// vreg is automatically assigned to the preg, and live-ranges of
+    /// the vreg allocate the preg exclusively (are not spilled
+    /// elsewhere). The user must take care not to have too many live
+    /// pinned vregs such that allocation is no longer possible;
+    /// liverange computation will check that this is the case (that
+    /// there are enough remaining allocatable pregs of every class to
+    /// hold all Reg-constrained operands).
+    fn is_pinned_vreg(&self, _: VReg) -> Option<PReg> {
+        None
+    }
+
+    /// Return a list of all pinned vregs.
+    fn pinned_vregs(&self) -> &[VReg] {
+        &[]
+    }
+
     // --------------
     // Spills/reloads
     // --------------
@@ -980,6 +997,9 @@ pub enum RegAllocError {
     /// places a use after the edge moves occur; insert an edge block
     /// to avoid the situation.
     DisallowedBranchArg(Inst),
+    /// Too many pinned VRegs + Reg-constrained Operands are live at
+    /// once, making allocation impossible.
+    TooManyLiveRegs,
 }
 
 impl std::fmt::Display for RegAllocError {

@@ -53,7 +53,7 @@ use crate::{
     MachineEnv, Operand, OperandKind, OperandPolicy, OperandPos, Output, PReg, ProgPoint,
     RegAllocError, RegClass, SpillSlot, VReg,
 };
-use fxhash::FxHashSet;
+use fxhash::{FxHashMap, FxHashSet};
 use log::debug;
 use smallvec::{smallvec, SmallVec};
 use std::cmp::Ordering;
@@ -252,6 +252,7 @@ struct VRegData {
     ranges: LiveRangeList,
     blockparam: Block,
     is_ref: bool,
+    is_pinned: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -766,11 +767,15 @@ impl<'a, F: Function> Env<'a, F> {
                     ranges: smallvec![],
                     blockparam: Block::invalid(),
                     is_ref: false,
+                    is_pinned: false,
                 },
             );
         }
         for v in self.func.reftype_vregs() {
             self.vregs[v.vreg()].is_ref = true;
+        }
+        for v in self.func.pinned_vregs() {
+            self.vregs[v.vreg()].is_pinned = true;
         }
         // Create allocations too.
         for inst in 0..self.func.insts() {
@@ -905,11 +910,10 @@ impl<'a, F: Function> Env<'a, F> {
     fn add_liverange_to_preg(&mut self, range: CodeRange, reg: PReg) {
         log::debug!("adding liverange to preg: {:?} to {}", range, reg);
         let preg_idx = PRegIndex::new(reg.index());
-        let lr = self.create_liverange(range);
         self.pregs[preg_idx.index()]
             .allocations
             .btree
-            .insert(LiveRangeKey::from_range(&range), lr);
+            .insert(LiveRangeKey::from_range(&range), LiveRangeIndex::invalid());
     }
 
     fn is_live_in(&mut self, block: Block, vreg: VRegIndex) -> bool {
@@ -942,14 +946,19 @@ impl<'a, F: Function> Env<'a, F> {
             self.stats.livein_iterations += 1;
 
             let mut live = self.liveouts[block.index()].clone();
+            log::debug!(" -> initial liveout set: {:?}", live);
+
             for inst in self.func.block_insns(block).rev().iter() {
                 if let Some((src, dst)) = self.func.is_move(inst) {
                     live.set(dst.vreg().vreg(), false);
                     live.set(src.vreg().vreg(), true);
                 }
+
                 for pos in &[OperandPos::After, OperandPos::Before] {
                     for op in self.func.inst_operands(inst) {
                         if op.pos() == *pos {
+                            let was_live = live.get(op.vreg().vreg());
+                            log::debug!("op {:?} was_live = {}", op, was_live);
                             match op.kind() {
                                 OperandKind::Use | OperandKind::Mod => {
                                     live.set(op.vreg().vreg(), true);
@@ -1097,8 +1106,7 @@ impl<'a, F: Function> Env<'a, F> {
                 // If this is a move, handle specially.
                 if let Some((src, dst)) = self.func.is_move(inst) {
                     // We can completely skip the move if it is
-                    // trivial (vreg to same vreg) or its output is
-                    // dead.
+                    // trivial (vreg to same vreg).
                     if src.vreg() != dst.vreg() {
                         log::debug!(" -> move inst{}: src {} -> dst {}", inst.index(), src, dst);
 
@@ -1418,6 +1426,9 @@ impl<'a, F: Function> Env<'a, F> {
 
         // Insert safepoint virtual stack uses, if needed.
         for vreg in self.func.reftype_vregs() {
+            if self.vregs[vreg.vreg()].is_pinned {
+                continue;
+            }
             let vreg = VRegIndex::new(vreg.vreg());
             let mut inserted = false;
             let mut safepoint_idx = 0;
@@ -1809,6 +1820,24 @@ impl<'a, F: Function> Env<'a, F> {
             if self.vregs[vreg.index()].ranges.is_empty() {
                 continue;
             }
+
+            // If this is a pinned vreg, go ahead and add it to the
+            // commitment map, and avoid creating a bundle entirely.
+            if self.vregs[vreg.index()].is_pinned {
+                for entry in &self.vregs[vreg.index()].ranges {
+                    let preg = self
+                        .func
+                        .is_pinned_vreg(self.vreg_regs[vreg.index()])
+                        .unwrap();
+                    let key = LiveRangeKey::from_range(&entry.range);
+                    self.pregs[preg.index()]
+                        .allocations
+                        .btree
+                        .insert(key, LiveRangeIndex::invalid());
+                }
+                continue;
+            }
+
             let bundle = self.create_bundle();
             self.bundles[bundle.index()].ranges = self.vregs[vreg.index()].ranges.clone();
             log::debug!("vreg v{} gets bundle{}", vreg.index(), bundle.index());
@@ -1844,6 +1873,12 @@ impl<'a, F: Function> Env<'a, F> {
                 if let OperandPolicy::Reuse(reuse_idx) = op.policy() {
                     let src_vreg = op.vreg();
                     let dst_vreg = self.func.inst_operands(inst)[reuse_idx].vreg();
+                    if self.vregs[src_vreg.vreg()].is_pinned
+                        || self.vregs[dst_vreg.vreg()].is_pinned
+                    {
+                        continue;
+                    }
+
                     log::debug!(
                         "trying to merge reused-input def: src {} to dst {}",
                         src_vreg,
@@ -1892,6 +1927,27 @@ impl<'a, F: Function> Env<'a, F> {
                 src,
                 dst
             );
+
+            let dst_vreg = self.vreg_regs[self.ranges[dst.index()].vreg.index()];
+            let src_vreg = self.vreg_regs[self.ranges[src.index()].vreg.index()];
+            if self.vregs[src_vreg.vreg()].is_pinned && self.vregs[dst_vreg.vreg()].is_pinned {
+                continue;
+            }
+            if self.vregs[src_vreg.vreg()].is_pinned {
+                let dest_bundle = self.ranges[dst.index()].bundle;
+                let spillset = self.bundles[dest_bundle.index()].spillset;
+                self.spillsets[spillset.index()].reg_hint =
+                    self.func.is_pinned_vreg(src_vreg).unwrap();
+                continue;
+            }
+            if self.vregs[dst_vreg.vreg()].is_pinned {
+                let src_bundle = self.ranges[src.index()].bundle;
+                let spillset = self.bundles[src_bundle.index()].spillset;
+                self.spillsets[spillset.index()].reg_hint =
+                    self.func.is_pinned_vreg(dst_vreg).unwrap();
+                continue;
+            }
+
             let src_bundle = self.ranges[src.index()].bundle;
             assert!(src_bundle.is_valid());
             let dest_bundle = self.ranges[dst.index()].bundle;
@@ -1941,11 +1997,11 @@ impl<'a, F: Function> Env<'a, F> {
         self.stats.merged_bundle_count = self.allocation_queue.heap.len();
     }
 
-    fn process_bundles(&mut self) {
+    fn process_bundles(&mut self) -> Result<(), RegAllocError> {
         let mut count = 0;
         while let Some(bundle) = self.allocation_queue.pop() {
             self.stats.process_bundle_count += 1;
-            self.process_bundle(bundle);
+            self.process_bundle(bundle)?;
             count += 1;
             if count > self.func.insts() * 50 {
                 self.dump_state();
@@ -1955,6 +2011,8 @@ impl<'a, F: Function> Env<'a, F> {
         self.stats.final_liverange_count = self.ranges.len();
         self.stats.final_bundle_count = self.bundles.len();
         self.stats.spill_bundle_count = self.spilled_bundles.len();
+
+        Ok(())
     }
 
     fn dump_state(&self) {
@@ -2105,7 +2163,7 @@ impl<'a, F: Function> Env<'a, F> {
             let preg_range = preg_range_iter.next().unwrap().1;
 
             log::debug!(" -> btree contains range {:?} that overlaps", preg_range);
-            if self.ranges[preg_range.index()].vreg.is_valid() {
+            if preg_range.is_valid() {
                 log::debug!("   -> from vreg {:?}", self.ranges[preg_range.index()].vreg);
                 // range from an allocated bundle: find the bundle and add to
                 // conflicts list.
@@ -2755,7 +2813,7 @@ impl<'a, F: Function> Env<'a, F> {
         }
     }
 
-    fn process_bundle(&mut self, bundle: LiveBundleIndex) {
+    fn process_bundle(&mut self, bundle: LiveBundleIndex) -> Result<(), RegAllocError> {
         // Find any requirements: for every LR, for every def/use, gather
         // requirements (fixed-reg, any-reg, any) and merge them.
         let req = self.compute_requirement(bundle);
@@ -2794,7 +2852,7 @@ impl<'a, F: Function> Env<'a, F> {
                             log::debug!(" -> allocated to fixed {:?}", preg_idx);
                             self.spillsets[self.bundles[bundle.index()].spillset.index()]
                                 .reg_hint = alloc.as_reg().unwrap();
-                            return;
+                            return Ok(());
                         }
                         AllocRegResult::Conflict(bundles) => {
                             log::debug!(" -> conflict with bundles {:?}", bundles);
@@ -2842,7 +2900,7 @@ impl<'a, F: Function> Env<'a, F> {
                                 log::debug!(" -> allocated to any {:?}", preg_idx);
                                 self.spillsets[self.bundles[bundle.index()].spillset.index()]
                                     .reg_hint = alloc.as_reg().unwrap();
-                                return;
+                                return Ok(());
                             }
                             AllocRegResult::Conflict(bundles) => {
                                 log::debug!(" -> conflict with bundles {:?}", bundles);
@@ -2878,7 +2936,7 @@ impl<'a, F: Function> Env<'a, F> {
                     self.spillsets[self.bundles[bundle.index()].spillset.index()]
                         .bundles
                         .push(bundle);
-                    return;
+                    return Ok(());
                 }
 
                 Requirement::Any(_) => {
@@ -2886,7 +2944,7 @@ impl<'a, F: Function> Env<'a, F> {
                     // allocation on spilled bundles later).
                     log::debug!("spilling bundle {:?} to spilled_bundles list", bundle);
                     self.spilled_bundles.push(bundle);
-                    return;
+                    return Ok(());
                 }
             };
 
@@ -2930,6 +2988,37 @@ impl<'a, F: Function> Env<'a, F> {
 
         // A minimal bundle cannot be split.
         if self.minimal_bundle(bundle) {
+            if let Some(Requirement::Register(class)) = req {
+                // Check if this is a too-many-live-registers situation.
+                let range = self.bundles[bundle.index()].ranges[0].range;
+                let mut min_bundles_assigned = 0;
+                let mut fixed_assigned = 0;
+                let mut total_regs = 0;
+                for preg in self.env.preferred_regs_by_class[class as u8 as usize]
+                    .iter()
+                    .chain(self.env.non_preferred_regs_by_class[class as u8 as usize].iter())
+                {
+                    if let Some(&lr) = self.pregs[preg.index()]
+                        .allocations
+                        .btree
+                        .get(&LiveRangeKey::from_range(&range))
+                    {
+                        if lr.is_valid() {
+                            if self.minimal_bundle(self.ranges[lr.index()].bundle) {
+                                min_bundles_assigned += 1;
+                            }
+                        } else {
+                            fixed_assigned += 1;
+                        }
+                    }
+                    total_regs += 1;
+                }
+                if min_bundles_assigned + fixed_assigned == total_regs {
+                    return Err(RegAllocError::TooManyLiveRegs);
+                }
+            }
+        }
+        if self.minimal_bundle(bundle) {
             self.dump_state();
         }
         assert!(!self.minimal_bundle(bundle));
@@ -2938,6 +3027,8 @@ impl<'a, F: Function> Env<'a, F> {
             bundle,
             first_conflicting_bundle.unwrap_or(LiveBundleIndex::invalid()),
         );
+
+        Ok(())
     }
 
     fn try_allocating_regs_for_spilled_bundles(&mut self) {
@@ -3279,6 +3370,12 @@ impl<'a, F: Function> Env<'a, F> {
         for vreg in 0..self.vregs.len() {
             let vreg = VRegIndex::new(vreg);
 
+            let pinned_alloc = if self.vregs[vreg.index()].is_pinned {
+                self.func.is_pinned_vreg(self.vreg_regs[vreg.index()])
+            } else {
+                None
+            };
+
             // For each range in each vreg, insert moves or
             // half-moves.  We also scan over `blockparam_ins` and
             // `blockparam_outs`, which are sorted by (block, vreg),
@@ -3286,7 +3383,9 @@ impl<'a, F: Function> Env<'a, F> {
             let mut prev = LiveRangeIndex::invalid();
             for range_idx in 0..self.vregs[vreg.index()].ranges.len() {
                 let entry = self.vregs[vreg.index()].ranges[range_idx];
-                let alloc = self.get_alloc_for_range(entry.index);
+                let alloc = pinned_alloc
+                    .map(|preg| Allocation::reg(preg))
+                    .unwrap_or_else(|| self.get_alloc_for_range(entry.index));
                 let range = entry.range;
                 log::debug!(
                     "apply_allocations: vreg {:?} LR {:?} with range {:?} has alloc {:?}",
@@ -3343,7 +3442,10 @@ impl<'a, F: Function> Env<'a, F> {
                 // can't insert a move that logically happens just
                 // before After (i.e. in the middle of a single
                 // instruction).
-                if prev.is_valid() {
+                //
+                // Also note that this case is not applicable to
+                // pinned vregs (because they are always in one PReg).
+                if pinned_alloc.is_none() && prev.is_valid() {
                     let prev_alloc = self.get_alloc_for_range(prev);
                     let prev_range = self.ranges[prev.index()].range;
                     let first_is_def =
@@ -3372,74 +3474,79 @@ impl<'a, F: Function> Env<'a, F> {
                     }
                 }
 
-                // Scan over blocks whose ends are covered by this
-                // range. For each, for each successor that is not
-                // already in this range (hence guaranteed to have the
-                // same allocation) and if the vreg is live, add a
-                // Source half-move.
-                let mut block = self.cfginfo.insn_block[range.from.inst().index()];
-                while block.is_valid() && block.index() < self.func.blocks() {
-                    if range.to < self.cfginfo.block_exit[block.index()].next() {
-                        break;
-                    }
-                    log::debug!("examining block with end in range: block{}", block.index());
-                    for &succ in self.func.block_succs(block) {
-                        log::debug!(
-                            " -> has succ block {} with entry {:?}",
-                            succ.index(),
-                            self.cfginfo.block_entry[succ.index()]
-                        );
-                        if range.contains_point(self.cfginfo.block_entry[succ.index()]) {
-                            continue;
-                        }
-                        log::debug!(" -> out of this range, requires half-move if live");
-                        if self.is_live_in(succ, vreg) {
-                            log::debug!("  -> live at input to succ, adding halfmove");
-                            half_moves.push(HalfMove {
-                                key: half_move_key(block, succ, vreg, HalfMoveKind::Source),
-                                alloc,
-                            });
-                        }
-                    }
-
-                    // Scan forward in `blockparam_outs`, adding all
-                    // half-moves for outgoing values to blockparams
-                    // in succs.
-                    log::debug!(
-                        "scanning blockparam_outs for v{} block{}: blockparam_out_idx = {}",
-                        vreg.index(),
-                        block.index(),
-                        blockparam_out_idx,
-                    );
-                    while blockparam_out_idx < self.blockparam_outs.len() {
-                        let (from_vreg, from_block, to_block, to_vreg) =
-                            self.blockparam_outs[blockparam_out_idx];
-                        if (from_vreg, from_block) > (vreg, block) {
+                // The block-to-block edge-move logic is not
+                // applicable to pinned vregs, which are always in one
+                // PReg (so never need moves within their own vreg
+                // ranges).
+                if pinned_alloc.is_none() {
+                    // Scan over blocks whose ends are covered by this
+                    // range. For each, for each successor that is not
+                    // already in this range (hence guaranteed to have the
+                    // same allocation) and if the vreg is live, add a
+                    // Source half-move.
+                    let mut block = self.cfginfo.insn_block[range.from.inst().index()];
+                    while block.is_valid() && block.index() < self.func.blocks() {
+                        if range.to < self.cfginfo.block_exit[block.index()].next() {
                             break;
                         }
-                        if (from_vreg, from_block) == (vreg, block) {
+                        log::debug!("examining block with end in range: block{}", block.index());
+                        for &succ in self.func.block_succs(block) {
                             log::debug!(
-                                " -> found: from v{} block{} to v{} block{}",
-                                from_vreg.index(),
-                                from_block.index(),
-                                to_vreg.index(),
-                                to_vreg.index()
+                                " -> has succ block {} with entry {:?}",
+                                succ.index(),
+                                self.cfginfo.block_entry[succ.index()]
                             );
-                            half_moves.push(HalfMove {
-                                key: half_move_key(
-                                    from_block,
-                                    to_block,
-                                    to_vreg,
-                                    HalfMoveKind::Source,
-                                ),
-                                alloc,
-                            });
-                            #[cfg(debug)]
-                            {
-                                if log::log_enabled!(log::Level::Debug) {
-                                    self.annotate(
-                                        self.cfginfo.block_exit[block.index()],
-                                        format!(
+                            if range.contains_point(self.cfginfo.block_entry[succ.index()]) {
+                                continue;
+                            }
+                            log::debug!(" -> out of this range, requires half-move if live");
+                            if self.is_live_in(succ, vreg) {
+                                log::debug!("  -> live at input to succ, adding halfmove");
+                                half_moves.push(HalfMove {
+                                    key: half_move_key(block, succ, vreg, HalfMoveKind::Source),
+                                    alloc,
+                                });
+                            }
+                        }
+
+                        // Scan forward in `blockparam_outs`, adding all
+                        // half-moves for outgoing values to blockparams
+                        // in succs.
+                        log::debug!(
+                            "scanning blockparam_outs for v{} block{}: blockparam_out_idx = {}",
+                            vreg.index(),
+                            block.index(),
+                            blockparam_out_idx,
+                        );
+                        while blockparam_out_idx < self.blockparam_outs.len() {
+                            let (from_vreg, from_block, to_block, to_vreg) =
+                                self.blockparam_outs[blockparam_out_idx];
+                            if (from_vreg, from_block) > (vreg, block) {
+                                break;
+                            }
+                            if (from_vreg, from_block) == (vreg, block) {
+                                log::debug!(
+                                    " -> found: from v{} block{} to v{} block{}",
+                                    from_vreg.index(),
+                                    from_block.index(),
+                                    to_vreg.index(),
+                                    to_vreg.index()
+                                );
+                                half_moves.push(HalfMove {
+                                    key: half_move_key(
+                                        from_block,
+                                        to_block,
+                                        to_vreg,
+                                        HalfMoveKind::Source,
+                                    ),
+                                    alloc,
+                                });
+                                #[cfg(debug)]
+                                {
+                                    if log::log_enabled!(log::Level::Debug) {
+                                        self.annotate(
+                                            self.cfginfo.block_exit[block.index()],
+                                            format!(
                                             "blockparam-out: block{} to block{}: v{} to v{} in {}",
                                             from_block.index(),
                                             to_block.index(),
@@ -3447,119 +3554,124 @@ impl<'a, F: Function> Env<'a, F> {
                                             to_vreg.index(),
                                             alloc
                                         ),
-                                    );
+                                        );
+                                    }
                                 }
                             }
+                            blockparam_out_idx += 1;
                         }
-                        blockparam_out_idx += 1;
+
+                        block = block.next();
                     }
 
-                    block = block.next();
-                }
-
-                // Scan over blocks whose beginnings are covered by
-                // this range and for which the vreg is live at the
-                // start of the block. For each, for each predecessor,
-                // add a Dest half-move.
-                let mut block = self.cfginfo.insn_block[range.from.inst().index()];
-                if self.cfginfo.block_entry[block.index()] < range.from {
-                    block = block.next();
-                }
-                while block.is_valid() && block.index() < self.func.blocks() {
-                    if self.cfginfo.block_entry[block.index()] >= range.to {
-                        break;
+                    // Scan over blocks whose beginnings are covered by
+                    // this range and for which the vreg is live at the
+                    // start of the block. For each, for each predecessor,
+                    // add a Dest half-move.
+                    let mut block = self.cfginfo.insn_block[range.from.inst().index()];
+                    if self.cfginfo.block_entry[block.index()] < range.from {
+                        block = block.next();
                     }
-
-                    // Add half-moves for blockparam inputs.
-                    log::debug!(
-                        "scanning blockparam_ins at vreg {} block {}: blockparam_in_idx = {}",
-                        vreg.index(),
-                        block.index(),
-                        blockparam_in_idx
-                    );
-                    while blockparam_in_idx < self.blockparam_ins.len() {
-                        let (to_vreg, to_block, from_block) =
-                            self.blockparam_ins[blockparam_in_idx];
-                        if (to_vreg, to_block) > (vreg, block) {
+                    while block.is_valid() && block.index() < self.func.blocks() {
+                        if self.cfginfo.block_entry[block.index()] >= range.to {
                             break;
                         }
-                        if (to_vreg, to_block) == (vreg, block) {
-                            half_moves.push(HalfMove {
-                                key: half_move_key(
-                                    from_block,
-                                    to_block,
-                                    to_vreg,
-                                    HalfMoveKind::Dest,
-                                ),
-                                alloc,
-                            });
-                            log::debug!(
-                                "match: blockparam_in: v{} in block{} from block{} into {}",
-                                to_vreg.index(),
-                                to_block.index(),
-                                from_block.index(),
-                                alloc,
-                            );
-                            #[cfg(debug)]
-                            {
-                                if log::log_enabled!(log::Level::Debug) {
-                                    self.annotate(
-                                        self.cfginfo.block_entry[block.index()],
-                                        format!(
-                                            "blockparam-in: block{} to block{}:into v{} in {}",
-                                            from_block.index(),
-                                            to_block.index(),
-                                            to_vreg.index(),
-                                            alloc
-                                        ),
-                                    );
+
+                        // Add half-moves for blockparam inputs.
+                        log::debug!(
+                            "scanning blockparam_ins at vreg {} block {}: blockparam_in_idx = {}",
+                            vreg.index(),
+                            block.index(),
+                            blockparam_in_idx
+                        );
+                        while blockparam_in_idx < self.blockparam_ins.len() {
+                            let (to_vreg, to_block, from_block) =
+                                self.blockparam_ins[blockparam_in_idx];
+                            if (to_vreg, to_block) > (vreg, block) {
+                                break;
+                            }
+                            if (to_vreg, to_block) == (vreg, block) {
+                                half_moves.push(HalfMove {
+                                    key: half_move_key(
+                                        from_block,
+                                        to_block,
+                                        to_vreg,
+                                        HalfMoveKind::Dest,
+                                    ),
+                                    alloc,
+                                });
+                                log::debug!(
+                                    "match: blockparam_in: v{} in block{} from block{} into {}",
+                                    to_vreg.index(),
+                                    to_block.index(),
+                                    from_block.index(),
+                                    alloc,
+                                );
+                                #[cfg(debug)]
+                                {
+                                    if log::log_enabled!(log::Level::Debug) {
+                                        self.annotate(
+                                            self.cfginfo.block_entry[block.index()],
+                                            format!(
+                                                "blockparam-in: block{} to block{}:into v{} in {}",
+                                                from_block.index(),
+                                                to_block.index(),
+                                                to_vreg.index(),
+                                                alloc
+                                            ),
+                                        );
+                                    }
                                 }
                             }
+                            blockparam_in_idx += 1;
                         }
-                        blockparam_in_idx += 1;
-                    }
 
-                    if !self.is_live_in(block, vreg) {
-                        block = block.next();
-                        continue;
-                    }
-
-                    log::debug!(
-                        "scanning preds at vreg {} block {} for ends outside the range",
-                        vreg.index(),
-                        block.index()
-                    );
-
-                    // Now find any preds whose ends are not in the
-                    // same range, and insert appropriate moves.
-                    for &pred in self.func.block_preds(block) {
-                        log::debug!(
-                            "pred block {} has exit {:?}",
-                            pred.index(),
-                            self.cfginfo.block_exit[pred.index()]
-                        );
-                        if range.contains_point(self.cfginfo.block_exit[pred.index()]) {
+                        if !self.is_live_in(block, vreg) {
+                            block = block.next();
                             continue;
                         }
-                        log::debug!(" -> requires half-move");
-                        half_moves.push(HalfMove {
-                            key: half_move_key(pred, block, vreg, HalfMoveKind::Dest),
-                            alloc,
-                        });
+
+                        log::debug!(
+                            "scanning preds at vreg {} block {} for ends outside the range",
+                            vreg.index(),
+                            block.index()
+                        );
+
+                        // Now find any preds whose ends are not in the
+                        // same range, and insert appropriate moves.
+                        for &pred in self.func.block_preds(block) {
+                            log::debug!(
+                                "pred block {} has exit {:?}",
+                                pred.index(),
+                                self.cfginfo.block_exit[pred.index()]
+                            );
+                            if range.contains_point(self.cfginfo.block_exit[pred.index()]) {
+                                continue;
+                            }
+                            log::debug!(" -> requires half-move");
+                            half_moves.push(HalfMove {
+                                key: half_move_key(pred, block, vreg, HalfMoveKind::Dest),
+                                alloc,
+                            });
+                        }
+
+                        block = block.next();
                     }
 
-                    block = block.next();
-                }
-
-                // If this is a blockparam vreg and the start of block
-                // is in this range, add to blockparam_allocs.
-                let (blockparam_block, blockparam_idx) =
-                    self.cfginfo.vreg_def_blockparam[vreg.index()];
-                if blockparam_block.is_valid()
-                    && range.contains_point(self.cfginfo.block_entry[blockparam_block.index()])
-                {
-                    self.blockparam_allocs
-                        .push((blockparam_block, blockparam_idx, vreg, alloc));
+                    // If this is a blockparam vreg and the start of block
+                    // is in this range, add to blockparam_allocs.
+                    let (blockparam_block, blockparam_idx) =
+                        self.cfginfo.vreg_def_blockparam[vreg.index()];
+                    if blockparam_block.is_valid()
+                        && range.contains_point(self.cfginfo.block_entry[blockparam_block.index()])
+                    {
+                        self.blockparam_allocs.push((
+                            blockparam_block,
+                            blockparam_idx,
+                            vreg,
+                            alloc,
+                        ));
+                    }
                 }
 
                 // Scan over def/uses and apply allocations.
@@ -4130,7 +4242,7 @@ impl<'a, F: Function> Env<'a, F> {
     }
 
     pub(crate) fn run(&mut self) -> Result<(), RegAllocError> {
-        self.process_bundles();
+        self.process_bundles()?;
         self.try_allocating_regs_for_spilled_bundles();
         self.allocate_spillslots();
         self.apply_allocations_and_insert_moves();
