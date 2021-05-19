@@ -1133,17 +1133,20 @@ impl<'a, F: Function> Env<'a, F> {
                             OperandPos::Before,
                         );
 
-                        if log::log_enabled!(log::Level::Debug) {
-                            self.annotate(
-                                ProgPoint::after(inst),
-                                format!(
-                                    " prog-move v{} ({:?}) -> v{} ({:?})",
-                                    src.vreg().vreg(),
-                                    src_policy,
-                                    dst.vreg().vreg(),
-                                    dst_policy,
-                                ),
-                            );
+                        #[cfg(debug)]
+                        {
+                            if log::log_enabled!(log::Level::Debug) {
+                                self.annotate(
+                                    ProgPoint::after(inst),
+                                    format!(
+                                        " prog-move v{} ({:?}) -> v{} ({:?})",
+                                        src.vreg().vreg(),
+                                        src_policy,
+                                        dst.vreg().vreg(),
+                                        dst_policy,
+                                    ),
+                                );
+                            }
                         }
 
                         // N.B.: in order to integrate with the move
@@ -1711,17 +1714,20 @@ impl<'a, F: Function> Env<'a, F> {
             for entry in &list {
                 self.ranges[entry.index.index()].bundle = to;
 
-                if log::log_enabled!(log::Level::Debug) {
-                    self.annotate(
-                        entry.range.from,
-                        format!(
-                            " MERGE range{} v{} from bundle{} to bundle{}",
-                            entry.index.index(),
-                            self.ranges[entry.index.index()].vreg.index(),
-                            from.index(),
-                            to.index(),
-                        ),
-                    );
+                #[cfg(debug)]
+                {
+                    if log::log_enabled!(log::Level::Debug) {
+                        self.annotate(
+                            entry.range.from,
+                            format!(
+                                " MERGE range{} v{} from bundle{} to bundle{}",
+                                entry.index.index(),
+                                self.ranges[entry.index.index()].vreg.index(),
+                                from.index(),
+                                to.index(),
+                            ),
+                        );
+                    }
                 }
             }
             self.bundles[to.index()].ranges = list;
@@ -1763,18 +1769,21 @@ impl<'a, F: Function> Env<'a, F> {
             }
             last_range = Some(entry.range);
 
-            if self.ranges[entry.index.index()].bundle == from {
-                if log::log_enabled!(log::Level::Debug) {
-                    self.annotate(
-                        entry.range.from,
-                        format!(
-                            " MERGE range{} v{} from bundle{} to bundle{}",
-                            entry.index.index(),
-                            self.ranges[entry.index.index()].vreg.index(),
-                            from.index(),
-                            to.index(),
-                        ),
-                    );
+            #[cfg(debug)]
+            {
+                if self.ranges[entry.index.index()].bundle == from {
+                    if log::log_enabled!(log::Level::Debug) {
+                        self.annotate(
+                            entry.range.from,
+                            format!(
+                                " MERGE range{} v{} from bundle{} to bundle{}",
+                                entry.index.index(),
+                                self.ranges[entry.index.index()].vreg.index(),
+                                from.index(),
+                                to.index(),
+                            ),
+                        );
+                    }
                 }
             }
 
@@ -2698,17 +2707,20 @@ impl<'a, F: Function> Env<'a, F> {
                     cur_uses.next();
                 }
 
-                self.annotate(
-                    existing_range.to,
-                    format!(
-                        " SPLIT range{} v{} bundle{} to range{} bundle{}",
-                        cur_lr.index(),
-                        self.ranges[cur_lr.index()].vreg.index(),
-                        cur_bundle.index(),
-                        new_lr.index(),
-                        new_bundle.index(),
-                    ),
-                );
+                #[cfg(debug)]
+                {
+                    self.annotate(
+                        existing_range.to,
+                        format!(
+                            " SPLIT range{} v{} bundle{} to range{} bundle{}",
+                            cur_lr.index(),
+                            self.ranges[cur_lr.index()].vreg.index(),
+                            cur_bundle.index(),
+                            new_lr.index(),
+                            new_bundle.index(),
+                        ),
+                    );
+                }
 
                 cur_range = new_range;
                 cur_bundle = new_bundle;
@@ -3285,27 +3297,30 @@ impl<'a, F: Function> Env<'a, F> {
                 );
                 debug_assert!(alloc != Allocation::none());
 
-                if log::log_enabled!(log::Level::Debug) {
-                    self.annotate(
-                        range.from,
-                        format!(
-                            " <<< start v{} in {} (range{}) (bundle{})",
-                            vreg.index(),
-                            alloc,
-                            entry.index.index(),
-                            self.ranges[entry.index.index()].bundle.index(),
-                        ),
-                    );
-                    self.annotate(
-                        range.to,
-                        format!(
-                            "     end   v{} in {} (range{}) (bundle{}) >>>",
-                            vreg.index(),
-                            alloc,
-                            entry.index.index(),
-                            self.ranges[entry.index.index()].bundle.index(),
-                        ),
-                    );
+                #[cfg(debug)]
+                {
+                    if log::log_enabled!(log::Level::Debug) {
+                        self.annotate(
+                            range.from,
+                            format!(
+                                " <<< start v{} in {} (range{}) (bundle{})",
+                                vreg.index(),
+                                alloc,
+                                entry.index.index(),
+                                self.ranges[entry.index.index()].bundle.index(),
+                            ),
+                        );
+                        self.annotate(
+                            range.to,
+                            format!(
+                                "     end   v{} in {} (range{}) (bundle{}) >>>",
+                                vreg.index(),
+                                alloc,
+                                entry.index.index(),
+                                self.ranges[entry.index.index()].bundle.index(),
+                            ),
+                        );
+                    }
                 }
 
                 // Does this range follow immediately after a prior
@@ -3419,18 +3434,21 @@ impl<'a, F: Function> Env<'a, F> {
                                 ),
                                 alloc,
                             });
-                            if log::log_enabled!(log::Level::Debug) {
-                                self.annotate(
-                                    self.cfginfo.block_exit[block.index()],
-                                    format!(
-                                        "blockparam-out: block{} to block{}: v{} to v{} in {}",
-                                        from_block.index(),
-                                        to_block.index(),
-                                        from_vreg.index(),
-                                        to_vreg.index(),
-                                        alloc
-                                    ),
-                                );
+                            #[cfg(debug)]
+                            {
+                                if log::log_enabled!(log::Level::Debug) {
+                                    self.annotate(
+                                        self.cfginfo.block_exit[block.index()],
+                                        format!(
+                                            "blockparam-out: block{} to block{}: v{} to v{} in {}",
+                                            from_block.index(),
+                                            to_block.index(),
+                                            from_vreg.index(),
+                                            to_vreg.index(),
+                                            alloc
+                                        ),
+                                    );
+                                }
                             }
                         }
                         blockparam_out_idx += 1;
@@ -3482,17 +3500,20 @@ impl<'a, F: Function> Env<'a, F> {
                                 from_block.index(),
                                 alloc,
                             );
-                            if log::log_enabled!(log::Level::Debug) {
-                                self.annotate(
-                                    self.cfginfo.block_entry[block.index()],
-                                    format!(
-                                        "blockparam-in: block{} to block{}:into v{} in {}",
-                                        from_block.index(),
-                                        to_block.index(),
-                                        to_vreg.index(),
-                                        alloc
-                                    ),
-                                );
+                            #[cfg(debug)]
+                            {
+                                if log::log_enabled!(log::Level::Debug) {
+                                    self.annotate(
+                                        self.cfginfo.block_entry[block.index()],
+                                        format!(
+                                            "blockparam-in: block{} to block{}:into v{} in {}",
+                                            from_block.index(),
+                                            to_block.index(),
+                                            to_vreg.index(),
+                                            alloc
+                                        ),
+                                    );
+                                }
                             }
                         }
                         blockparam_in_idx += 1;
@@ -3829,11 +3850,17 @@ impl<'a, F: Function> Env<'a, F> {
                         input_alloc
                     );
                     if input_alloc != output_alloc {
-                        if log::log_enabled!(log::Level::Debug) {
-                            self.annotate(
-                                ProgPoint::before(inst),
-                                format!(" reuse-input-copy: {} -> {}", input_alloc, output_alloc),
-                            );
+                        #[cfg(debug)]
+                        {
+                            if log::log_enabled!(log::Level::Debug) {
+                                self.annotate(
+                                    ProgPoint::before(inst),
+                                    format!(
+                                        " reuse-input-copy: {} -> {}",
+                                        input_alloc, output_alloc
+                                    ),
+                                );
+                            }
                         }
                         self.insert_move(
                             ProgPoint::before(inst),
@@ -3999,22 +4026,25 @@ impl<'a, F: Function> Env<'a, F> {
         self.stats.edits_count = self.edits.len();
 
         // Add debug annotations.
-        if log::log_enabled!(log::Level::Debug) {
-            for i in 0..self.edits.len() {
-                let &(pos, _, ref edit) = &self.edits[i];
-                match edit {
-                    &Edit::Move { from, to, to_vreg } => {
-                        self.annotate(
-                            ProgPoint::from_index(pos),
-                            format!("move {} -> {} ({:?})", from, to, to_vreg),
-                        );
-                    }
-                    &Edit::BlockParams {
-                        ref vregs,
-                        ref allocs,
-                    } => {
-                        let s = format!("blockparams vregs:{:?} allocs:{:?}", vregs, allocs);
-                        self.annotate(ProgPoint::from_index(pos), s);
+        #[cfg(debug)]
+        {
+            if log::log_enabled!(log::Level::Debug) {
+                for i in 0..self.edits.len() {
+                    let &(pos, _, ref edit) = &self.edits[i];
+                    match edit {
+                        &Edit::Move { from, to, to_vreg } => {
+                            self.annotate(
+                                ProgPoint::from_index(pos),
+                                format!("move {} -> {} ({:?})", from, to, to_vreg),
+                            );
+                        }
+                        &Edit::BlockParams {
+                            ref vregs,
+                            ref allocs,
+                        } => {
+                            let s = format!("blockparams vregs:{:?} allocs:{:?}", vregs, allocs);
+                            self.annotate(ProgPoint::from_index(pos), s);
+                        }
                     }
                 }
             }
