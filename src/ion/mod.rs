@@ -365,6 +365,7 @@ struct Env<'a, F: Function> {
     // For debug output only: a list of textual annotations at every
     // ProgPoint to insert into the final allocated program listing.
     debug_annotations: std::collections::HashMap<ProgPoint, Vec<String>>,
+    annotations_enabled: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -700,7 +701,12 @@ impl<'a> std::iter::Iterator for RegTraversalIter<'a> {
 }
 
 impl<'a, F: Function> Env<'a, F> {
-    pub(crate) fn new(func: &'a F, env: &'a MachineEnv, cfginfo: CFGInfo) -> Self {
+    pub(crate) fn new(
+        func: &'a F,
+        env: &'a MachineEnv,
+        cfginfo: CFGInfo,
+        annotations_enabled: bool,
+    ) -> Self {
         let n = func.insts();
         Self {
             func,
@@ -742,6 +748,7 @@ impl<'a, F: Function> Env<'a, F> {
             stats: Stats::default(),
 
             debug_annotations: std::collections::HashMap::new(),
+            annotations_enabled,
         }
     }
 
@@ -1141,20 +1148,17 @@ impl<'a, F: Function> Env<'a, F> {
                             OperandPos::Before,
                         );
 
-                        #[cfg(debug)]
-                        {
-                            if log::log_enabled!(log::Level::Debug) {
-                                self.annotate(
-                                    ProgPoint::after(inst),
-                                    format!(
-                                        " prog-move v{} ({:?}) -> v{} ({:?})",
-                                        src.vreg().vreg(),
-                                        src_policy,
-                                        dst.vreg().vreg(),
-                                        dst_policy,
-                                    ),
-                                );
-                            }
+                        if self.annotations_enabled && log::log_enabled!(log::Level::Debug) {
+                            self.annotate(
+                                ProgPoint::after(inst),
+                                format!(
+                                    " prog-move v{} ({:?}) -> v{} ({:?})",
+                                    src.vreg().vreg(),
+                                    src_policy,
+                                    dst.vreg().vreg(),
+                                    dst_policy,
+                                ),
+                            );
                         }
 
                         // N.B.: in order to integrate with the move
@@ -1725,20 +1729,17 @@ impl<'a, F: Function> Env<'a, F> {
             for entry in &list {
                 self.ranges[entry.index.index()].bundle = to;
 
-                #[cfg(debug)]
-                {
-                    if log::log_enabled!(log::Level::Debug) {
-                        self.annotate(
-                            entry.range.from,
-                            format!(
-                                " MERGE range{} v{} from bundle{} to bundle{}",
-                                entry.index.index(),
-                                self.ranges[entry.index.index()].vreg.index(),
-                                from.index(),
-                                to.index(),
-                            ),
-                        );
-                    }
+                if self.annotations_enabled && log::log_enabled!(log::Level::Debug) {
+                    self.annotate(
+                        entry.range.from,
+                        format!(
+                            " MERGE range{} v{} from bundle{} to bundle{}",
+                            entry.index.index(),
+                            self.ranges[entry.index.index()].vreg.index(),
+                            from.index(),
+                            to.index(),
+                        ),
+                    );
                 }
             }
             self.bundles[to.index()].ranges = list;
@@ -1780,21 +1781,18 @@ impl<'a, F: Function> Env<'a, F> {
             }
             last_range = Some(entry.range);
 
-            #[cfg(debug)]
-            {
-                if self.ranges[entry.index.index()].bundle == from {
-                    if log::log_enabled!(log::Level::Debug) {
-                        self.annotate(
-                            entry.range.from,
-                            format!(
-                                " MERGE range{} v{} from bundle{} to bundle{}",
-                                entry.index.index(),
-                                self.ranges[entry.index.index()].vreg.index(),
-                                from.index(),
-                                to.index(),
-                            ),
-                        );
-                    }
+            if self.ranges[entry.index.index()].bundle == from {
+                if self.annotations_enabled && log::log_enabled!(log::Level::Debug) {
+                    self.annotate(
+                        entry.range.from,
+                        format!(
+                            " MERGE range{} v{} from bundle{} to bundle{}",
+                            entry.index.index(),
+                            self.ranges[entry.index.index()].vreg.index(),
+                            from.index(),
+                            to.index(),
+                        ),
+                    );
                 }
             }
 
@@ -2765,8 +2763,7 @@ impl<'a, F: Function> Env<'a, F> {
                     cur_uses.next();
                 }
 
-                #[cfg(debug)]
-                {
+                if self.annotations_enabled && log::log_enabled!(log::Level::Debug) {
                     self.annotate(
                         existing_range.to,
                         format!(
@@ -3396,30 +3393,27 @@ impl<'a, F: Function> Env<'a, F> {
                 );
                 debug_assert!(alloc != Allocation::none());
 
-                #[cfg(debug)]
-                {
-                    if log::log_enabled!(log::Level::Debug) {
-                        self.annotate(
-                            range.from,
-                            format!(
-                                " <<< start v{} in {} (range{}) (bundle{})",
-                                vreg.index(),
-                                alloc,
-                                entry.index.index(),
-                                self.ranges[entry.index.index()].bundle.index(),
-                            ),
-                        );
-                        self.annotate(
-                            range.to,
-                            format!(
-                                "     end   v{} in {} (range{}) (bundle{}) >>>",
-                                vreg.index(),
-                                alloc,
-                                entry.index.index(),
-                                self.ranges[entry.index.index()].bundle.index(),
-                            ),
-                        );
-                    }
+                if self.annotations_enabled && log::log_enabled!(log::Level::Debug) {
+                    self.annotate(
+                        range.from,
+                        format!(
+                            " <<< start v{} in {} (range{}) (bundle{})",
+                            vreg.index(),
+                            alloc,
+                            entry.index.index(),
+                            self.ranges[entry.index.index()].bundle.raw_u32(),
+                        ),
+                    );
+                    self.annotate(
+                        range.to,
+                        format!(
+                            "     end   v{} in {} (range{}) (bundle{}) >>>",
+                            vreg.index(),
+                            alloc,
+                            entry.index.index(),
+                            self.ranges[entry.index.index()].bundle.raw_u32(),
+                        ),
+                    );
                 }
 
                 // Does this range follow immediately after a prior
@@ -3541,12 +3535,12 @@ impl<'a, F: Function> Env<'a, F> {
                                     ),
                                     alloc,
                                 });
-                                #[cfg(debug)]
+
+                                if self.annotations_enabled && log::log_enabled!(log::Level::Debug)
                                 {
-                                    if log::log_enabled!(log::Level::Debug) {
-                                        self.annotate(
-                                            self.cfginfo.block_exit[block.index()],
-                                            format!(
+                                    self.annotate(
+                                        self.cfginfo.block_exit[block.index()],
+                                        format!(
                                             "blockparam-out: block{} to block{}: v{} to v{} in {}",
                                             from_block.index(),
                                             to_block.index(),
@@ -3554,10 +3548,10 @@ impl<'a, F: Function> Env<'a, F> {
                                             to_vreg.index(),
                                             alloc
                                         ),
-                                        );
-                                    }
+                                    );
                                 }
                             }
+
                             blockparam_out_idx += 1;
                         }
 
@@ -4341,10 +4335,14 @@ impl<'a, F: Function> Env<'a, F> {
     }
 }
 
-pub fn run<F: Function>(func: &F, mach_env: &MachineEnv) -> Result<Output, RegAllocError> {
+pub fn run<F: Function>(
+    func: &F,
+    mach_env: &MachineEnv,
+    enable_annotations: bool,
+) -> Result<Output, RegAllocError> {
     let cfginfo = CFGInfo::new(func)?;
 
-    let mut env = Env::new(func, mach_env, cfginfo);
+    let mut env = Env::new(func, mach_env, cfginfo, enable_annotations);
     env.init()?;
 
     env.run()?;

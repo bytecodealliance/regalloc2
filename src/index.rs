@@ -35,6 +35,11 @@ macro_rules! define_index {
                 assert!(self.is_valid());
                 Self(self.0 - 1)
             }
+
+            #[inline(always)]
+            pub fn raw_u32(self) -> u32 {
+                self.0
+            }
         }
 
         impl crate::index::ContainerIndex for $ix {}

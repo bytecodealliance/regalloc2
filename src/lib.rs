@@ -1010,6 +1010,17 @@ impl std::fmt::Display for RegAllocError {
 
 impl std::error::Error for RegAllocError {}
 
-pub fn run<F: Function>(func: &F, env: &MachineEnv) -> Result<Output, RegAllocError> {
-    ion::run(func, env)
+pub fn run<F: Function>(
+    func: &F,
+    env: &MachineEnv,
+    options: &RegallocOptions,
+) -> Result<Output, RegAllocError> {
+    ion::run(func, env, options.verbose_log)
+}
+
+/// Options for allocation.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RegallocOptions {
+    /// Add extra verbosity to debug logs.
+    pub verbose_log: bool,
 }
