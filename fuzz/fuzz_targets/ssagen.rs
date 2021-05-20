@@ -37,6 +37,6 @@ impl Arbitrary for TestCase {
 }
 
 fuzz_target!(|t: TestCase| {
-    let cfginfo = CFGInfo::new(&t.f);
+    let cfginfo = CFGInfo::new(&t.f).expect("could not create CFG info");
     validate_ssa(&t.f, &cfginfo).expect("invalid SSA");
 });
