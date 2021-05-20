@@ -2627,13 +2627,6 @@ impl<'a, F: Function> Env<'a, F> {
         // to the above invariants to keep this code maintainable.
 
         let spillset = self.bundles[bundle.index()].spillset;
-
-        // Get the spill bundle, which is the single bundle into which
-        // we place empty ranges (those with no uses). This may be
-        // `LiveBundleIndex::invalid()`, in which case we'll create it
-        // when we first need it.
-        let mut spill_bundle = self.spillsets[spillset.index()].spill_bundle;
-
         let mut split_idx = 0;
 
         // Fast-forward past any splits that occur before or exactly
@@ -2688,41 +2681,14 @@ impl<'a, F: Function> Env<'a, F> {
                         log::debug!("  -> use at {:?}", u.pos);
                         self.ranges[cur_lr.index()].uses.push(u);
                     }
-                    if self.ranges[cur_lr.index()].uses.len() > 0 {
-                        self.ranges[cur_lr.index()].bundle = cur_bundle;
-                        self.bundles[cur_bundle.index()]
-                            .ranges
-                            .push(LiveRangeListEntry {
-                                range: cur_range,
-                                index: cur_lr,
-                            });
-                    } else {
-                        if spill_bundle.is_invalid() {
-                            spill_bundle = self.create_bundle();
-                            log::debug!(
-                                " -> allocating new spill-bundle for empty ranges: bundle{}",
-                                spill_bundle.index()
-                            );
-                            self.bundles[spill_bundle.index()].spillset = spillset;
-                            self.spillsets[spillset.index()].spill_bundle = spill_bundle;
-                            self.spilled_bundles.push(spill_bundle);
-                        }
-                        // Range lists in empty-range bundles are not
-                        // sorted until later (when we try to allocate
-                        // regs or spillslots for them).
-                        log::debug!(
-                            " -> no uses in range{}; placing in empty-range spill-bundle bundle{}",
-                            cur_lr.index(),
-                            spill_bundle.index()
-                        );
-                        self.ranges[cur_lr.index()].bundle = spill_bundle;
-                        self.bundles[spill_bundle.index()]
-                            .ranges
-                            .push(LiveRangeListEntry {
-                                range: cur_range,
-                                index: cur_lr,
-                            });
-                    }
+
+                    self.ranges[cur_lr.index()].bundle = cur_bundle;
+                    self.bundles[cur_bundle.index()]
+                        .ranges
+                        .push(LiveRangeListEntry {
+                            range: cur_range,
+                            index: cur_lr,
+                        });
                     break;
                 }
 
@@ -2793,43 +2759,18 @@ impl<'a, F: Function> Env<'a, F> {
                     cur_uses.next();
                 }
 
-                if self.ranges[cur_lr.index()].uses.len() > 0 {
-                    log::debug!(
-                        " -> adding current LR {:?} to current bundle {:?}",
-                        cur_lr,
-                        cur_bundle
-                    );
-                    self.ranges[cur_lr.index()].bundle = cur_bundle;
-                    self.bundles[cur_bundle.index()]
-                        .ranges
-                        .push(LiveRangeListEntry {
-                            range: existing_range,
-                            index: cur_lr,
-                        });
-                } else {
-                    if spill_bundle.is_invalid() {
-                        spill_bundle = self.create_bundle();
-                        log::debug!(
-                            " -> allocating new spill-bundle for empty ranges: bundle{}",
-                            spill_bundle.index()
-                        );
-                        self.bundles[spill_bundle.index()].spillset = spillset;
-                        self.spillsets[spillset.index()].spill_bundle = spill_bundle;
-                        self.spilled_bundles.push(spill_bundle);
-                    }
-                    log::debug!(
-                        " -> no uses in range{}; placing in empty-range spill-bundle bundle{}",
-                        cur_lr.index(),
-                        spill_bundle.index()
-                    );
-                    self.ranges[cur_lr.index()].bundle = spill_bundle;
-                    self.bundles[spill_bundle.index()]
-                        .ranges
-                        .push(LiveRangeListEntry {
-                            range: cur_range,
-                            index: cur_lr,
-                        });
-                }
+                log::debug!(
+                    " -> adding current LR {:?} to current bundle {:?}",
+                    cur_lr,
+                    cur_bundle
+                );
+                self.ranges[cur_lr.index()].bundle = cur_bundle;
+                self.bundles[cur_bundle.index()]
+                    .ranges
+                    .push(LiveRangeListEntry {
+                        range: existing_range,
+                        index: cur_lr,
+                    });
 
                 if self.annotations_enabled && log::log_enabled!(log::Level::Debug) {
                     self.annotate(
@@ -2866,19 +2807,15 @@ impl<'a, F: Function> Env<'a, F> {
 
         // Recompute weights and priorities of all bundles, and
         // enqueue all split-bundles on the allocation queue.
-        if self.bundles[bundle.index()].ranges.len() > 0 {
-            let prio = self.compute_bundle_prio(bundle);
-            self.bundles[bundle.index()].prio = prio;
-            self.recompute_bundle_properties(bundle);
-            self.allocation_queue.insert(bundle, prio as usize);
-        }
+        let prio = self.compute_bundle_prio(bundle);
+        self.bundles[bundle.index()].prio = prio;
+        self.recompute_bundle_properties(bundle);
+        self.allocation_queue.insert(bundle, prio as usize);
         for &b in &new_bundles {
-            if self.bundles[b.index()].ranges.len() > 0 {
-                let prio = self.compute_bundle_prio(b);
-                self.bundles[b.index()].prio = prio;
-                self.recompute_bundle_properties(b);
-                self.allocation_queue.insert(b, prio as usize);
-            }
+            let prio = self.compute_bundle_prio(b);
+            self.bundles[b.index()].prio = prio;
+            self.recompute_bundle_properties(b);
+            self.allocation_queue.insert(b, prio as usize);
         }
     }
 
