@@ -1127,12 +1127,59 @@ impl<'a, F: Function> Env<'a, F> {
                         assert_eq!(dst.kind(), OperandKind::Def);
                         assert_eq!(dst.pos(), OperandPos::After);
 
+                        // If both src and dest are pinned, emit the
+                        // move right here, right now.
+                        if self.vregs[src.vreg().vreg()].is_pinned
+                            && self.vregs[dst.vreg().vreg()].is_pinned
+                        {
+                            // Update LRs.
+                            if !live.get(src.vreg().vreg()) {
+                                let lr = self.add_liverange_to_vreg(
+                                    VRegIndex::new(src.vreg().vreg()),
+                                    CodeRange {
+                                        from: self.cfginfo.block_entry[block.index()],
+                                        to: ProgPoint::after(inst),
+                                    },
+                                );
+                                live.set(src.vreg().vreg(), true);
+                                vreg_ranges[src.vreg().vreg()] = lr;
+                            }
+                            if live.get(dst.vreg().vreg()) {
+                                let lr = vreg_ranges[dst.vreg().vreg()];
+                                self.ranges[lr.index()].range.from = ProgPoint::after(inst);
+                                live.set(dst.vreg().vreg(), false);
+                            } else {
+                                self.add_liverange_to_vreg(
+                                    VRegIndex::new(dst.vreg().vreg()),
+                                    CodeRange {
+                                        from: ProgPoint::after(inst),
+                                        to: ProgPoint::before(inst.next()),
+                                    },
+                                );
+                            }
+
+                            let src_preg = match src.policy() {
+                                OperandPolicy::FixedReg(r) => r,
+                                _ => unreachable!(),
+                            };
+                            let dst_preg = match dst.policy() {
+                                OperandPolicy::FixedReg(r) => r,
+                                _ => unreachable!(),
+                            };
+                            self.insert_move(
+                                ProgPoint::before(inst),
+                                InsertMovePrio::MultiFixedReg,
+                                Allocation::reg(src_preg),
+                                Allocation::reg(dst_preg),
+                                Some(dst.vreg()),
+                            );
+                        }
                         // If exactly one of source and dest (but not
                         // both) is a pinned-vreg, convert this into a
                         // ghost use on the other vreg with a FixedReg
                         // policy.
-                        if self.vregs[src.vreg().vreg()].is_pinned
-                            ^ self.vregs[dst.vreg().vreg()].is_pinned
+                        else if self.vregs[src.vreg().vreg()].is_pinned
+                            || self.vregs[dst.vreg().vreg()].is_pinned
                         {
                             log::debug!(
                                 " -> exactly one of src/dst is pinned; converting to ghost use"
@@ -1155,14 +1202,7 @@ impl<'a, F: Function> Env<'a, F> {
                                         src.vreg(),
                                         dst.vreg(),
                                         OperandKind::Use,
-                                        // Use comes late to avoid interfering with a potential
-                                        // prior move instruction
-                                        // reserving the preg, which
-                                        // creates a use or def *at*
-                                        // our Before pos (because
-                                        // progmoves happen between
-                                        // insts).
-                                        OperandPos::After,
+                                        OperandPos::Before,
                                         ProgPoint::after(inst),
                                     )
                                 };
