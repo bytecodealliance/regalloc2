@@ -589,6 +589,12 @@ impl<'a, F: Function> Checker<'a, F> {
                         .unwrap()
                         .push(CheckerInst::Move { into: to, from });
                 }
+                &Edit::DefAlloc { .. } => {
+                    unimplemented!(concat!(
+                        "DefAlloc is used only when dealing with pinned vregs, ",
+                        "which are only used by regalloc.rs shim; use checker at that level!"
+                    ));
+                }
                 &Edit::BlockParams {
                     ref vregs,
                     ref allocs,

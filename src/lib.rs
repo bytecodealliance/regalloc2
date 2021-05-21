@@ -906,6 +906,9 @@ pub enum Edit {
         vregs: Vec<VReg>,
         allocs: Vec<Allocation>,
     },
+    /// Define a particular Allocation to contain a particular VReg. Useful
+    /// for the checker.
+    DefAlloc { alloc: Allocation, vreg: VReg },
 }
 
 /// A machine envrionment tells the register allocator which registers
