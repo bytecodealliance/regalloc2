@@ -1285,20 +1285,20 @@ impl<'a, F: Function> Env<'a, F> {
                                 if live.get(pinned_vreg.vreg()) {
                                     let pinned_lr = vreg_ranges[pinned_vreg.vreg()];
                                     let orig_start = self.ranges[pinned_lr.index()].range.from;
-                                    self.ranges[pinned_lr.index()].range.from = progpoint.next();
-                                    let new_lr = self.add_liverange_to_vreg(
-                                        VRegIndex::new(pinned_vreg.vreg()),
-                                        CodeRange {
-                                            from: orig_start,
-                                            to: progpoint,
-                                        },
-                                    );
-                                    vreg_ranges[pinned_vreg.vreg()] = new_lr;
                                     log::debug!(
                                         " -> live with LR {:?}; truncating to start at {:?}",
                                         pinned_lr,
                                         progpoint.next()
                                     );
+                                    self.ranges[pinned_lr.index()].range.from = progpoint.next();
+                                    let new_lr = self.add_liverange_to_vreg(
+                                        VRegIndex::new(pinned_vreg.vreg()),
+                                        CodeRange {
+                                            from: orig_start,
+                                            to: progpoint.prev(),
+                                        },
+                                    );
+                                    vreg_ranges[pinned_vreg.vreg()] = new_lr;
                                     log::debug!(" -> created LR {:?} with remaining range from {:?} to {:?}", new_lr, orig_start, progpoint);
 
                                     // Add an edit right now to indicate that at
@@ -1325,16 +1325,21 @@ impl<'a, F: Function> Env<'a, F> {
                                         },
                                     );
                                 } else {
-                                    let new_lr = self.add_liverange_to_vreg(
-                                        VRegIndex::new(pinned_vreg.vreg()),
-                                        CodeRange {
-                                            from: self.cfginfo.block_entry[block.index()],
-                                            to: progpoint,
-                                        },
-                                    );
-                                    vreg_ranges[pinned_vreg.vreg()] = new_lr;
-                                    live.set(pinned_vreg.vreg(), true);
-                                    log::debug!(" -> was not live; created new LR {:?}", new_lr);
+                                    if inst > self.cfginfo.block_entry[block.index()].inst() {
+                                        let new_lr = self.add_liverange_to_vreg(
+                                            VRegIndex::new(pinned_vreg.vreg()),
+                                            CodeRange {
+                                                from: self.cfginfo.block_entry[block.index()],
+                                                to: ProgPoint::before(inst),
+                                            },
+                                        );
+                                        vreg_ranges[pinned_vreg.vreg()] = new_lr;
+                                        live.set(pinned_vreg.vreg(), true);
+                                        log::debug!(
+                                            " -> was not live; created new LR {:?}",
+                                            new_lr
+                                        );
+                                    }
 
                                     // Add an edit right now to indicate that at
                                     // this program point, the given
@@ -2536,13 +2541,19 @@ impl<'a, F: Function> Env<'a, F> {
                     break;
                 }
             }
-            // Minimal if this is the only range in the bundle, and if
-            // the range covers only one instruction. Note that it
-            // could cover just one ProgPoint, i.e. X.Before..X.After,
-            // or two ProgPoints, i.e. X.Before..X+1.Before.
+            // Minimal if the range covers only one instruction. Note
+            // that it could cover just one ProgPoint,
+            // i.e. X.Before..X.After, or two ProgPoints,
+            // i.e. X.Before..X+1.Before.
             log::debug!("  -> first range has range {:?}", first_range_data.range);
-            minimal = self.bundles[bundle.index()].ranges.len() == 1
-                && first_range_data.range.from.inst() == first_range_data.range.to.prev().inst();
+            let bundle_start = self.bundles[bundle.index()]
+                .ranges
+                .first()
+                .unwrap()
+                .range
+                .from;
+            let bundle_end = self.bundles[bundle.index()].ranges.last().unwrap().range.to;
+            minimal = bundle_start.inst() == bundle_end.prev().inst();
             log::debug!("  -> minimal: {}", minimal);
         }
 
@@ -2662,7 +2673,6 @@ impl<'a, F: Function> Env<'a, F> {
                         .next(),
                 ),
             };
-            assert!(split_at < bundle_end);
             log::debug!(
                 "split point is at bundle start; advancing to {:?}",
                 split_at
