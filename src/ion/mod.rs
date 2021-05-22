@@ -821,50 +821,46 @@ impl<'a, F: Function> Env<'a, F> {
     /// Mark `range` as live for the given `vreg`.
     ///
     /// Returns the liverange that contains the given range.
-    fn add_liverange_to_vreg(&mut self, vreg: VRegIndex, mut range: CodeRange) -> LiveRangeIndex {
+    fn add_liverange_to_vreg(&mut self, vreg: VRegIndex, range: CodeRange) -> LiveRangeIndex {
         log::debug!("add_liverange_to_vreg: vreg {:?} range {:?}", vreg, range);
 
-        // Check for abutting or overlapping ranges.
-        let mut merged = None;
-        let mut i = 0;
-        while i < self.vregs[vreg.index()].ranges.len() {
-            let entry = self.vregs[vreg.index()].ranges[i];
-            // Don't use `entry.range`; it is not kept up-to-date as
-            // we are building LRs.
-            let this_range = self.ranges[entry.index.index()].range;
-            if range.overlaps(&this_range) {
-                if this_range.from < range.from {
-                    range.from = this_range.from;
-                }
-                if this_range.to > range.to {
-                    range.to = this_range.to;
-                }
-                if merged.is_none() {
-                    merged = Some(i);
-                    self.ranges[entry.index.index()].range = range;
-                    self.vregs[vreg.index()].ranges[i].range = range;
-                    i += 1;
-                } else {
-                    let merge_from = entry.index;
-                    let merge_into = self.vregs[vreg.index()].ranges[merged.unwrap()].index;
-                    self.ranges[merge_from.index()].merged_into = merge_into;
-                    let mut uses =
-                        std::mem::replace(&mut self.ranges[merge_from.index()].uses, smallvec![]);
-                    self.ranges[merge_into.index()].uses.extend(uses.drain(..));
-                    let f = self.ranges[merge_from.index()].flag_word();
-                    self.ranges[merge_into.index()].merge_flags(f);
-                    self.ranges[merge_into.index()].range = range;
-                    self.vregs[vreg.index()].ranges[merged.unwrap()].range = range;
-                    self.vregs[vreg.index()].ranges.remove(i);
-                }
-            } else {
-                i += 1;
-            }
-        }
+        // Invariant: as we are building liveness information, we
+        // *always* process instructions bottom-to-top, and as a
+        // consequence, new liveranges are always created before any
+        // existing liveranges for a given vreg. We assert this here,
+        // then use it to avoid an O(n) merge step (which would lead
+        // to O(n^2) liveness construction cost overall).
+        //
+        // We store liveranges in reverse order in the `.ranges`
+        // array, then reverse them at the end of
+        // `compute_liveness()`.
 
-        // If we get here and did not merge into an existing liverange or liveranges, then we need
-        // to create a new one.
-        if merged.is_none() {
+        assert!(
+            self.vregs[vreg.index()].ranges.is_empty()
+                || range.to
+                    <= self.ranges[self.vregs[vreg.index()]
+                        .ranges
+                        .last()
+                        .unwrap()
+                        .index
+                        .index()]
+                    .range
+                    .from
+        );
+
+        if self.vregs[vreg.index()].ranges.is_empty()
+            || range.to
+                < self.ranges[self.vregs[vreg.index()]
+                    .ranges
+                    .last()
+                    .unwrap()
+                    .index
+                    .index()]
+                .range
+                .from
+        {
+            // Is not contiguous with previously-added (immediately
+            // following) range; create a new range.
             let lr = self.create_liverange(range);
             self.ranges[lr.index()].vreg = vreg;
             self.vregs[vreg.index()]
@@ -872,7 +868,12 @@ impl<'a, F: Function> Env<'a, F> {
                 .push(LiveRangeListEntry { range, index: lr });
             lr
         } else {
-            self.vregs[vreg.index()].ranges[merged.unwrap()].index
+            // Is contiguous with previously-added range; just extend
+            // its range and return it.
+            let lr = self.vregs[vreg.index()].ranges.last().unwrap().index;
+            assert!(range.to == self.ranges[lr.index()].range.from);
+            self.ranges[lr.index()].range.from = range.from;
+            lr
         }
     }
 
@@ -1484,13 +1485,20 @@ impl<'a, F: Function> Env<'a, F> {
                             // and create an initial LR back to the start of
                             // the block.
                             let pos = ProgPoint::after(inst);
-                            let range = CodeRange {
-                                from: self.cfginfo.block_entry[block.index()],
-                                to: pos.next(),
+                            let src_lr = if !live.get(src.vreg().vreg()) {
+                                let range = CodeRange {
+                                    from: self.cfginfo.block_entry[block.index()],
+                                    to: pos.next(),
+                                };
+                                let src_lr = self.add_liverange_to_vreg(
+                                    VRegIndex::new(src.vreg().vreg()),
+                                    range,
+                                );
+                                vreg_ranges[src.vreg().vreg()] = src_lr;
+                                src_lr
+                            } else {
+                                vreg_ranges[src.vreg().vreg()]
                             };
-                            let src_lr = self
-                                .add_liverange_to_vreg(VRegIndex::new(src.vreg().vreg()), range);
-                            vreg_ranges[src.vreg().vreg()] = src_lr;
 
                             log::debug!(" -> src LR {:?}", src_lr);
 
@@ -1682,23 +1690,35 @@ impl<'a, F: Function> Env<'a, F> {
 
         self.safepoints.sort_unstable();
 
-        // Sort ranges in each vreg, and uses in each range, so we can
-        // iterate over them in order below. The ordering invariant is
-        // always maintained for uses and always for ranges in bundles
-        // (which are initialized later), but not always for ranges in
-        // vregs; those are sorted only when needed, here and then
-        // again at the end of allocation when resolving moves.
+        // Make ranges in each vreg and uses in each range appear in
+        // sorted order. We built them in reverse order above, so this
+        // is a simple reversal, *not* a full sort.
+        //
+        // The ordering invariant is always maintained for uses and
+        // always for ranges in bundles (which are initialized later),
+        // but not always for ranges in vregs; those are sorted only
+        // when needed, here and then again at the end of allocation
+        // when resolving moves.
+
         for vreg in &mut self.vregs {
+            vreg.ranges.reverse();
+            let mut last = None;
             for entry in &mut vreg.ranges {
                 // Ranges may have been truncated above at defs. We
                 // need to update with the final range here.
                 entry.range = self.ranges[entry.index.index()].range;
+                // Assert in-order and non-overlapping.
+                assert!(last.is_none() || last.unwrap() <= entry.range.from);
+                last = Some(entry.range.to);
             }
-            vreg.ranges.sort_unstable_by_key(|entry| entry.range.from);
         }
 
         for range in 0..self.ranges.len() {
-            self.ranges[range].uses.sort_unstable_by_key(|u| u.pos);
+            self.ranges[range].uses.reverse();
+            debug_assert!(self.ranges[range]
+                .uses
+                .windows(2)
+                .all(|win| win[0].pos <= win[1].pos));
         }
 
         // Insert safepoint virtual stack uses, if needed.
