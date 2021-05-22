@@ -2051,6 +2051,7 @@ impl<'a, F: Function> Env<'a, F> {
         while idx_from < ranges_from.len() || idx_to < ranges_to.len() {
             if idx_from < ranges_from.len() && idx_to < ranges_to.len() {
                 if ranges_from[idx_from].range.from <= ranges_to[idx_to].range.from {
+                    self.ranges[ranges_from[idx_from].index.index()].bundle = to;
                     merged.push(ranges_from[idx_from]);
                     idx_from += 1;
                 } else {
@@ -2058,6 +2059,9 @@ impl<'a, F: Function> Env<'a, F> {
                     idx_to += 1;
                 }
             } else if idx_from < ranges_from.len() {
+                for entry in &ranges_from[idx_from..] {
+                    self.ranges[entry.index.index()].bundle = to;
+                }
                 merged.extend_from_slice(&ranges_from[idx_from..]);
                 break;
             } else {
@@ -2066,35 +2070,38 @@ impl<'a, F: Function> Env<'a, F> {
                 break;
             }
         }
-        log::debug!("merging: merged = {:?}", merged);
-        let mut last_range = None;
-        for entry in &merged {
-            if last_range.is_some() {
-                assert!(last_range.unwrap() < entry.range);
-            }
-            last_range = Some(entry.range);
 
-            if self.ranges[entry.index.index()].bundle == from {
-                if self.annotations_enabled && log::log_enabled!(log::Level::Debug) {
-                    self.annotate(
-                        entry.range.from,
-                        format!(
-                            " MERGE range{} v{} from bundle{} to bundle{}",
-                            entry.index.index(),
-                            self.ranges[entry.index.index()].vreg.index(),
-                            from.index(),
-                            to.index(),
-                        ),
-                    );
+        #[cfg(debug_assertions)]
+        {
+            log::debug!("merging: merged = {:?}", merged);
+            let mut last_range = None;
+            for entry in &merged {
+                if last_range.is_some() {
+                    assert!(last_range.unwrap() < entry.range);
                 }
-            }
+                last_range = Some(entry.range);
 
-            log::debug!(
-                " -> merged result for bundle{}: range{}",
-                to.index(),
-                entry.index.index(),
-            );
-            self.ranges[entry.index.index()].bundle = to;
+                if self.ranges[entry.index.index()].bundle == from {
+                    if self.annotations_enabled && log::log_enabled!(log::Level::Debug) {
+                        self.annotate(
+                            entry.range.from,
+                            format!(
+                                " MERGE range{} v{} from bundle{} to bundle{}",
+                                entry.index.index(),
+                                self.ranges[entry.index.index()].vreg.index(),
+                                from.index(),
+                                to.index(),
+                            ),
+                        );
+                    }
+                }
+
+                log::debug!(
+                    " -> merged result for bundle{}: range{}",
+                    to.index(),
+                    entry.index.index(),
+                );
+            }
         }
 
         self.bundles[to.index()].ranges = merged;
