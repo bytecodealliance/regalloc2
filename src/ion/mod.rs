@@ -1310,7 +1310,7 @@ impl<'a, F: Function> Env<'a, F> {
                                     // checker.
                                     self.add_edit(
                                         ProgPoint::before(inst),
-                                        InsertMovePrio::Regular,
+                                        InsertMovePrio::MultiFixedReg,
                                         Edit::DefAlloc {
                                             alloc: Allocation::reg(preg),
                                             vreg: dst.vreg(),
@@ -1347,7 +1347,7 @@ impl<'a, F: Function> Env<'a, F> {
                                     // not the preg. This is used by
                                     // the checker.
                                     self.add_edit(
-                                        ProgPoint::before(inst),
+                                        ProgPoint::after(inst),
                                         InsertMovePrio::Regular,
                                         Edit::DefAlloc {
                                             alloc: Allocation::reg(preg),
