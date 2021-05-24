@@ -20,17 +20,45 @@
  */
 
 /*
-   Performance ideas:
+   Performance and code-quality ideas:
 
-   - conflict hints? (note on one bundle that it definitely conflicts
-     with another, so avoid probing the other's alloc)
+   - Split heuristics:
+     - Loop depth at split point? Split before entering more nested loop
+     - Split at earliest vs latest conflict -- study more
 
-   - partial allocation -- place one LR, split rest off into separate
-     bundle, in one pass?
+   - Reduced spilling when spillslot is still "clean":
+     - When we allocate spillsets, use the whole bundle of a given
+       spillset to check for fit. Add all bundles to spillset as we
+       split; then SpillSet::bundles always corresponds to original
+       merged bundle.
+     - Then a single bundle will never move between spillslots, so we
+       know that when we reload from the one single spillslot, it is
+       the last value that we spilled.
+     - So we can track 'dirty' status of reg and elide spill when not
+       dirty.
+       - This is slightly tricky: fixpoint problem, across edges.
+       - We can simplify by assuming spillslot is dirty if value came
+         in on BB edge; only clean if we reload in same block we spill
+         in.
+       - As a slightly better variation on this, track dirty during
+         scan in a single range while resolving moves; in-edge makes
+         dirty.
 
-   - coarse-grained "register contention" counters per fixed region;
-     randomly sample these, adding up a vector of them, to choose
-     register probe order?
+   - Add weight to bundles according to progmoves
+
+   - Efficiency improvements:
+     - Record 'cheapest evict bundle so far' and stop scanning if
+       total evict cost exceeds that
+
+   - Avoid requiring two scratch regs:
+     - Require machine impl to be able to (i) push a reg, (ii) pop a
+       reg; then generate a balanced pair of push/pop, using the stack
+       slot as the scratch.
+       - on Cranelift side, take care to generate virtual-SP
+         adjustments!
+     - For a spillslot->spillslot move, push a fixed reg (say the
+       first preferred one), reload into it, spill out of it, and then
+       pop old val
  */
 
 #![allow(dead_code, unused_imports)]
@@ -2410,9 +2438,10 @@ impl<'a, F: Function> Env<'a, F> {
         // O(b * n log n) with the simple probe-for-each-bundle-range
         // approach.
         //
-        // Note that the comparator function on a CodeRange tests for *overlap*, so we
-        // are checking whether the BTree contains any preg range that
-        // *overlaps* with range `range`, not literally the range `range`.
+        // Note that the comparator function on a CodeRange tests for
+        // *overlap*, so we are checking whether the BTree contains
+        // any preg range that *overlaps* with range `range`, not
+        // literally the range `range`.
         let bundle_ranges = &self.bundles[bundle.index()].ranges;
         let from_key = LiveRangeKey::from_range(&bundle_ranges.first().unwrap().range);
         let to_key = LiveRangeKey::from_range(&bundle_ranges.last().unwrap().range);
