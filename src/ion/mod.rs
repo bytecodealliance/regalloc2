@@ -946,25 +946,25 @@ impl<'a, F: Function> Env<'a, F> {
             }));
         let weight = spill_weight_from_policy(policy, is_hot, operand.kind() != OperandKind::Use);
         u.weight = u16::try_from(weight).expect("weight too large for u16 field");
-        let req = Requirement::from_operand(u.operand);
 
         log::debug!(
-            "insert use {:?} into lr {:?} with weight {} req {:?}",
+            "insert use {:?} into lr {:?} with weight {}",
             u,
             into,
             weight,
-            req,
         );
 
+        // N.B.: we do *not* update `requirement` on the range,
+        // because those will be computed during the multi-fixed-reg
+        // fixup pass later (after all uses are inserted).
+
         self.ranges[into.index()].uses.push(u);
-        self.ranges[into.index()].requirement = self.ranges[into.index()].requirement.merge(req);
 
         // Update stats.
         self.ranges[into.index()].uses_spill_weight_and_flags += weight;
         log::debug!(
-            "  -> now range has weight {} req {:?}",
+            "  -> now range has weight {}",
             self.ranges[into.index()].uses_spill_weight(),
-            self.ranges[into.index()].requirement
         );
     }
 
@@ -1909,6 +1909,11 @@ impl<'a, F: Function> Env<'a, F> {
                     }
                 };
 
+                // N.B.: this is important even if we later remove the
+                // multi-fixed-reg fixup scheme, because it is the
+                // only place where range requirements are (initially)
+                // computed! We do it only here in order to avoid
+                // redundant work.
                 let mut req = Requirement::Unknown;
                 for u in &mut self.ranges[range.index()].uses {
                     let pos = u.pos;
