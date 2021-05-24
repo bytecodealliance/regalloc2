@@ -946,21 +946,26 @@ impl<'a, F: Function> Env<'a, F> {
             }));
         let weight = spill_weight_from_policy(policy, is_hot, operand.kind() != OperandKind::Use);
         u.weight = u16::try_from(weight).expect("weight too large for u16 field");
+        let req = Requirement::from_operand(u.operand);
 
         log::debug!(
-            "insert use {:?} into lr {:?} with weight {}",
+            "insert use {:?} into lr {:?} with weight {} req {:?}",
             u,
             into,
             weight,
+            req,
         );
 
-        let req = Requirement::from_operand(u.operand);
         self.ranges[into.index()].uses.push(u);
         self.ranges[into.index()].requirement = self.ranges[into.index()].requirement.merge(req);
 
         // Update stats.
         self.ranges[into.index()].uses_spill_weight_and_flags += weight;
-        log::debug!("  -> now {}", self.ranges[into.index()].uses_spill_weight());
+        log::debug!(
+            "  -> now range has weight {} req {:?}",
+            self.ranges[into.index()].uses_spill_weight(),
+            self.ranges[into.index()].requirement
+        );
     }
 
     fn find_vreg_liverange_for_pos(
@@ -1904,6 +1909,7 @@ impl<'a, F: Function> Env<'a, F> {
                     }
                 };
 
+                let mut req = Requirement::Unknown;
                 for u in &mut self.ranges[range.index()].uses {
                     let pos = u.pos;
                     let slot = u.slot as usize;
@@ -1913,7 +1919,9 @@ impl<'a, F: Function> Env<'a, F> {
                         &mut u.operand,
                         &mut self.multi_fixed_reg_fixups,
                     );
+                    req = req.merge(Requirement::from_operand(u.operand));
                 }
+                self.ranges[range.index()].requirement = req;
 
                 for &(clobber, inst) in &extra_clobbers {
                     let range = CodeRange {
@@ -2407,9 +2415,10 @@ impl<'a, F: Function> Env<'a, F> {
         log::debug!("Bundles:");
         for (i, b) in self.bundles.iter().enumerate() {
             log::debug!(
-                "bundle{}: spillset={:?} alloc={:?}",
+                "bundle{}: spillset={:?} req={:?} alloc={:?}",
                 i,
                 b.spillset,
+                b.requirement,
                 b.allocation
             );
             for entry in &b.ranges {
@@ -2436,37 +2445,18 @@ impl<'a, F: Function> Env<'a, F> {
         log::debug!("Ranges:");
         for (i, r) in self.ranges.iter().enumerate() {
             log::debug!(
-                concat!("range{}: range={:?} vreg={:?} bundle={:?} ", "weight={}"),
+                "range{}: range={:?} vreg={:?} bundle={:?} req={:?} weight={}",
                 i,
                 r.range,
                 r.vreg,
                 r.bundle,
+                r.requirement,
                 r.uses_spill_weight(),
             );
             for u in &r.uses {
                 log::debug!(" * use at {:?} (slot {}): {:?}", u.pos, u.slot, u.operand);
             }
         }
-    }
-
-    fn compute_requirement(&self, bundle: LiveBundleIndex) -> Requirement {
-        log::debug!("compute_requirement: bundle {:?}", bundle);
-
-        let mut needed = Requirement::Unknown;
-        for entry in &self.bundles[bundle.index()].ranges {
-            let range = &self.ranges[entry.index.index()];
-            log::debug!(
-                " -> range LR {} ({:?}): {:?}",
-                entry.index.index(),
-                entry.index,
-                entry.range
-            );
-            needed = needed.merge(range.requirement);
-            log::debug!("   -> needed {:?}", needed);
-        }
-
-        log::debug!(" -> final needed: {:?}", needed);
-        needed
     }
 
     fn try_to_allocate_bundle_to_reg(
@@ -2713,8 +2703,10 @@ impl<'a, F: Function> Env<'a, F> {
         let mut req = Requirement::Unknown;
         for u in &rangedata.uses {
             w += u.weight as u32;
+            log::debug!("range{}: use {:?}", range.index(), u);
             req = req.merge(Requirement::from_operand(u.operand));
         }
+        log::debug!("range{}: recomputed req = {:?}", range.index(), req);
         rangedata.uses_spill_weight_and_flags = w;
         rangedata.requirement = req;
         if rangedata.uses.len() > 0 && rangedata.uses[0].operand.kind() == OperandKind::Def {
@@ -2916,9 +2908,10 @@ impl<'a, F: Function> Env<'a, F> {
         bundle: LiveBundleIndex,
         reg_hint: PReg,
     ) -> Result<(), RegAllocError> {
-        // Find any requirements: for every LR, for every def/use, gather
-        // requirements (fixed-reg, any-reg, any) and merge them.
-        let req = self.compute_requirement(bundle);
+        // The requirement is kept up-to-date as bundles are merged
+        // and split, and indicates what sort of allocation we need.
+        let req = self.bundles[bundle.index()].requirement;
+
         // Grab a hint from either the queue or our spillset, if any.
         let hint_reg = if reg_hint != PReg::invalid() {
             reg_hint
