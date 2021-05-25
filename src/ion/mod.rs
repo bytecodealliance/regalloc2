@@ -354,7 +354,6 @@ struct Env<'a, F: Function> {
     vreg_regs: Vec<VReg>,
     pregs: Vec<PRegData>,
     allocation_queue: PrioQueue,
-    hot_code: LiveRangeSet,
     clobbers: Vec<Inst>,   // Sorted list of insts with clobbers.
     safepoints: Vec<Inst>, // Sorted list of safepoint insts.
     safepoints_per_vreg: HashMap<usize, HashSet<Inst>>,
@@ -524,8 +523,10 @@ impl LiveRangeSet {
 }
 
 #[inline(always)]
-fn spill_weight_from_policy(policy: OperandPolicy, is_hot: bool, is_def: bool) -> u32 {
-    let hot_bonus = if is_hot { 10000 } else { 0 };
+fn spill_weight_from_policy(policy: OperandPolicy, loop_depth: usize, is_def: bool) -> u32 {
+    // A bonus of 1000 for one loop level, 4000 for two loop levels,
+    // 16000 for three loop levels, etc. Avoids exponentiation.
+    let hot_bonus = std::cmp::min(16000, 1000 * (1 << (2 * loop_depth)));
     let def_bonus = if is_def { 2000 } else { 0 };
     let policy_bonus = match policy {
         OperandPolicy::Any => 1000,
@@ -794,7 +795,6 @@ impl<'a, F: Function> Env<'a, F> {
             clobbers: vec![],
             safepoints: vec![],
             safepoints_per_vreg: HashMap::new(),
-            hot_code: LiveRangeSet::new(),
             spilled_bundles: vec![],
             spillslots: vec![],
             slots_by_size: vec![],
@@ -944,17 +944,12 @@ impl<'a, F: Function> Env<'a, F> {
     }
 
     fn insert_use_into_liverange(&mut self, into: LiveRangeIndex, mut u: Use) {
-        let insert_pos = u.pos;
         let operand = u.operand;
         let policy = operand.policy();
-        let is_hot = self
-            .hot_code
-            .btree
-            .contains_key(&LiveRangeKey::from_range(&CodeRange {
-                from: insert_pos,
-                to: insert_pos.next(),
-            }));
-        let weight = spill_weight_from_policy(policy, is_hot, operand.kind() != OperandKind::Use);
+        let block = self.cfginfo.insn_block[u.pos.inst().index()];
+        let loop_depth = self.cfginfo.approx_loop_depth[block.index()] as usize;
+        let weight =
+            spill_weight_from_policy(policy, loop_depth, operand.kind() != OperandKind::Use);
         u.weight = u16::try_from(weight).expect("weight too large for u16 field");
 
         log::debug!(
@@ -1958,36 +1953,6 @@ impl<'a, F: Function> Env<'a, F> {
         self.stats.blockparam_outs_count = self.blockparam_outs.len();
 
         Ok(())
-    }
-
-    fn compute_hot_code(&mut self) {
-        // Initialize hot_code to contain inner loops only.
-        let mut header = Block::invalid();
-        let mut backedge = Block::invalid();
-        for block in 0..self.func.blocks() {
-            let block = Block::new(block);
-            let max_backedge = self
-                .func
-                .block_preds(block)
-                .iter()
-                .filter(|b| b.index() >= block.index())
-                .max();
-            if let Some(&b) = max_backedge {
-                header = block;
-                backedge = b;
-            }
-            if block == backedge {
-                // We've traversed a loop body without finding a deeper loop. Mark the whole body
-                // as hot.
-                let from = self.cfginfo.block_entry[header.index()];
-                let to = self.cfginfo.block_exit[backedge.index()].next();
-                let range = CodeRange { from, to };
-                let lr = self.create_liverange(range);
-                self.hot_code
-                    .btree
-                    .insert(LiveRangeKey::from_range(&range), lr);
-            }
-        }
     }
 
     fn create_bundle(&mut self) -> LiveBundleIndex {
@@ -4357,7 +4322,6 @@ impl<'a, F: Function> Env<'a, F> {
 
     pub(crate) fn init(&mut self) -> Result<(), RegAllocError> {
         self.create_pregs_and_vregs();
-        self.compute_hot_code();
         self.compute_liveness()?;
         self.merge_vreg_bundles();
         self.queue_bundles();

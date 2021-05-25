@@ -6,6 +6,7 @@
 //! Lightweight CFG analyses.
 
 use crate::{domtree, postorder, Block, Function, Inst, OperandKind, ProgPoint, RegAllocError};
+use smallvec::{smallvec, SmallVec};
 
 #[derive(Clone, Debug)]
 pub struct CFGInfo {
@@ -34,6 +35,14 @@ pub struct CFGInfo {
     /// just one value per block and always know any block's position in its
     /// successors' preds lists.)
     pub pred_pos: Vec<usize>,
+    /// For each block, what is the approximate loop depth?
+    ///
+    /// This measure is fully precise iff the input CFG is reducible
+    /// and blocks are in RPO, so that loop backedges are precisely
+    /// those whose block target indices are less than their source
+    /// indices. Otherwise, it will be approximate, but should still
+    /// be usable for heuristic purposes.
+    pub approx_loop_depth: Vec<u32>,
 }
 
 impl CFGInfo {
@@ -52,6 +61,8 @@ impl CFGInfo {
         let mut block_entry = vec![ProgPoint::before(Inst::invalid()); f.blocks()];
         let mut block_exit = vec![ProgPoint::before(Inst::invalid()); f.blocks()];
         let mut pred_pos = vec![0; f.blocks()];
+        let mut backedge_in = vec![0; f.blocks()];
+        let mut backedge_out = vec![0; f.blocks()];
 
         for block in 0..f.blocks() {
             let block = Block::new(block);
@@ -104,6 +115,34 @@ impl CFGInfo {
                     return Err(RegAllocError::DisallowedBranchArg(last));
                 }
             }
+
+            for &succ in f.block_succs(block) {
+                if succ.index() <= block.index() {
+                    backedge_in[succ.index()] += 1;
+                    backedge_out[block.index()] += 1;
+                }
+            }
+        }
+
+        let mut approx_loop_depth = vec![];
+        let mut backedge_stack: SmallVec<[usize; 4]> = smallvec![];
+        let mut cur_depth = 0;
+        for block in 0..f.blocks() {
+            if backedge_in[block] > 0 {
+                cur_depth += 1;
+                backedge_stack.push(backedge_in[block]);
+            }
+
+            approx_loop_depth.push(cur_depth);
+
+            while backedge_stack.len() > 0 && backedge_out[block] > 0 {
+                backedge_out[block] -= 1;
+                *backedge_stack.last_mut().unwrap() -= 1;
+                if *backedge_stack.last().unwrap() == 0 {
+                    cur_depth -= 1;
+                    backedge_stack.pop();
+                }
+            }
         }
 
         Ok(CFGInfo {
@@ -115,6 +154,7 @@ impl CFGInfo {
             block_entry,
             block_exit,
             pred_pos,
+            approx_loop_depth,
         })
     }
 
