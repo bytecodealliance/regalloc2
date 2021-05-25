@@ -2663,7 +2663,14 @@ impl<'a, F: Function> Env<'a, F> {
                 log::debug!("  -> non-fixed and minimal: spill weight 1000000");
                 1_000_000
             };
-            let req = self.ranges[first_range.index()].requirement;
+            // Even a minimal bundle may have multiple ranges (one for
+            // pre and one for post of one instruction). We need to
+            // iterate over all (up to 2) to merge requiements.
+            let mut req = Requirement::Unknown;
+            for entry in &self.bundles[bundle.index()].ranges {
+                req = req.merge(self.ranges[entry.index.index()].requirement);
+            }
+            log::debug!("   -> req from first range: {:?}", req);
             (w, req)
         } else {
             let mut total = 0;
@@ -2677,6 +2684,7 @@ impl<'a, F: Function> Env<'a, F> {
                 total += range_data.uses_spill_weight();
                 req = req.merge(range_data.requirement);
             }
+            log::debug!("   -> req from all ranges: {:?}", req);
 
             if self.bundles[bundle.index()].prio > 0 {
                 log::debug!(
