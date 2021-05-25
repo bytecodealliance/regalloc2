@@ -22,13 +22,6 @@
 /*
    Performance and code-quality ideas:
 
-   - Split heuristics:
-     - Loop depth at split point? Split before entering more nested loop
-       - In general, consider 'weight' of split point as if it were
-         another use.
-
-   - Add weight to bundles according to progmoves
-
    - Reduced spilling when spillslot is still "clean":
      - When we allocate spillsets, use the whole bundle of a given
        spillset to check for fit. Add all bundles to spillset as we
@@ -3085,6 +3078,24 @@ impl<'a, F: Function> Env<'a, F> {
             let bundle_start = self.bundles[bundle.index()].ranges[0].range.from;
             split_at_point = std::cmp::max(first_conflict_point, bundle_start);
             requeue_with_reg = first_conflict_reg;
+
+            // Adjust `split_at_point` if it is within a deeper loop
+            // than the bundle start -- hoist it to just before the
+            // first loop header it encounters.
+            let bundle_start_depth = self.cfginfo.approx_loop_depth
+                [self.cfginfo.insn_block[bundle_start.inst().index()].index()];
+            let split_at_depth = self.cfginfo.approx_loop_depth
+                [self.cfginfo.insn_block[split_at_point.inst().index()].index()];
+            if split_at_depth > bundle_start_depth {
+                for block in (self.cfginfo.insn_block[bundle_start.inst().index()].index() + 1)
+                    ..=self.cfginfo.insn_block[split_at_point.inst().index()].index()
+                {
+                    if self.cfginfo.approx_loop_depth[block] > bundle_start_depth {
+                        split_at_point = self.cfginfo.block_entry[block];
+                        break;
+                    }
+                }
+            }
 
             // If the maximum spill weight in the conflicting-bundles set is >= this bundle's spill
             // weight, then don't evict.
