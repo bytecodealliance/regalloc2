@@ -2872,7 +2872,7 @@ impl<'a, F: Function> Env<'a, F> {
         self.allocation_queue
             .insert(bundle, prio as usize, reg_hint);
         self.allocation_queue
-            .insert(new_bundle, new_prio as usize, PReg::invalid());
+            .insert(new_bundle, new_prio as usize, reg_hint);
     }
 
     fn compute_requirement(&self, bundle: LiveBundleIndex) -> Requirement {
