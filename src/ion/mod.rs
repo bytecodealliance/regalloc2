@@ -2675,14 +2675,20 @@ impl<'a, F: Function> Env<'a, F> {
     }
 
     fn recompute_range_properties(&mut self, range: LiveRangeIndex) {
-        let mut rangedata = &mut self.ranges[range.index()];
+        let rangedata = &mut self.ranges[range.index()];
         let mut w = 0;
         for u in &rangedata.uses {
             w += u.weight as u32;
             log::debug!("range{}: use {:?}", range.index(), u);
         }
-        rangedata.uses_spill_weight_and_flags = w;
+        rangedata.set_uses_spill_weight(w);
         if rangedata.uses.len() > 0 && rangedata.uses[0].operand.kind() == OperandKind::Def {
+            // Note that we *set* the flag here, but we never *clear*
+            // it: it may be set by a progmove as well (which does not
+            // create an explicit use or def), and we want to preserve
+            // that. We will never split or trim ranges in a way that
+            // removes a def at the front and requires the flag to be
+            // cleared.
             rangedata.set_flag(LiveRangeFlag::StartsAtDef);
         }
     }
