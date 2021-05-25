@@ -160,7 +160,6 @@ struct LiveRange {
     uses: UseList,
 
     merged_into: LiveRangeIndex,
-    requirement: Requirement,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -238,15 +237,22 @@ struct LiveBundle {
     allocation: Allocation,
     prio: u32, // recomputed after every bulk update
     spill_weight_and_props: u32,
-    requirement: Requirement,
 }
 
 impl LiveBundle {
     #[inline(always)]
-    fn set_cached_spill_weight_and_props(&mut self, spill_weight: u32, minimal: bool, fixed: bool) {
-        debug_assert!(spill_weight < ((1 << 30) - 1));
-        self.spill_weight_and_props =
-            spill_weight | (if minimal { 1 << 31 } else { 0 }) | (if fixed { 1 << 30 } else { 0 });
+    fn set_cached_spill_weight_and_props(
+        &mut self,
+        spill_weight: u32,
+        minimal: bool,
+        fixed: bool,
+        stack: bool,
+    ) {
+        debug_assert!(spill_weight < ((1 << 29) - 1));
+        self.spill_weight_and_props = spill_weight
+            | (if minimal { 1 << 31 } else { 0 })
+            | (if fixed { 1 << 30 } else { 0 })
+            | (if stack { 1 << 29 } else { 0 });
     }
 
     #[inline(always)]
@@ -260,8 +266,13 @@ impl LiveBundle {
     }
 
     #[inline(always)]
+    fn cached_stack(&self) -> bool {
+        self.spill_weight_and_props & (1 << 29) != 0
+    }
+
+    #[inline(always)]
     fn cached_spill_weight(&self) -> u32 {
-        self.spill_weight_and_props & ((1 << 30) - 1)
+        self.spill_weight_and_props & ((1 << 29) - 1)
     }
 }
 
@@ -868,7 +879,6 @@ impl<'a, F: Function> Env<'a, F> {
             uses: smallvec![],
 
             merged_into: LiveRangeIndex::invalid(),
-            requirement: Requirement::Unknown,
         });
 
         LiveRangeIndex::new(idx)
@@ -1909,12 +1919,6 @@ impl<'a, F: Function> Env<'a, F> {
                     }
                 };
 
-                // N.B.: this is important even if we later remove the
-                // multi-fixed-reg fixup scheme, because it is the
-                // only place where range requirements are (initially)
-                // computed! We do it only here in order to avoid
-                // redundant work.
-                let mut req = Requirement::Unknown;
                 for u in &mut self.ranges[range.index()].uses {
                     let pos = u.pos;
                     let slot = u.slot as usize;
@@ -1924,9 +1928,7 @@ impl<'a, F: Function> Env<'a, F> {
                         &mut u.operand,
                         &mut self.multi_fixed_reg_fixups,
                     );
-                    req = req.merge(Requirement::from_operand(u.operand));
                 }
-                self.ranges[range.index()].requirement = req;
 
                 for &(clobber, inst) in &extra_clobbers {
                     let range = CodeRange {
@@ -1996,7 +1998,6 @@ impl<'a, F: Function> Env<'a, F> {
             spillset: SpillSetIndex::invalid(),
             prio: 0,
             spill_weight_and_props: 0,
-            requirement: Requirement::Unknown,
         });
         LiveBundleIndex::new(bundle)
     }
@@ -2041,23 +2042,6 @@ impl<'a, F: Function> Env<'a, F> {
             }
         }
 
-        log::debug!(
-            "bundle{} has req {:?}, bundle{} has req {:?}",
-            from.index(),
-            self.bundles[from.index()].requirement,
-            to.index(),
-            self.bundles[to.index()].requirement
-        );
-
-        if self.bundles[from.index()]
-            .requirement
-            .merge(self.bundles[to.index()].requirement)
-            == Requirement::Conflict
-        {
-            log::debug!(" -> conflicting requirements; aborting merge");
-            return false;
-        }
-
         // Check for overlap in LiveRanges and for conflicting
         // requirements.
         let ranges_from = &self.bundles[from.index()].ranges[..];
@@ -2088,6 +2072,27 @@ impl<'a, F: Function> Env<'a, F> {
                     ranges_to[idx_to].index
                 );
                 return false;
+            }
+        }
+
+        // There could be a requirements conflict only one of the both
+        // sides of the merge has at least one requirement that is not
+        // 'Reg' or 'Any'. (Note that we already checked that the
+        // RegClass is the same on both sides.)
+        if self.bundles[from.index()].cached_fixed()
+            || self.bundles[from.index()].cached_stack()
+            || self.bundles[to.index()].cached_fixed()
+            || self.bundles[to.index()].cached_stack()
+        {
+            let mut req = Requirement::Unknown;
+            for entry in ranges_from.iter().chain(ranges_to.iter()) {
+                for u in &self.ranges[entry.index.index()].uses {
+                    req = req.merge(Requirement::from_operand(u.operand));
+                    if req == Requirement::Conflict {
+                        log::debug!(" -> conflicting requirements; aborting merge");
+                        return false;
+                    }
+                }
             }
         }
 
@@ -2138,36 +2143,28 @@ impl<'a, F: Function> Env<'a, F> {
             ranges_from,
             ranges_to
         );
-        let mut req = Requirement::Unknown;
         while idx_from < ranges_from.len() || idx_to < ranges_to.len() {
             if idx_from < ranges_from.len() && idx_to < ranges_to.len() {
                 if ranges_from[idx_from].range.from <= ranges_to[idx_to].range.from {
                     self.ranges[ranges_from[idx_from].index.index()].bundle = to;
-                    req = req.merge(self.ranges[ranges_from[idx_from].index.index()].requirement);
                     merged.push(ranges_from[idx_from]);
                     idx_from += 1;
                 } else {
-                    req = req.merge(self.ranges[ranges_to[idx_to].index.index()].requirement);
                     merged.push(ranges_to[idx_to]);
                     idx_to += 1;
                 }
             } else if idx_from < ranges_from.len() {
                 for entry in &ranges_from[idx_from..] {
                     self.ranges[entry.index.index()].bundle = to;
-                    req = req.merge(self.ranges[entry.index.index()].requirement);
                 }
                 merged.extend_from_slice(&ranges_from[idx_from..]);
                 break;
             } else {
                 assert!(idx_to < ranges_to.len());
-                for entry in &ranges_to[idx_to..] {
-                    req = req.merge(self.ranges[entry.index.index()].requirement);
-                }
                 merged.extend_from_slice(&ranges_to[idx_to..]);
                 break;
             }
         }
-        self.bundles[to.index()].requirement = req;
 
         #[cfg(debug_assertions)]
         {
@@ -2237,7 +2234,6 @@ impl<'a, F: Function> Env<'a, F> {
             let bundle = self.create_bundle();
             self.bundles[bundle.index()].ranges = self.vregs[vreg.index()].ranges.clone();
             log::debug!("vreg v{} gets bundle{}", vreg.index(), bundle.index());
-            let mut req = Requirement::Unknown;
             for entry in &self.bundles[bundle.index()].ranges {
                 log::debug!(
                     " -> with LR range{}: {:?}",
@@ -2245,9 +2241,7 @@ impl<'a, F: Function> Env<'a, F> {
                     entry.range
                 );
                 self.ranges[entry.index.index()].bundle = bundle;
-                req = req.merge(self.ranges[entry.index.index()].requirement);
             }
-            self.bundles[bundle.index()].requirement = req;
 
             // Create a spillslot for this bundle.
             let ssidx = SpillSetIndex::new(self.spillsets.len());
@@ -2420,10 +2414,9 @@ impl<'a, F: Function> Env<'a, F> {
         log::debug!("Bundles:");
         for (i, b) in self.bundles.iter().enumerate() {
             log::debug!(
-                "bundle{}: spillset={:?} req={:?} alloc={:?}",
+                "bundle{}: spillset={:?} alloc={:?}",
                 i,
                 b.spillset,
-                b.requirement,
                 b.allocation
             );
             for entry in &b.ranges {
@@ -2450,12 +2443,11 @@ impl<'a, F: Function> Env<'a, F> {
         log::debug!("Ranges:");
         for (i, r) in self.ranges.iter().enumerate() {
             log::debug!(
-                "range{}: range={:?} vreg={:?} bundle={:?} req={:?} weight={}",
+                "range{}: range={:?} vreg={:?} bundle={:?} weight={}",
                 i,
                 r.range,
                 r.vreg,
                 r.bundle,
-                r.requirement,
                 r.uses_spill_weight(),
             );
             for u in &r.uses {
@@ -2623,6 +2615,7 @@ impl<'a, F: Function> Env<'a, F> {
 
         let minimal;
         let mut fixed = false;
+        let mut stack = false;
         let bundledata = &self.bundles[bundle.index()];
         let first_range = bundledata.ranges[0].index;
         let first_range_data = &self.ranges[first_range.index()];
@@ -2636,6 +2629,12 @@ impl<'a, F: Function> Env<'a, F> {
                 if let OperandPolicy::FixedReg(_) = u.operand.policy() {
                     log::debug!("  -> fixed use at {:?}: {:?}", u.pos, u.operand);
                     fixed = true;
+                }
+                if let OperandPolicy::Stack = u.operand.policy() {
+                    log::debug!("  -> stack use at {:?}: {:?}", u.pos, u.operand);
+                    stack = true;
+                }
+                if stack && fixed {
                     break;
                 }
             }
@@ -2655,26 +2654,16 @@ impl<'a, F: Function> Env<'a, F> {
             log::debug!("  -> minimal: {}", minimal);
         }
 
-        let (spill_weight, req) = if minimal {
-            let w = if fixed {
+        let spill_weight = if minimal {
+            if fixed {
                 log::debug!("  -> fixed and minimal: spill weight 2000000");
                 2_000_000
             } else {
                 log::debug!("  -> non-fixed and minimal: spill weight 1000000");
                 1_000_000
-            };
-            // Even a minimal bundle may have multiple ranges (one for
-            // pre and one for post of one instruction). We need to
-            // iterate over all (up to 2) to merge requiements.
-            let mut req = Requirement::Unknown;
-            for entry in &self.bundles[bundle.index()].ranges {
-                req = req.merge(self.ranges[entry.index.index()].requirement);
             }
-            log::debug!("   -> req from first range: {:?}", req);
-            (w, req)
         } else {
             let mut total = 0;
-            let mut req = Requirement::Unknown;
             for entry in &self.bundles[bundle.index()].ranges {
                 let range_data = &self.ranges[entry.index.index()];
                 log::debug!(
@@ -2682,9 +2671,7 @@ impl<'a, F: Function> Env<'a, F> {
                     range_data.uses_spill_weight()
                 );
                 total += range_data.uses_spill_weight();
-                req = req.merge(range_data.requirement);
             }
-            log::debug!("   -> req from all ranges: {:?}", req);
 
             if self.bundles[bundle.index()].prio > 0 {
                 log::debug!(
@@ -2692,9 +2679,9 @@ impl<'a, F: Function> Env<'a, F> {
                     self.bundles[bundle.index()].prio,
                     total / self.bundles[bundle.index()].prio
                 );
-                (total / self.bundles[bundle.index()].prio, req)
+                total / self.bundles[bundle.index()].prio
             } else {
-                (0, req)
+                0
             }
         };
 
@@ -2702,8 +2689,8 @@ impl<'a, F: Function> Env<'a, F> {
             spill_weight,
             minimal,
             fixed,
+            stack,
         );
-        self.bundles[bundle.index()].requirement = req;
     }
 
     fn minimal_bundle(&mut self, bundle: LiveBundleIndex) -> bool {
@@ -2713,15 +2700,11 @@ impl<'a, F: Function> Env<'a, F> {
     fn recompute_range_properties(&mut self, range: LiveRangeIndex) {
         let mut rangedata = &mut self.ranges[range.index()];
         let mut w = 0;
-        let mut req = Requirement::Unknown;
         for u in &rangedata.uses {
             w += u.weight as u32;
             log::debug!("range{}: use {:?}", range.index(), u);
-            req = req.merge(Requirement::from_operand(u.operand));
         }
-        log::debug!("range{}: recomputed req = {:?}", range.index(), req);
         rangedata.uses_spill_weight_and_flags = w;
-        rangedata.requirement = req;
         if rangedata.uses.len() > 0 && rangedata.uses[0].operand.kind() == OperandKind::Def {
             rangedata.set_flag(LiveRangeFlag::StartsAtDef);
         }
@@ -2916,27 +2899,30 @@ impl<'a, F: Function> Env<'a, F> {
             .insert(new_bundle, new_prio as usize, PReg::invalid());
     }
 
+    fn compute_requirement(&self, bundle: LiveBundleIndex) -> Requirement {
+        let mut req = Requirement::Unknown;
+        for entry in &self.bundles[bundle.index()].ranges {
+            for u in &self.ranges[entry.index.index()].uses {
+                let r = Requirement::from_operand(u.operand);
+                req = req.merge(r);
+            }
+        }
+        req
+    }
+
     fn process_bundle(
         &mut self,
         bundle: LiveBundleIndex,
         reg_hint: PReg,
     ) -> Result<(), RegAllocError> {
-        // The requirement is kept up-to-date as bundles are merged
-        // and split, and indicates what sort of allocation we need.
-        let req = self.bundles[bundle.index()].requirement;
-
+        let req = self.compute_requirement(bundle);
         // Grab a hint from either the queue or our spillset, if any.
         let hint_reg = if reg_hint != PReg::invalid() {
             reg_hint
         } else {
             self.spillsets[self.bundles[bundle.index()].spillset.index()].reg_hint
         };
-        log::debug!(
-            "process_bundle: bundle {:?} requirement {:?} hint {:?}",
-            bundle,
-            req,
-            hint_reg,
-        );
+        log::debug!("process_bundle: bundle {:?} hint {:?}", bundle, hint_reg,);
 
         // Try to allocate!
         let mut attempts = 0;
