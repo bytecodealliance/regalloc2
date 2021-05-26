@@ -268,11 +268,12 @@ impl LiveBundle {
 
 #[derive(Clone, Debug)]
 struct SpillSet {
-    bundles: SmallVec<[LiveBundleIndex; 2]>,
+    vregs: SmallVec<[VRegIndex; 2]>,
     slot: SpillSlotIndex,
     reg_hint: PReg,
     class: RegClass,
     spill_bundle: LiveBundleIndex,
+    required: bool,
     size: u8,
 }
 
@@ -2158,6 +2159,19 @@ impl<'a, F: Function> Env<'a, F> {
         self.bundles[to.index()].ranges = merged;
         self.bundles[from.index()].ranges.clear();
 
+        if self.bundles[from.index()].spillset != self.bundles[to.index()].spillset {
+            let from_vregs = std::mem::replace(
+                &mut self.spillsets[self.bundles[from.index()].spillset.index()].vregs,
+                smallvec![],
+            );
+            let to_vregs = &mut self.spillsets[self.bundles[to.index()].spillset.index()].vregs;
+            for vreg in from_vregs {
+                if !to_vregs.contains(&vreg) {
+                    to_vregs.push(vreg);
+                }
+            }
+        }
+
         true
     }
 
@@ -2204,9 +2218,10 @@ impl<'a, F: Function> Env<'a, F> {
             let reg = self.vreg_regs[vreg.index()];
             let size = self.func.spillslot_size(reg.class(), reg) as u8;
             self.spillsets.push(SpillSet {
-                bundles: smallvec![],
+                vregs: smallvec![vreg],
                 slot: SpillSlotIndex::invalid(),
                 size,
+                required: false,
                 class: reg.class(),
                 reg_hint: PReg::invalid(),
                 spill_bundle: LiveBundleIndex::invalid(),
@@ -3035,11 +3050,9 @@ impl<'a, F: Function> Env<'a, F> {
                 }
 
                 Requirement::Stack(_) => {
-                    // If we must be on the stack, put ourselves on
-                    // the spillset's list immediately.
-                    self.spillsets[self.bundles[bundle.index()].spillset.index()]
-                        .bundles
-                        .push(bundle);
+                    // If we must be on the stack, mark our spillset
+                    // as required immediately.
+                    self.spillsets[self.bundles[bundle.index()].spillset.index()].required = true;
                     return Ok(());
                 }
 
@@ -3195,13 +3208,11 @@ impl<'a, F: Function> Env<'a, F> {
             }
             if !success {
                 log::debug!(
-                    "spilling bundle {:?} to spillset bundle list {:?}",
+                    "spilling bundle {:?}: marking spillset {:?} as required",
                     bundle,
                     self.bundles[bundle.index()].spillset
                 );
-                self.spillsets[self.bundles[bundle.index()].spillset.index()]
-                    .bundles
-                    .push(bundle);
+                self.spillsets[self.bundles[bundle.index()].spillset.index()].required = true;
             }
         }
     }
@@ -3211,8 +3222,8 @@ impl<'a, F: Function> Env<'a, F> {
         spillslot: SpillSlotIndex,
         spillset: SpillSetIndex,
     ) -> bool {
-        for &bundle in &self.spillsets[spillset.index()].bundles {
-            for entry in &self.bundles[bundle.index()].ranges {
+        for &vreg in &self.spillsets[spillset.index()].vregs {
+            for entry in &self.vregs[vreg.index()].ranges {
                 if self.spillslots[spillslot.index()]
                     .ranges
                     .btree
@@ -3231,22 +3242,22 @@ impl<'a, F: Function> Env<'a, F> {
         spillslot: SpillSlotIndex,
     ) {
         self.spillsets[spillset.index()].slot = spillslot;
-        for i in 0..self.spillsets[spillset.index()].bundles.len() {
+        for i in 0..self.spillsets[spillset.index()].vregs.len() {
             // don't borrow self
-            let bundle = self.spillsets[spillset.index()].bundles[i];
+            let vreg = self.spillsets[spillset.index()].vregs[i];
             log::debug!(
-                "spillslot {:?} alloc'ed to spillset {:?}: bundle {:?}",
+                "spillslot {:?} alloc'ed to spillset {:?}: vreg {:?}",
                 spillslot,
                 spillset,
-                bundle
+                vreg,
             );
-            for entry in &self.bundles[bundle.index()].ranges {
+            for entry in &self.vregs[vreg.index()].ranges {
                 log::debug!(
-                    "spillslot {:?} getting range {:?} from bundle {:?}: {:?}",
+                    "spillslot {:?} getting range {:?} from LR {:?} from vreg {:?}",
                     spillslot,
                     entry.range,
                     entry.index,
-                    bundle,
+                    vreg,
                 );
                 self.spillslots[spillslot.index()]
                     .ranges
@@ -3260,7 +3271,7 @@ impl<'a, F: Function> Env<'a, F> {
         for spillset in 0..self.spillsets.len() {
             log::debug!("allocate spillslot: {}", spillset);
             let spillset = SpillSetIndex::new(spillset);
-            if self.spillsets[spillset.index()].bundles.is_empty() {
+            if !self.spillsets[spillset.index()].required {
                 continue;
             }
             // Get or create the spillslot list for this size.
