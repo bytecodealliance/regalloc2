@@ -23,15 +23,7 @@
    Performance and code-quality ideas:
 
    - Reduced spilling when spillslot is still "clean":
-     - When we allocate spillsets, use the whole bundle of a given
-       spillset to check for fit. Add all bundles to spillset as we
-       split; then SpillSet::bundles always corresponds to original
-       merged bundle.
-     - Then a single bundle will never move between spillslots, so we
-       know that when we reload from the one single spillslot, it is
-       the last value that we spilled.
-     - So we can track 'dirty' status of reg and elide spill when not
-       dirty.
+     - Track 'dirty' status of reg and elide spill when not dirty.
        - This is slightly tricky: fixpoint problem, across edges.
        - We can simplify by assuming spillslot is dirty if value came
          in on BB edge; only clean if we reload in same block we spill
@@ -49,6 +41,11 @@
      - For a spillslot->spillslot move, push a fixed reg (say the
        first preferred one), reload into it, spill out of it, and then
        pop old val
+
+   - Avoid rebuilding MachineEnv on every function allocation in
+     regalloc.rs shim
+
+   - Profile allocations
  */
 
 #![allow(dead_code, unused_imports)]
@@ -137,7 +134,7 @@ struct LiveRangeListEntry {
 }
 
 type LiveRangeList = SmallVec<[LiveRangeListEntry; 4]>;
-type UseList = SmallVec<[Use; 4]>;
+type UseList = SmallVec<[Use; 2]>;
 
 #[derive(Clone, Debug)]
 struct LiveRange {
@@ -689,7 +686,8 @@ struct RegTraversalIter<'a> {
     hint_idx: usize,
     pref_idx: usize,
     non_pref_idx: usize,
-    offset: usize,
+    offset_pref: usize,
+    offset_non_pref: usize,
 }
 
 impl<'a> RegTraversalIter<'a> {
@@ -716,14 +714,26 @@ impl<'a> RegTraversalIter<'a> {
             hint2_reg = None;
         }
         let hints = [hint_reg, hint2_reg];
+        let class = class as u8 as usize;
+        let offset_pref = if env.preferred_regs_by_class[class].len() > 0 {
+            offset % env.preferred_regs_by_class[class].len()
+        } else {
+            0
+        };
+        let offset_non_pref = if env.non_preferred_regs_by_class[class].len() > 0 {
+            offset % env.non_preferred_regs_by_class[class].len()
+        } else {
+            0
+        };
         Self {
             env,
-            class: class as u8 as usize,
+            class,
             hints,
             hint_idx: 0,
             pref_idx: 0,
             non_pref_idx: 0,
-            offset,
+            offset_pref,
+            offset_non_pref,
         }
     }
 }
@@ -732,6 +742,13 @@ impl<'a> std::iter::Iterator for RegTraversalIter<'a> {
     type Item = PReg;
 
     fn next(&mut self) -> Option<PReg> {
+        fn wrap(idx: usize, limit: usize) -> usize {
+            if idx >= limit {
+                idx - limit
+            } else {
+                idx
+            }
+        }
         if self.hint_idx < 2 && self.hints[self.hint_idx].is_some() {
             let h = self.hints[self.hint_idx];
             self.hint_idx += 1;
@@ -739,7 +756,7 @@ impl<'a> std::iter::Iterator for RegTraversalIter<'a> {
         }
         while self.pref_idx < self.env.preferred_regs_by_class[self.class].len() {
             let arr = &self.env.preferred_regs_by_class[self.class][..];
-            let r = arr[(self.pref_idx + self.offset) % arr.len()];
+            let r = arr[wrap(self.pref_idx + self.offset_pref, arr.len())];
             self.pref_idx += 1;
             if Some(r) == self.hints[0] || Some(r) == self.hints[1] {
                 continue;
@@ -748,7 +765,7 @@ impl<'a> std::iter::Iterator for RegTraversalIter<'a> {
         }
         while self.non_pref_idx < self.env.non_preferred_regs_by_class[self.class].len() {
             let arr = &self.env.non_preferred_regs_by_class[self.class][..];
-            let r = arr[(self.non_pref_idx + self.offset) % arr.len()];
+            let r = arr[wrap(self.non_pref_idx + self.offset_non_pref, arr.len())];
             self.non_pref_idx += 1;
             if Some(r) == self.hints[0] || Some(r) == self.hints[1] {
                 continue;
