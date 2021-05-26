@@ -485,6 +485,7 @@ impl PrioQueue {
         }
     }
 
+    #[inline(always)]
     fn insert(&mut self, bundle: LiveBundleIndex, prio: usize, reg_hint: PReg) {
         self.heap.push(PrioQueueEntry {
             prio: prio as u32,
@@ -493,10 +494,12 @@ impl PrioQueue {
         });
     }
 
+    #[inline(always)]
     fn is_empty(self) -> bool {
         self.heap.is_empty()
     }
 
+    #[inline(always)]
     fn pop(&mut self) -> Option<(LiveBundleIndex, PReg)> {
         self.heap.pop().map(|entry| (entry.bundle, entry.reg_hint))
     }
