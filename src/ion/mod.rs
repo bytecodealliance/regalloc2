@@ -3656,6 +3656,12 @@ impl<'a, F: Function> Env<'a, F> {
                 if clean_spillslot.is_some() {
                     if self.cfginfo.insn_block[range.from.inst().index()]
                         != self.cfginfo.insn_block[range.to.prev().inst().index()]
+                        || range.from
+                            == self.cfginfo.block_entry
+                                [self.cfginfo.insn_block[range.from.inst().index()].index()]
+                    {
+                        clean_spillslot = None;
+                    } else if self.ranges[entry.index.index()].has_flag(LiveRangeFlag::StartsAtDef)
                     {
                         clean_spillslot = None;
                     } else {
@@ -4335,25 +4341,26 @@ impl<'a, F: Function> Env<'a, F> {
         self.stats.edits_count = self.edits.len();
 
         // Add debug annotations.
-        #[cfg(debug)]
-        {
-            if log::log_enabled!(log::Level::Debug) {
-                for i in 0..self.edits.len() {
-                    let &(pos, _, ref edit) = &self.edits[i];
-                    match edit {
-                        &Edit::Move { from, to, to_vreg } => {
-                            self.annotate(
-                                ProgPoint::from_index(pos),
-                                format!("move {} -> {} ({:?})", from, to, to_vreg),
-                            );
-                        }
-                        &Edit::BlockParams {
-                            ref vregs,
-                            ref allocs,
-                        } => {
-                            let s = format!("blockparams vregs:{:?} allocs:{:?}", vregs, allocs);
-                            self.annotate(ProgPoint::from_index(pos), s);
-                        }
+        if self.annotations_enabled && log::log_enabled!(log::Level::Debug) {
+            for i in 0..self.edits.len() {
+                let &(pos, _, ref edit) = &self.edits[i];
+                match edit {
+                    &Edit::Move { from, to, to_vreg } => {
+                        self.annotate(
+                            ProgPoint::from_index(pos),
+                            format!("move {} -> {} ({:?})", from, to, to_vreg),
+                        );
+                    }
+                    &Edit::BlockParams {
+                        ref vregs,
+                        ref allocs,
+                    } => {
+                        let s = format!("blockparams vregs:{:?} allocs:{:?}", vregs, allocs);
+                        self.annotate(ProgPoint::from_index(pos), s);
+                    }
+                    &Edit::DefAlloc { alloc, vreg } => {
+                        let s = format!("defalloc {:?} := {:?}", alloc, vreg);
+                        self.annotate(ProgPoint::from_index(pos), s);
                     }
                 }
             }
