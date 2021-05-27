@@ -4254,10 +4254,17 @@ impl<'a, F: Function> Env<'a, F> {
             // regs, but this seems simpler.)
             let mut int_moves: SmallVec<[InsertedMove; 8]> = smallvec![];
             let mut float_moves: SmallVec<[InsertedMove; 8]> = smallvec![];
+            let mut self_moves: SmallVec<[InsertedMove; 8]> = smallvec![];
 
             for m in moves {
                 if m.from_alloc.is_reg() && m.to_alloc.is_reg() {
                     assert_eq!(m.from_alloc.class(), m.to_alloc.class());
+                }
+                if m.from_alloc == m.to_alloc {
+                    if m.to_vreg.is_some() {
+                        self_moves.push(m.clone());
+                    }
+                    continue;
                 }
                 match m.from_alloc.class() {
                     RegClass::Int => {
@@ -4267,6 +4274,18 @@ impl<'a, F: Function> Env<'a, F> {
                         float_moves.push(m.clone());
                     }
                 }
+            }
+
+            for m in &self_moves {
+                self.add_edit(
+                    pos,
+                    prio,
+                    Edit::Move {
+                        from: m.from_alloc,
+                        to: m.to_alloc,
+                        to_vreg: m.to_vreg,
+                    },
+                );
             }
 
             for &(regclass, moves) in
