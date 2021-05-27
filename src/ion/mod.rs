@@ -3541,6 +3541,8 @@ impl<'a, F: Function> Env<'a, F> {
                 None
             };
 
+            let mut clean_spillslot: Option<SpillSlot> = None;
+
             // For each range in each vreg, insert moves or
             // half-moves.  We also scan over `blockparam_ins` and
             // `blockparam_outs`, which are sorted by (block, vreg),
@@ -3614,9 +3616,20 @@ impl<'a, F: Function> Env<'a, F> {
                     let first_is_def =
                         self.ranges[entry.index.index()].has_flag(LiveRangeFlag::StartsAtDef);
                     debug_assert!(prev_alloc != Allocation::none());
+
+                    // If this is a stack-to-reg move, track that the reg is a clean copy of a spillslot.
+                    if prev_alloc.is_stack() && alloc.is_reg() {
+                        clean_spillslot = Some(prev_alloc.as_stack().unwrap());
+                    }
+                    // If this is a reg-to-stack move, elide it if the spillslot is still clean.
+                    let skip_spill = prev_alloc.is_reg()
+                        && alloc.is_stack()
+                        && clean_spillslot == alloc.as_stack();
+
                     if prev_range.to == range.from
                         && !self.is_start_of_block(range.from)
                         && !first_is_def
+                        && !skip_spill
                     {
                         log::debug!(
                             "prev LR {} abuts LR {} in same block; moving {} -> {} for v{}",
@@ -3634,6 +3647,27 @@ impl<'a, F: Function> Env<'a, F> {
                             alloc,
                             Some(self.vreg_regs[vreg.index()]),
                         );
+                    }
+                }
+
+                // If this range either spans any block boundary, or
+                // has any mods/defs, then the spillslot (if any) that
+                // its value came from is no longer 'clean'.
+                if clean_spillslot.is_some() {
+                    if self.cfginfo.insn_block[range.from.inst().index()]
+                        != self.cfginfo.insn_block[range.to.prev().inst().index()]
+                    {
+                        clean_spillslot = None;
+                    } else {
+                        for u in &self.ranges[entry.index.index()].uses {
+                            match u.operand.kind() {
+                                OperandKind::Def | OperandKind::Mod => {
+                                    clean_spillslot = None;
+                                    break;
+                                }
+                                _ => {}
+                            }
+                        }
                     }
                 }
 
