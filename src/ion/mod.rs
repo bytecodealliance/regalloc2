@@ -601,7 +601,7 @@ impl Requirement {
 enum AllocRegResult {
     Allocated(Allocation),
     Conflict(LiveBundleVec),
-    ConflictWithFixed,
+    ConflictWithFixed(u32, ProgPoint),
     ConflictHighCost,
 }
 
@@ -2518,7 +2518,8 @@ impl<'a, F: Function> Env<'a, F> {
             }
 
             // Otherwise, there is a conflict.
-            assert_eq!(*preg_range_iter.peek().unwrap().0, key);
+            let preg_key = *preg_range_iter.peek().unwrap().0;
+            assert_eq!(preg_key, key); // Assert that this range overlaps.
             let preg_range = preg_range_iter.next().unwrap().1;
 
             log::debug!(" -> btree contains range {:?} that overlaps", preg_range);
@@ -2543,7 +2544,10 @@ impl<'a, F: Function> Env<'a, F> {
             } else {
                 log::debug!("   -> conflict with fixed reservation");
                 // range from a direct use of the PReg (due to clobber).
-                return AllocRegResult::ConflictWithFixed;
+                return AllocRegResult::ConflictWithFixed(
+                    max_conflict_weight,
+                    ProgPoint::from_index(preg_key.from),
+                );
             }
         }
 
@@ -2966,15 +2970,9 @@ impl<'a, F: Function> Env<'a, F> {
                                 preg,
                             )
                         }
-                        AllocRegResult::ConflictWithFixed => {
+                        AllocRegResult::ConflictWithFixed(_, point) => {
                             log::debug!(" -> conflict with fixed alloc");
-                            // Empty conflicts set: there's nothing we can
-                            // evict, because fixed conflicts cannot be moved.
-                            (
-                                smallvec![],
-                                ProgPoint::before(Inst::new(0)),
-                                PReg::invalid(),
-                            )
+                            (smallvec![], point, preg)
                         }
                         AllocRegResult::ConflictHighCost => unreachable!(),
                     }
@@ -3031,21 +3029,25 @@ impl<'a, F: Function> Env<'a, F> {
 
                                 let cost = self.maximum_spill_weight_in_bundle_set(&bundles);
 
-                                if lowest_cost_conflict_cost.is_none() {
-                                    lowest_cost_conflict_cost = Some(cost);
-                                    lowest_cost_conflict_set = Some(bundles);
-                                    lowest_cost_conflict_point = first_conflict_point;
-                                    lowest_cost_conflict_reg = preg;
-                                } else if cost < lowest_cost_conflict_cost.unwrap() {
+                                if lowest_cost_conflict_cost.is_none()
+                                    || cost < lowest_cost_conflict_cost.unwrap()
+                                {
                                     lowest_cost_conflict_cost = Some(cost);
                                     lowest_cost_conflict_set = Some(bundles);
                                     lowest_cost_conflict_point = first_conflict_point;
                                     lowest_cost_conflict_reg = preg;
                                 }
                             }
-                            AllocRegResult::ConflictWithFixed => {
-                                log::debug!(" -> conflict with fixed alloc");
-                                // Simply don't consider as an option.
+                            AllocRegResult::ConflictWithFixed(max_cost, point) => {
+                                log::debug!(" -> conflict with fixed alloc; cost of other bundles up to point is {}, conflict at {:?}", max_cost, point);
+                                if lowest_cost_conflict_cost.is_none()
+                                    || max_cost < lowest_cost_conflict_cost.unwrap()
+                                {
+                                    lowest_cost_conflict_cost = Some(max_cost);
+                                    lowest_cost_conflict_set = Some(smallvec![]);
+                                    lowest_cost_conflict_point = point;
+                                    lowest_cost_conflict_reg = preg;
+                                }
                             }
                             AllocRegResult::ConflictHighCost => {
                                 // Simply don't consider -- we already have
@@ -3103,11 +3105,6 @@ impl<'a, F: Function> Env<'a, F> {
                 break;
             }
 
-            // If we hit a fixed conflict, give up and move on to splitting.
-            if conflicting_bundles.is_empty() {
-                break;
-            }
-
             let bundle_start = self.bundles[bundle.index()].ranges[0].range.from;
             split_at_point = std::cmp::max(first_conflict_point, bundle_start);
             requeue_with_reg = first_conflict_reg;
@@ -3128,6 +3125,11 @@ impl<'a, F: Function> Env<'a, F> {
                         break;
                     }
                 }
+            }
+
+            // If we hit a fixed conflict, give up and move on to splitting.
+            if conflicting_bundles.is_empty() {
+                break;
             }
 
             // If the maximum spill weight in the conflicting-bundles set is >= this bundle's spill
