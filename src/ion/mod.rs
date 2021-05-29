@@ -691,6 +691,8 @@ struct RegTraversalIter<'a> {
     non_pref_idx: usize,
     offset_pref: usize,
     offset_non_pref: usize,
+    is_fixed: bool,
+    fixed: Option<PReg>,
 }
 
 impl<'a> RegTraversalIter<'a> {
@@ -700,6 +702,7 @@ impl<'a> RegTraversalIter<'a> {
         hint_reg: PReg,
         hint2_reg: PReg,
         offset: usize,
+        fixed: Option<PReg>,
     ) -> Self {
         let mut hint_reg = if hint_reg != PReg::invalid() {
             Some(hint_reg)
@@ -737,6 +740,8 @@ impl<'a> RegTraversalIter<'a> {
             non_pref_idx: 0,
             offset_pref,
             offset_non_pref,
+            is_fixed: fixed.is_some(),
+            fixed,
         }
     }
 }
@@ -745,6 +750,12 @@ impl<'a> std::iter::Iterator for RegTraversalIter<'a> {
     type Item = PReg;
 
     fn next(&mut self) -> Option<PReg> {
+        if self.is_fixed {
+            let ret = self.fixed;
+            self.fixed = None;
+            return ret;
+        }
+
         fn wrap(idx: usize, limit: usize) -> usize {
             if idx >= limit {
                 idx - limit
@@ -2939,138 +2950,27 @@ impl<'a, F: Function> Env<'a, F> {
         };
         log::debug!("process_bundle: bundle {:?} hint {:?}", bundle, hint_reg,);
 
+        if let Requirement::Conflict = req {
+            // We have to split right away.
+            let bundle_start = self.bundles[bundle.index()].ranges[0].range.from;
+            self.split_and_requeue_bundle(
+                bundle,
+                /* split_at_point = */ bundle_start,
+                reg_hint,
+            );
+            return Ok(());
+        }
+
         // Try to allocate!
         let mut attempts = 0;
-        let mut split_at_point = self.bundles[bundle.index()].ranges[0].range.from;
-        let mut requeue_with_reg = PReg::invalid();
         loop {
             attempts += 1;
             log::debug!("attempt {}, req {:?}", attempts, req);
             debug_assert!(attempts < 100 * self.func.insts());
 
-            let (conflicting_bundles, first_conflict_point, first_conflict_reg) = match req {
-                Requirement::Fixed(preg) => {
-                    let preg_idx = PRegIndex::new(preg.index());
-                    self.stats.process_bundle_reg_probes_fixed += 1;
-                    log::debug!("trying fixed reg {:?}", preg_idx);
-                    match self.try_to_allocate_bundle_to_reg(bundle, preg_idx, None) {
-                        AllocRegResult::Allocated(alloc) => {
-                            self.stats.process_bundle_reg_success_fixed += 1;
-                            log::debug!(" -> allocated to fixed {:?}", preg_idx);
-                            self.spillsets[self.bundles[bundle.index()].spillset.index()]
-                                .reg_hint = alloc.as_reg().unwrap();
-                            return Ok(());
-                        }
-                        AllocRegResult::Conflict(bundles) => {
-                            log::debug!(" -> conflict with bundles {:?}", bundles);
-                            let first_bundle = bundles[0];
-                            (
-                                bundles,
-                                self.bundles[first_bundle.index()].ranges[0].range.from,
-                                preg,
-                            )
-                        }
-                        AllocRegResult::ConflictWithFixed(_, point) => {
-                            log::debug!(" -> conflict with fixed alloc");
-                            (smallvec![], point, preg)
-                        }
-                        AllocRegResult::ConflictHighCost => unreachable!(),
-                    }
-                }
-                Requirement::Register(class) => {
-                    // Scan all pregs and attempt to allocate.
-                    let mut lowest_cost_conflict_set: Option<LiveBundleVec> = None;
-                    let mut lowest_cost_conflict_cost: Option<u32> = None;
-                    let mut lowest_cost_conflict_point = ProgPoint::before(Inst::new(0));
-                    let mut lowest_cost_conflict_reg = PReg::invalid();
-
-                    // Heuristic: start the scan for an available
-                    // register at an offset influenced both by our
-                    // location in the code and by the bundle we're
-                    // considering. This has the effect of spreading
-                    // demand more evenly across registers.
-                    let scan_offset = self.ranges
-                        [self.bundles[bundle.index()].ranges[0].index.index()]
-                    .range
-                    .from
-                    .inst()
-                    .index()
-                        + bundle.index();
-
-                    self.stats.process_bundle_reg_probe_start_any += 1;
-                    for preg in RegTraversalIter::new(
-                        self.env,
-                        class,
-                        hint_reg,
-                        PReg::invalid(),
-                        scan_offset,
-                    ) {
-                        self.stats.process_bundle_reg_probes_any += 1;
-                        let preg_idx = PRegIndex::new(preg.index());
-                        log::debug!("trying preg {:?}", preg_idx);
-
-                        match self.try_to_allocate_bundle_to_reg(
-                            bundle,
-                            preg_idx,
-                            lowest_cost_conflict_cost,
-                        ) {
-                            AllocRegResult::Allocated(alloc) => {
-                                self.stats.process_bundle_reg_success_any += 1;
-                                log::debug!(" -> allocated to any {:?}", preg_idx);
-                                self.spillsets[self.bundles[bundle.index()].spillset.index()]
-                                    .reg_hint = alloc.as_reg().unwrap();
-                                return Ok(());
-                            }
-                            AllocRegResult::Conflict(bundles) => {
-                                log::debug!(" -> conflict with bundles {:?}", bundles);
-
-                                let first_conflict_point =
-                                    self.bundles[bundles[0].index()].ranges[0].range.from;
-
-                                let cost = self.maximum_spill_weight_in_bundle_set(&bundles);
-
-                                if lowest_cost_conflict_cost.is_none()
-                                    || cost < lowest_cost_conflict_cost.unwrap()
-                                {
-                                    lowest_cost_conflict_cost = Some(cost);
-                                    lowest_cost_conflict_set = Some(bundles);
-                                    lowest_cost_conflict_point = first_conflict_point;
-                                    lowest_cost_conflict_reg = preg;
-                                }
-                            }
-                            AllocRegResult::ConflictWithFixed(max_cost, point) => {
-                                log::debug!(" -> conflict with fixed alloc; cost of other bundles up to point is {}, conflict at {:?}", max_cost, point);
-                                if lowest_cost_conflict_cost.is_none()
-                                    || max_cost < lowest_cost_conflict_cost.unwrap()
-                                {
-                                    lowest_cost_conflict_cost = Some(max_cost);
-                                    lowest_cost_conflict_set = Some(smallvec![]);
-                                    lowest_cost_conflict_point = point;
-                                    lowest_cost_conflict_reg = preg;
-                                }
-                            }
-                            AllocRegResult::ConflictHighCost => {
-                                // Simply don't consider -- we already have
-                                // a lower-cost conflict bundle option
-                                // to evict.
-                                continue;
-                            }
-                        }
-                    }
-
-                    // Otherwise, we *require* a register, but didn't fit into
-                    // any with current bundle assignments. Hence, we will need
-                    // to either split or attempt to evict some bundles. Return
-                    // the conflicting bundles to evict and retry. Empty list
-                    // means nothing to try (due to fixed conflict) so we must
-                    // split instead.
-                    (
-                        lowest_cost_conflict_set.unwrap_or(smallvec![]),
-                        lowest_cost_conflict_point,
-                        lowest_cost_conflict_reg,
-                    )
-                }
-
+            let (class, fixed_preg) = match req {
+                Requirement::Fixed(preg) => (preg.class(), Some(preg)),
+                Requirement::Register(class) => (class, None),
                 Requirement::Stack(_) => {
                     // If we must be on the stack, mark our spillset
                     // as required immediately.
@@ -3086,114 +2986,233 @@ impl<'a, F: Function> Env<'a, F> {
                     return Ok(());
                 }
 
-                Requirement::Conflict => {
-                    break;
-                }
+                Requirement::Conflict => unreachable!(),
             };
+            // Scan all pregs, or the one fixed preg, and attempt to allocate.
 
-            log::debug!(" -> conflict set {:?}", conflicting_bundles);
-            log::debug!(
-                " -> first conflict {:?} with reg {:?}",
-                first_conflict_point,
-                first_conflict_reg
-            );
+            let mut lowest_cost_evict_conflict_set: Option<LiveBundleVec> = None;
+            let mut lowest_cost_evict_conflict_cost: Option<u32> = None;
 
-            // If we have already tried evictions once before and are
-            // still unsuccessful, give up and move on to splitting as
-            // long as this is not a minimal bundle.
-            if attempts >= 2 && !self.minimal_bundle(bundle) {
-                break;
-            }
+            let mut lowest_cost_split_conflict_cost: Option<u32> = None;
+            let mut lowest_cost_split_conflict_point = ProgPoint::before(Inst::new(0));
+            let mut lowest_cost_split_conflict_reg = PReg::invalid();
 
-            let bundle_start = self.bundles[bundle.index()].ranges[0].range.from;
-            split_at_point = std::cmp::max(first_conflict_point, bundle_start);
-            requeue_with_reg = first_conflict_reg;
+            // Heuristic: start the scan for an available
+            // register at an offset influenced both by our
+            // location in the code and by the bundle we're
+            // considering. This has the effect of spreading
+            // demand more evenly across registers.
+            let scan_offset = self.ranges[self.bundles[bundle.index()].ranges[0].index.index()]
+                .range
+                .from
+                .inst()
+                .index()
+                + bundle.index();
 
-            // Adjust `split_at_point` if it is within a deeper loop
-            // than the bundle start -- hoist it to just before the
-            // first loop header it encounters.
-            let bundle_start_depth = self.cfginfo.approx_loop_depth
-                [self.cfginfo.insn_block[bundle_start.inst().index()].index()];
-            let split_at_depth = self.cfginfo.approx_loop_depth
-                [self.cfginfo.insn_block[split_at_point.inst().index()].index()];
-            if split_at_depth > bundle_start_depth {
-                for block in (self.cfginfo.insn_block[bundle_start.inst().index()].index() + 1)
-                    ..=self.cfginfo.insn_block[split_at_point.inst().index()].index()
-                {
-                    if self.cfginfo.approx_loop_depth[block] > bundle_start_depth {
-                        split_at_point = self.cfginfo.block_entry[block];
-                        break;
+            self.stats.process_bundle_reg_probe_start_any += 1;
+            for preg in RegTraversalIter::new(
+                self.env,
+                class,
+                hint_reg,
+                PReg::invalid(),
+                scan_offset,
+                fixed_preg,
+            ) {
+                self.stats.process_bundle_reg_probes_any += 1;
+                let preg_idx = PRegIndex::new(preg.index());
+                log::debug!("trying preg {:?}", preg_idx);
+
+                let scan_limit_cost = match (
+                    lowest_cost_evict_conflict_cost,
+                    lowest_cost_split_conflict_cost,
+                ) {
+                    (Some(a), Some(b)) => Some(std::cmp::max(a, b)),
+                    _ => None,
+                };
+                match self.try_to_allocate_bundle_to_reg(bundle, preg_idx, scan_limit_cost) {
+                    AllocRegResult::Allocated(alloc) => {
+                        self.stats.process_bundle_reg_success_any += 1;
+                        log::debug!(" -> allocated to any {:?}", preg_idx);
+                        self.spillsets[self.bundles[bundle.index()].spillset.index()].reg_hint =
+                            alloc.as_reg().unwrap();
+                        return Ok(());
                     }
-                }
-            }
+                    AllocRegResult::Conflict(bundles) => {
+                        log::debug!(" -> conflict with bundles {:?}", bundles);
 
-            // If we hit a fixed conflict, give up and move on to splitting.
-            if conflicting_bundles.is_empty() {
-                break;
-            }
+                        let first_conflict_point =
+                            self.bundles[bundles[0].index()].ranges[0].range.from;
 
-            // If the maximum spill weight in the conflicting-bundles set is >= this bundle's spill
-            // weight, then don't evict.
-            let max_spill_weight = self.maximum_spill_weight_in_bundle_set(&conflicting_bundles);
-            log::debug!(
-                " -> max_spill_weight = {}; our spill weight {}",
-                max_spill_weight,
-                self.bundle_spill_weight(bundle)
-            );
-            if max_spill_weight >= self.bundle_spill_weight(bundle) {
-                log::debug!(" -> we're already the cheapest bundle to spill -- going to split");
-                break;
-            }
+                        let conflict_cost = self.maximum_spill_weight_in_bundle_set(&bundles);
 
-            // Evict all bundles in `conflicting bundles` and try again.
-            self.stats.evict_bundle_event += 1;
-            for &bundle in &conflicting_bundles {
-                log::debug!(" -> evicting {:?}", bundle);
-                self.evict_bundle(bundle);
-                self.stats.evict_bundle_count += 1;
-            }
-        }
+                        if lowest_cost_evict_conflict_cost.is_none()
+                            || conflict_cost < lowest_cost_evict_conflict_cost.unwrap()
+                        {
+                            lowest_cost_evict_conflict_cost = Some(conflict_cost);
+                            lowest_cost_evict_conflict_set = Some(bundles);
+                        }
 
-        // A minimal bundle cannot be split.
-        if self.minimal_bundle(bundle) {
-            if let Requirement::Register(class) = req {
-                // Check if this is a too-many-live-registers situation.
-                let range = self.bundles[bundle.index()].ranges[0].range;
-                let mut min_bundles_assigned = 0;
-                let mut fixed_assigned = 0;
-                let mut total_regs = 0;
-                for preg in self.env.preferred_regs_by_class[class as u8 as usize]
-                    .iter()
-                    .chain(self.env.non_preferred_regs_by_class[class as u8 as usize].iter())
-                {
-                    if let Some(&lr) = self.pregs[preg.index()]
-                        .allocations
-                        .btree
-                        .get(&LiveRangeKey::from_range(&range))
-                    {
-                        if lr.is_valid() {
-                            if self.minimal_bundle(self.ranges[lr.index()].bundle) {
-                                min_bundles_assigned += 1;
-                            }
-                        } else {
-                            fixed_assigned += 1;
+                        let loop_depth = self.cfginfo.approx_loop_depth
+                            [self.cfginfo.insn_block[first_conflict_point.inst().index()].index()];
+                        let move_cost = spill_weight_from_policy(
+                            OperandPolicy::Reg,
+                            loop_depth as usize,
+                            /* is_def = */ true,
+                        );
+                        if lowest_cost_split_conflict_cost.is_none()
+                            || (conflict_cost + move_cost)
+                                < lowest_cost_split_conflict_cost.unwrap()
+                        {
+                            lowest_cost_split_conflict_cost = Some(conflict_cost + move_cost);
+                            lowest_cost_split_conflict_point = first_conflict_point;
+                            lowest_cost_split_conflict_reg = preg;
                         }
                     }
-                    total_regs += 1;
+                    AllocRegResult::ConflictWithFixed(max_cost, point) => {
+                        log::debug!(" -> conflict with fixed alloc; cost of other bundles up to point is {}, conflict at {:?}", max_cost, point);
+
+                        let loop_depth = self.cfginfo.approx_loop_depth
+                            [self.cfginfo.insn_block[point.inst().index()].index()];
+                        let move_cost = spill_weight_from_policy(
+                            OperandPolicy::Reg,
+                            loop_depth as usize,
+                            /* is_def = */ true,
+                        );
+
+                        if lowest_cost_split_conflict_cost.is_none()
+                            || (max_cost + move_cost) < lowest_cost_split_conflict_cost.unwrap()
+                        {
+                            lowest_cost_split_conflict_cost = Some(max_cost + move_cost);
+                            lowest_cost_split_conflict_point = point;
+                            lowest_cost_split_conflict_reg = preg;
+                        }
+                    }
+                    AllocRegResult::ConflictHighCost => {
+                        // Simply don't consider -- we already have
+                        // a lower-cost conflict bundle option
+                        // to evict.
+                        continue;
+                    }
                 }
-                if min_bundles_assigned + fixed_assigned == total_regs {
-                    return Err(RegAllocError::TooManyLiveRegs);
+            }
+
+            // Otherwise, we *require* a register, but didn't fit into
+            // any with current bundle assignments. Hence, we will need
+            // to either split or attempt to evict some bundles.
+
+            log::debug!(
+                " -> lowest cost evict: set {:?}, cost {:?}",
+                lowest_cost_evict_conflict_set,
+                lowest_cost_evict_conflict_cost,
+            );
+            log::debug!(
+                " -> lowest cost split: cost {:?}, point {:?}, reg {:?}",
+                lowest_cost_split_conflict_cost,
+                lowest_cost_split_conflict_point,
+                lowest_cost_split_conflict_reg
+            );
+
+            // If we reach here, we *must* have an option either to split or evict.
+            assert!(
+                lowest_cost_split_conflict_cost.is_some()
+                    || lowest_cost_evict_conflict_cost.is_some()
+            );
+
+            // If our bundle's weight is less than or equal to(*) the
+            // evict cost, choose to split.  Also pick splitting if
+            // we're on our second or more attempt as long as the
+            // bundle isn't minimal. Also pick splitting if the
+            // conflict set is empty, meaning a fixed conflict that
+            // can't be evicted.
+            //
+            // (*) the "equal to" part is very important: it prevents
+            // an infinite loop where two bundles with equal spill
+            // cost continually evict each other in an infinite
+            // allocation loop. In such a case, the first bundle in
+            // wins, and the other splits.
+            if (attempts >= 2 && !self.minimal_bundle(bundle))
+                || lowest_cost_evict_conflict_cost.is_none()
+                || self.bundle_spill_weight(bundle) <= lowest_cost_evict_conflict_cost.unwrap()
+            {
+                log::debug!(
+                    " -> deciding to split: our spill weight is {}",
+                    self.bundle_spill_weight(bundle)
+                );
+                let bundle_start = self.bundles[bundle.index()].ranges[0].range.from;
+                let mut split_at_point =
+                    std::cmp::max(lowest_cost_split_conflict_point, bundle_start);
+                let requeue_with_reg = lowest_cost_split_conflict_reg;
+
+                // Adjust `split_at_point` if it is within a deeper loop
+                // than the bundle start -- hoist it to just before the
+                // first loop header it encounters.
+                let bundle_start_depth = self.cfginfo.approx_loop_depth
+                    [self.cfginfo.insn_block[bundle_start.inst().index()].index()];
+                let split_at_depth = self.cfginfo.approx_loop_depth
+                    [self.cfginfo.insn_block[split_at_point.inst().index()].index()];
+                if split_at_depth > bundle_start_depth {
+                    for block in (self.cfginfo.insn_block[bundle_start.inst().index()].index() + 1)
+                        ..=self.cfginfo.insn_block[split_at_point.inst().index()].index()
+                    {
+                        if self.cfginfo.approx_loop_depth[block] > bundle_start_depth {
+                            split_at_point = self.cfginfo.block_entry[block];
+                            break;
+                        }
+                    }
+                }
+
+                // A minimal bundle cannot be split.
+                if self.minimal_bundle(bundle) {
+                    if let Requirement::Register(class) = req {
+                        // Check if this is a too-many-live-registers situation.
+                        let range = self.bundles[bundle.index()].ranges[0].range;
+                        let mut min_bundles_assigned = 0;
+                        let mut fixed_assigned = 0;
+                        let mut total_regs = 0;
+                        for preg in self.env.preferred_regs_by_class[class as u8 as usize]
+                            .iter()
+                            .chain(
+                                self.env.non_preferred_regs_by_class[class as u8 as usize].iter(),
+                            )
+                        {
+                            if let Some(&lr) = self.pregs[preg.index()]
+                                .allocations
+                                .btree
+                                .get(&LiveRangeKey::from_range(&range))
+                            {
+                                if lr.is_valid() {
+                                    if self.minimal_bundle(self.ranges[lr.index()].bundle) {
+                                        min_bundles_assigned += 1;
+                                    }
+                                } else {
+                                    fixed_assigned += 1;
+                                }
+                            }
+                            total_regs += 1;
+                        }
+                        if min_bundles_assigned + fixed_assigned == total_regs {
+                            return Err(RegAllocError::TooManyLiveRegs);
+                        }
+                    }
+                }
+                if self.minimal_bundle(bundle) {
+                    self.dump_state();
+                }
+                assert!(!self.minimal_bundle(bundle));
+
+                self.split_and_requeue_bundle(bundle, split_at_point, requeue_with_reg);
+
+                return Ok(());
+            } else {
+                // Evict all bundles in `conflicting bundles` and try again.
+                self.stats.evict_bundle_event += 1;
+                for &bundle in &lowest_cost_evict_conflict_set.unwrap() {
+                    log::debug!(" -> evicting {:?}", bundle);
+                    self.evict_bundle(bundle);
+                    self.stats.evict_bundle_count += 1;
                 }
             }
         }
-        if self.minimal_bundle(bundle) {
-            self.dump_state();
-        }
-        assert!(!self.minimal_bundle(bundle));
-
-        self.split_and_requeue_bundle(bundle, split_at_point, requeue_with_reg);
-
-        Ok(())
     }
 
     fn try_allocating_regs_for_spilled_bundles(&mut self) {
@@ -3217,6 +3236,7 @@ impl<'a, F: Function> Env<'a, F> {
                 PReg::invalid(),
                 PReg::invalid(),
                 bundle.index(),
+                None,
             ) {
                 log::debug!("trying bundle {:?} to preg {:?}", bundle, preg);
                 let preg_idx = PRegIndex::new(preg.index());
