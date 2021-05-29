@@ -1510,7 +1510,7 @@ impl<'a, F: Function> Env<'a, F> {
                                 OperandPos::Before,
                             );
 
-                            if self.annotations_enabled && log::log_enabled!(log::Level::Debug) {
+                            if self.annotations_enabled {
                                 self.annotate(
                                     ProgPoint::after(inst),
                                     format!(
@@ -2105,7 +2105,7 @@ impl<'a, F: Function> Env<'a, F> {
             for entry in &list {
                 self.ranges[entry.index.index()].bundle = to;
 
-                if self.annotations_enabled && log::log_enabled!(log::Level::Debug) {
+                if self.annotations_enabled {
                     self.annotate(
                         entry.range.from,
                         format!(
@@ -2165,7 +2165,7 @@ impl<'a, F: Function> Env<'a, F> {
                 last_range = Some(entry.range);
 
                 if self.ranges[entry.index.index()].bundle == from {
-                    if self.annotations_enabled && log::log_enabled!(log::Level::Debug) {
+                    if self.annotations_enabled {
                         self.annotate(
                             entry.range.from,
                             format!(
@@ -3586,7 +3586,7 @@ impl<'a, F: Function> Env<'a, F> {
                 );
                 debug_assert!(alloc != Allocation::none());
 
-                if self.annotations_enabled && log::log_enabled!(log::Level::Debug) {
+                if self.annotations_enabled {
                     self.annotate(
                         range.from,
                         format!(
@@ -3767,8 +3767,7 @@ impl<'a, F: Function> Env<'a, F> {
                                     alloc,
                                 });
 
-                                if self.annotations_enabled && log::log_enabled!(log::Level::Debug)
-                                {
+                                if self.annotations_enabled {
                                     self.annotate(
                                         self.cfginfo.block_exit[block.index()],
                                         format!(
@@ -4382,7 +4381,7 @@ impl<'a, F: Function> Env<'a, F> {
         self.stats.edits_count = self.edits.len();
 
         // Add debug annotations.
-        if self.annotations_enabled && log::log_enabled!(log::Level::Debug) {
+        if self.annotations_enabled {
             for i in 0..self.edits.len() {
                 let &(pos, _, ref edit) = &self.edits[i];
                 match edit {
@@ -4496,7 +4495,7 @@ impl<'a, F: Function> Env<'a, F> {
     }
 
     fn annotate(&mut self, progpoint: ProgPoint, s: String) {
-        if log::log_enabled!(log::Level::Debug) {
+        if self.annotations_enabled {
             self.debug_annotations
                 .entry(progpoint)
                 .or_insert_with(|| vec![])
@@ -4505,10 +4504,10 @@ impl<'a, F: Function> Env<'a, F> {
     }
 
     fn dump_results(&self) {
-        log::debug!("=== REGALLOC RESULTS ===");
+        log::info!("=== REGALLOC RESULTS ===");
         for block in 0..self.func.blocks() {
             let block = Block::new(block);
-            log::debug!(
+            log::info!(
                 "block{}: [succs {:?} preds {:?}]",
                 block.index(),
                 self.func
@@ -4529,7 +4528,7 @@ impl<'a, F: Function> Env<'a, F> {
                     .map(|v| &v[..])
                     .unwrap_or(&[])
                 {
-                    log::debug!("  inst{}-pre: {}", inst.index(), annotation);
+                    log::info!("  inst{}-pre: {}", inst.index(), annotation);
                 }
                 let ops = self
                     .func
@@ -4565,7 +4564,7 @@ impl<'a, F: Function> Env<'a, F> {
                 } else {
                     format!(" [clobber: {}]", clobbers.join(", "))
                 };
-                log::debug!(
+                log::info!(
                     "  inst{}: {} {}{}",
                     inst.index(),
                     opname,
@@ -4578,7 +4577,7 @@ impl<'a, F: Function> Env<'a, F> {
                     .map(|v| &v[..])
                     .unwrap_or(&[])
                 {
-                    log::debug!("  inst{}-post: {}", inst.index(), annotation);
+                    log::info!("  inst{}-post: {}", inst.index(), annotation);
                 }
             }
         }
@@ -4597,7 +4596,7 @@ pub fn run<F: Function>(
 
     env.run()?;
 
-    if log::log_enabled!(log::Level::Debug) {
+    if enable_annotations {
         env.dump_results();
     }
 
