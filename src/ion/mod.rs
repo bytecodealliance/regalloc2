@@ -2473,80 +2473,85 @@ impl<'a, F: Function> Env<'a, F> {
         // literally the range `range`.
         let bundle_ranges = &self.bundles[bundle.index()].ranges;
         let from_key = LiveRangeKey::from_range(&bundle_ranges.first().unwrap().range);
-        let to_key = LiveRangeKey::from_range(&bundle_ranges.last().unwrap().range);
-        assert!(from_key <= to_key);
         let mut preg_range_iter = self.pregs[reg.index()]
             .allocations
             .btree
-            .range(from_key..=to_key)
+            .range(from_key..)
             .peekable();
         log::debug!(
-            "alloc map for {:?}: {:?}",
+            "alloc map for {:?} in range {:?}..: {:?}",
             reg,
+            from_key,
             self.pregs[reg.index()].allocations.btree
         );
-        for entry in bundle_ranges {
+        'ranges: for entry in bundle_ranges {
             log::debug!(" -> range LR {:?}: {:?}", entry.index, entry.range);
             let key = LiveRangeKey::from_range(&entry.range);
 
-            // Advance our BTree traversal until it is >= this bundle
-            // range (i.e., skip PReg allocations in the BTree that
-            // are completely before this bundle range).
+            'alloc: loop {
+                log::debug!("  -> PReg range {:?}", preg_range_iter.peek());
 
-            while preg_range_iter.peek().is_some() && *preg_range_iter.peek().unwrap().0 < key {
-                log::debug!(
-                    "Skipping PReg range {:?}",
-                    preg_range_iter.peek().unwrap().0
-                );
-                preg_range_iter.next();
-            }
+                // Advance our BTree traversal until it is >= this bundle
+                // range (i.e., skip PReg allocations in the BTree that
+                // are completely before this bundle range).
 
-            // If there are no more PReg allocations, we're done!
-            if preg_range_iter.peek().is_none() {
-                log::debug!(" -> no more PReg allocations; so no conflict possible!");
-                break;
-            }
-
-            // If the current PReg range is beyond this range, there is no conflict; continue.
-            if *preg_range_iter.peek().unwrap().0 > key {
-                log::debug!(
-                    " -> next PReg allocation is at {:?}; moving to next VReg range",
-                    preg_range_iter.peek().unwrap().0
-                );
-                continue;
-            }
-
-            // Otherwise, there is a conflict.
-            let preg_key = *preg_range_iter.peek().unwrap().0;
-            assert_eq!(preg_key, key); // Assert that this range overlaps.
-            let preg_range = preg_range_iter.next().unwrap().1;
-
-            log::debug!(" -> btree contains range {:?} that overlaps", preg_range);
-            if preg_range.is_valid() {
-                log::debug!("   -> from vreg {:?}", self.ranges[preg_range.index()].vreg);
-                // range from an allocated bundle: find the bundle and add to
-                // conflicts list.
-                let conflict_bundle = self.ranges[preg_range.index()].bundle;
-                log::debug!("   -> conflict bundle {:?}", conflict_bundle);
-                if !conflicts.iter().any(|b| *b == conflict_bundle) {
-                    conflicts.push(conflict_bundle);
-                    max_conflict_weight = std::cmp::max(
-                        max_conflict_weight,
-                        self.bundles[conflict_bundle.index()].cached_spill_weight(),
+                if preg_range_iter.peek().is_some() && *preg_range_iter.peek().unwrap().0 < key {
+                    log::debug!(
+                        "Skipping PReg range {:?}",
+                        preg_range_iter.peek().unwrap().0
                     );
-                    if max_allowable_cost.is_some()
-                        && max_conflict_weight > max_allowable_cost.unwrap()
-                    {
-                        return AllocRegResult::ConflictHighCost;
-                    }
+                    preg_range_iter.next();
+                    continue 'alloc;
                 }
-            } else {
-                log::debug!("   -> conflict with fixed reservation");
-                // range from a direct use of the PReg (due to clobber).
-                return AllocRegResult::ConflictWithFixed(
-                    max_conflict_weight,
-                    ProgPoint::from_index(preg_key.from),
-                );
+
+                // If there are no more PReg allocations, we're done!
+                if preg_range_iter.peek().is_none() {
+                    log::debug!(" -> no more PReg allocations; so no conflict possible!");
+                    break 'ranges;
+                }
+
+                // If the current PReg range is beyond this range, there is no conflict; continue.
+                if *preg_range_iter.peek().unwrap().0 > key {
+                    log::debug!(
+                        " -> next PReg allocation is at {:?}; moving to next VReg range",
+                        preg_range_iter.peek().unwrap().0
+                    );
+                    break 'alloc;
+                }
+
+                // Otherwise, there is a conflict.
+                let preg_key = *preg_range_iter.peek().unwrap().0;
+                assert_eq!(preg_key, key); // Assert that this range overlaps.
+                let preg_range = preg_range_iter.next().unwrap().1;
+
+                log::debug!(" -> btree contains range {:?} that overlaps", preg_range);
+                if preg_range.is_valid() {
+                    log::debug!("   -> from vreg {:?}", self.ranges[preg_range.index()].vreg);
+                    // range from an allocated bundle: find the bundle and add to
+                    // conflicts list.
+                    let conflict_bundle = self.ranges[preg_range.index()].bundle;
+                    log::debug!("   -> conflict bundle {:?}", conflict_bundle);
+                    if !conflicts.iter().any(|b| *b == conflict_bundle) {
+                        conflicts.push(conflict_bundle);
+                        max_conflict_weight = std::cmp::max(
+                            max_conflict_weight,
+                            self.bundles[conflict_bundle.index()].cached_spill_weight(),
+                        );
+                        if max_allowable_cost.is_some()
+                            && max_conflict_weight > max_allowable_cost.unwrap()
+                        {
+                            log::debug!("   -> reached high cost, retrying early");
+                            return AllocRegResult::ConflictHighCost;
+                        }
+                    }
+                } else {
+                    log::debug!("   -> conflict with fixed reservation");
+                    // range from a direct use of the PReg (due to clobber).
+                    return AllocRegResult::ConflictWithFixed(
+                        max_conflict_weight,
+                        ProgPoint::from_index(preg_key.from),
+                    );
+                }
             }
         }
 
