@@ -3128,7 +3128,9 @@ impl<'a, F: Function> Env<'a, F> {
             // regalloc.rs fuzzer depends on the register allocator to
             // correctly reject impossible-to-allocate programs in
             // order to discard invalid test cases.
-            if attempts >= 2 && self.minimal_bundle(bundle) {
+            if self.minimal_bundle(bundle)
+                && (attempts >= 2 || lowest_cost_evict_conflict_cost.is_none())
+            {
                 if let Requirement::Register(class) = req {
                     // Check if this is a too-many-live-registers situation.
                     let range = self.bundles[bundle.index()].ranges[0].range;
