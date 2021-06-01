@@ -2063,25 +2063,13 @@ impl<'a, F: Function> Env<'a, F> {
             }
         }
 
-        // There could be a requirements conflict only one of the both
-        // sides of the merge has at least one requirement that is not
-        // 'Reg' or 'Any'. (Note that we already checked that the
-        // RegClass is the same on both sides.)
-        if self.bundles[from.index()].cached_fixed()
-            || self.bundles[from.index()].cached_stack()
-            || self.bundles[to.index()].cached_fixed()
-            || self.bundles[to.index()].cached_stack()
-        {
-            let mut req = Requirement::Unknown;
-            for entry in ranges_from.iter().chain(ranges_to.iter()) {
-                for u in &self.ranges[entry.index.index()].uses {
-                    req = req.merge(Requirement::from_operand(u.operand));
-                    if req == Requirement::Conflict {
-                        log::debug!(" -> conflicting requirements; aborting merge");
-                        return false;
-                    }
-                }
-            }
+        // Check for a requirements conflict.
+        let req = self
+            .compute_requirement(from)
+            .merge(self.compute_requirement(to));
+        if req == Requirement::Conflict {
+            log::debug!(" -> conflicting requirements; aborting merge");
+            return false;
         }
 
         log::debug!(" -> committing to merge");
@@ -2646,6 +2634,7 @@ impl<'a, F: Function> Env<'a, F> {
             fixed = true;
         } else {
             for u in &first_range_data.uses {
+                log::debug!("  -> use: {:?}", u);
                 if let OperandPolicy::FixedReg(_) = u.operand.policy() {
                     log::debug!("  -> fixed use at {:?}: {:?}", u.pos, u.operand);
                     fixed = true;
@@ -2927,12 +2916,17 @@ impl<'a, F: Function> Env<'a, F> {
 
     fn compute_requirement(&self, bundle: LiveBundleIndex) -> Requirement {
         let mut req = Requirement::Unknown;
+        log::debug!("compute_requirement: {:?}", bundle);
         for entry in &self.bundles[bundle.index()].ranges {
+            log::debug!(" -> LR {:?}", entry.index);
             for u in &self.ranges[entry.index.index()].uses {
+                log::debug!("  -> use {:?}", u);
                 let r = Requirement::from_operand(u.operand);
                 req = req.merge(r);
+                log::debug!("     -> req {:?}", req);
             }
         }
+        log::debug!(" -> final: {:?}", req);
         req
     }
 
@@ -2952,6 +2946,10 @@ impl<'a, F: Function> Env<'a, F> {
 
         if let Requirement::Conflict = req {
             // We have to split right away.
+            assert!(
+                !self.minimal_bundle(bundle),
+                "Minimal bundle with conflict!"
+            );
             let bundle_start = self.bundles[bundle.index()].ranges[0].range.from;
             self.split_and_requeue_bundle(
                 bundle,
@@ -3118,21 +3116,64 @@ impl<'a, F: Function> Env<'a, F> {
                     || lowest_cost_evict_conflict_cost.is_some()
             );
 
+            // Check that we haven't attempted more than once with a
+            // minimal bundle -- this would indicate a bug. We detect
+            // the "too-many-live-registers" case here and return an
+            // error cleanly, rather than panicking, because the
+            // regalloc.rs fuzzer depends on the register allocator to
+            // correctly reject impossible-to-allocate programs in
+            // order to discard invalid test cases.
+            if attempts >= 2 && self.minimal_bundle(bundle) {
+                if let Requirement::Register(class) = req {
+                    // Check if this is a too-many-live-registers situation.
+                    let range = self.bundles[bundle.index()].ranges[0].range;
+                    let mut min_bundles_assigned = 0;
+                    let mut fixed_assigned = 0;
+                    let mut total_regs = 0;
+                    for preg in self.env.preferred_regs_by_class[class as u8 as usize]
+                        .iter()
+                        .chain(self.env.non_preferred_regs_by_class[class as u8 as usize].iter())
+                    {
+                        if let Some(&lr) = self.pregs[preg.index()]
+                            .allocations
+                            .btree
+                            .get(&LiveRangeKey::from_range(&range))
+                        {
+                            if lr.is_valid() {
+                                if self.minimal_bundle(self.ranges[lr.index()].bundle) {
+                                    min_bundles_assigned += 1;
+                                }
+                            } else {
+                                fixed_assigned += 1;
+                            }
+                        }
+                        total_regs += 1;
+                    }
+                    if min_bundles_assigned + fixed_assigned == total_regs {
+                        return Err(RegAllocError::TooManyLiveRegs);
+                    }
+                }
+
+                panic!("Could not allocate minimal bundle, but the allocation problem should be possible to solve");
+            }
+
             // If our bundle's weight is less than or equal to(*) the
             // evict cost, choose to split.  Also pick splitting if
-            // we're on our second or more attempt as long as the
-            // bundle isn't minimal. Also pick splitting if the
-            // conflict set is empty, meaning a fixed conflict that
-            // can't be evicted.
+            // we're on our second or more attempt and we didn't
+            // allocate.  Also pick splitting if the conflict set is
+            // empty, meaning a fixed conflict that can't be evicted.
             //
             // (*) the "equal to" part is very important: it prevents
             // an infinite loop where two bundles with equal spill
             // cost continually evict each other in an infinite
             // allocation loop. In such a case, the first bundle in
             // wins, and the other splits.
-            if (attempts >= 2 && !self.minimal_bundle(bundle))
-                || lowest_cost_evict_conflict_cost.is_none()
-                || self.bundle_spill_weight(bundle) <= lowest_cost_evict_conflict_cost.unwrap()
+            //
+            // Note that we don't split if the bundle is minimal.
+            if !self.minimal_bundle(bundle)
+                && (attempts >= 2
+                    || lowest_cost_evict_conflict_cost.is_none()
+                    || self.bundle_spill_weight(bundle) <= lowest_cost_evict_conflict_cost.unwrap())
             {
                 log::debug!(
                     " -> deciding to split: our spill weight is {}",
@@ -3161,47 +3202,7 @@ impl<'a, F: Function> Env<'a, F> {
                     }
                 }
 
-                // A minimal bundle cannot be split.
-                if self.minimal_bundle(bundle) {
-                    if let Requirement::Register(class) = req {
-                        // Check if this is a too-many-live-registers situation.
-                        let range = self.bundles[bundle.index()].ranges[0].range;
-                        let mut min_bundles_assigned = 0;
-                        let mut fixed_assigned = 0;
-                        let mut total_regs = 0;
-                        for preg in self.env.preferred_regs_by_class[class as u8 as usize]
-                            .iter()
-                            .chain(
-                                self.env.non_preferred_regs_by_class[class as u8 as usize].iter(),
-                            )
-                        {
-                            if let Some(&lr) = self.pregs[preg.index()]
-                                .allocations
-                                .btree
-                                .get(&LiveRangeKey::from_range(&range))
-                            {
-                                if lr.is_valid() {
-                                    if self.minimal_bundle(self.ranges[lr.index()].bundle) {
-                                        min_bundles_assigned += 1;
-                                    }
-                                } else {
-                                    fixed_assigned += 1;
-                                }
-                            }
-                            total_regs += 1;
-                        }
-                        if min_bundles_assigned + fixed_assigned == total_regs {
-                            return Err(RegAllocError::TooManyLiveRegs);
-                        }
-                    }
-                }
-                if self.minimal_bundle(bundle) {
-                    self.dump_state();
-                }
-                assert!(!self.minimal_bundle(bundle));
-
                 self.split_and_requeue_bundle(bundle, split_at_point, requeue_with_reg);
-
                 return Ok(());
             } else {
                 // Evict all bundles in `conflicting bundles` and try again.
