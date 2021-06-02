@@ -42,8 +42,11 @@
        first preferred one), reload into it, spill out of it, and then
        pop old val
 
-   - Avoid rebuilding MachineEnv on every function allocation in
-     regalloc.rs shim
+   - Play more with commitment-map probing: linear scan through btree
+     (good for dense bundles, i.e., close ranges) vs. independent
+     lookup per range in bundle. Adapt based on distance? Do a fresh
+     range lookup if we skip N btree entries without advancing into
+     current bundle range?
 
    - Profile allocations
  */
