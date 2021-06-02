@@ -2472,7 +2472,10 @@ impl<'a, F: Function> Env<'a, F> {
         // any preg range that *overlaps* with range `range`, not
         // literally the range `range`.
         let bundle_ranges = &self.bundles[bundle.index()].ranges;
-        let from_key = LiveRangeKey::from_range(&bundle_ranges.first().unwrap().range);
+        let from_key = LiveRangeKey::from_range(&CodeRange {
+            from: bundle_ranges.first().unwrap().range.from,
+            to: bundle_ranges.first().unwrap().range.from,
+        });
         let mut preg_range_iter = self.pregs[reg.index()]
             .allocations
             .btree
@@ -3122,6 +3125,7 @@ impl<'a, F: Function> Env<'a, F> {
             );
 
             let our_spill_weight = self.bundle_spill_weight(bundle);
+            log::debug!(" -> our spill weight: {}", our_spill_weight);
 
             // We detect the "too-many-live-registers" case here and
             // return an error cleanly, rather than panicking, because
