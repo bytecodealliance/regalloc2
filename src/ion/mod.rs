@@ -3121,15 +3121,17 @@ impl<'a, F: Function> Env<'a, F> {
                     || lowest_cost_evict_conflict_cost.is_some()
             );
 
-            // Check that we haven't attempted more than once with a
-            // minimal bundle -- this would indicate a bug. We detect
-            // the "too-many-live-registers" case here and return an
-            // error cleanly, rather than panicking, because the
-            // regalloc.rs fuzzer depends on the register allocator to
-            // correctly reject impossible-to-allocate programs in
-            // order to discard invalid test cases.
+            let our_spill_weight = self.bundle_spill_weight(bundle);
+
+            // We detect the "too-many-live-registers" case here and
+            // return an error cleanly, rather than panicking, because
+            // the regalloc.rs fuzzer depends on the register
+            // allocator to correctly reject impossible-to-allocate
+            // programs in order to discard invalid test cases.
             if self.minimal_bundle(bundle)
-                && (attempts >= 2 || lowest_cost_evict_conflict_cost.is_none())
+                && (attempts >= 2
+                    || lowest_cost_evict_conflict_cost.is_none()
+                    || lowest_cost_evict_conflict_cost.unwrap() >= our_spill_weight)
             {
                 if let Requirement::Register(class) = req {
                     // Check if this is a too-many-live-registers situation.
@@ -3180,7 +3182,7 @@ impl<'a, F: Function> Env<'a, F> {
             if !self.minimal_bundle(bundle)
                 && (attempts >= 2
                     || lowest_cost_evict_conflict_cost.is_none()
-                    || self.bundle_spill_weight(bundle) <= lowest_cost_evict_conflict_cost.unwrap())
+                    || our_spill_weight <= lowest_cost_evict_conflict_cost.unwrap())
             {
                 log::debug!(
                     " -> deciding to split: our spill weight is {}",
