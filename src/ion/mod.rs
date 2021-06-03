@@ -32,6 +32,10 @@
          scan in a single range while resolving moves; in-edge makes
          dirty.
 
+      - or: track "at most one" def-points: at a join, new def point
+        if at least one of the in-edges is a def point. Do this during
+        liveness by tracking ...?
+
    - Avoid requiring two scratch regs:
      - Require machine impl to be able to (i) push a reg, (ii) pop a
        reg; then generate a balanced pair of push/pop, using the stack
@@ -2736,6 +2740,26 @@ impl<'a, F: Function> Env<'a, F> {
         }
     }
 
+    fn get_or_create_spill_bundle(
+        &mut self,
+        bundle: LiveBundleIndex,
+        create_if_absent: bool,
+    ) -> Option<LiveBundleIndex> {
+        let ssidx = self.bundles[bundle.index()].spillset;
+        let idx = self.spillsets[ssidx.index()].spill_bundle;
+        if idx.is_valid() {
+            Some(idx)
+        } else if create_if_absent {
+            let idx = self.create_bundle();
+            self.spillsets[ssidx.index()].spill_bundle = idx;
+            self.bundles[idx.index()].spillset = ssidx;
+            self.spilled_bundles.push(idx);
+            Some(idx)
+        } else {
+            None
+        }
+    }
+
     fn split_and_requeue_bundle(
         &mut self,
         bundle: LiveBundleIndex,
@@ -2913,16 +2937,165 @@ impl<'a, F: Function> Env<'a, F> {
         }
         self.bundles[new_bundle.index()].ranges = new_lr_list;
 
-        self.recompute_bundle_properties(bundle);
-        self.recompute_bundle_properties(new_bundle);
-        let prio = self.compute_bundle_prio(bundle);
-        let new_prio = self.compute_bundle_prio(new_bundle);
-        self.bundles[bundle.index()].prio = prio;
-        self.bundles[new_bundle.index()].prio = new_prio;
-        self.allocation_queue
-            .insert(bundle, prio as usize, reg_hint);
-        self.allocation_queue
-            .insert(new_bundle, new_prio as usize, reg_hint);
+        // Finally, handle moving LRs to the spill bundle when
+        // appropriate: If the first range in `new_bundle` or last
+        // range in `bundle` has "empty space" beyond the first or
+        // last use (respectively), trim it and put an empty LR into
+        // the spill bundle.  (We are careful to treat the "starts at
+        // def" flag as an implicit first def even if no def-type Use
+        // is present.)
+        while let Some(entry) = self.bundles[bundle.index()].ranges.last().cloned() {
+            let end = entry.range.to;
+            let vreg = self.ranges[entry.index.index()].vreg;
+            let last_use = self.ranges[entry.index.index()].uses.last().map(|u| u.pos);
+            if last_use.is_none() {
+                let spill = self
+                    .get_or_create_spill_bundle(bundle, /* create_if_absent = */ true)
+                    .unwrap();
+                log::debug!(
+                    " -> bundle {:?} range {:?}: no uses; moving to spill bundle {:?}",
+                    bundle,
+                    entry.index,
+                    spill
+                );
+                self.bundles[spill.index()].ranges.push(entry);
+                self.bundles[bundle.index()].ranges.pop();
+                self.ranges[entry.index.index()].bundle = spill;
+                continue;
+            }
+            let last_use = last_use.unwrap();
+            let split = ProgPoint::before(last_use.inst().next());
+            if split < end {
+                let spill = self
+                    .get_or_create_spill_bundle(bundle, /* create_if_absent = */ true)
+                    .unwrap();
+                self.bundles[bundle.index()]
+                    .ranges
+                    .last_mut()
+                    .unwrap()
+                    .range
+                    .to = split;
+                self.ranges[self.bundles[bundle.index()]
+                    .ranges
+                    .last()
+                    .unwrap()
+                    .index
+                    .index()]
+                .range
+                .to = split;
+                let range = CodeRange {
+                    from: split,
+                    to: end,
+                };
+                let empty_lr = self.create_liverange(range);
+                self.bundles[spill.index()].ranges.push(LiveRangeListEntry {
+                    range,
+                    index: empty_lr,
+                });
+                self.ranges[empty_lr.index()].bundle = spill;
+                self.vregs[vreg.index()].ranges.push(LiveRangeListEntry {
+                    range,
+                    index: empty_lr,
+                });
+                log::debug!(
+                    " -> bundle {:?} range {:?}: last use implies split point {:?}",
+                    bundle,
+                    entry.index,
+                    split
+                );
+                log::debug!(
+                    " -> moving trailing empty region to new spill bundle {:?} with new LR {:?}",
+                    spill,
+                    empty_lr
+                );
+            }
+            break;
+        }
+        while let Some(entry) = self.bundles[new_bundle.index()].ranges.first().cloned() {
+            if self.ranges[entry.index.index()].has_flag(LiveRangeFlag::StartsAtDef) {
+                break;
+            }
+            let start = entry.range.from;
+            let vreg = self.ranges[entry.index.index()].vreg;
+            let first_use = self.ranges[entry.index.index()].uses.first().map(|u| u.pos);
+            if first_use.is_none() {
+                let spill = self
+                    .get_or_create_spill_bundle(new_bundle, /* create_if_absent = */ true)
+                    .unwrap();
+                log::debug!(
+                    " -> bundle {:?} range {:?}: no uses; moving to spill bundle {:?}",
+                    new_bundle,
+                    entry.index,
+                    spill
+                );
+                self.bundles[spill.index()].ranges.push(entry);
+                self.bundles[new_bundle.index()].ranges.drain(..1);
+                self.ranges[entry.index.index()].bundle = spill;
+                continue;
+            }
+            let first_use = first_use.unwrap();
+            let split = ProgPoint::before(first_use.inst());
+            if split > start {
+                let spill = self
+                    .get_or_create_spill_bundle(new_bundle, /* create_if_absent = */ true)
+                    .unwrap();
+                self.bundles[new_bundle.index()]
+                    .ranges
+                    .first_mut()
+                    .unwrap()
+                    .range
+                    .from = split;
+                self.ranges[self.bundles[new_bundle.index()]
+                    .ranges
+                    .first()
+                    .unwrap()
+                    .index
+                    .index()]
+                .range
+                .from = split;
+                let range = CodeRange {
+                    from: start,
+                    to: split,
+                };
+                let empty_lr = self.create_liverange(range);
+                self.bundles[spill.index()].ranges.push(LiveRangeListEntry {
+                    range,
+                    index: empty_lr,
+                });
+                self.ranges[empty_lr.index()].bundle = spill;
+                self.vregs[vreg.index()].ranges.push(LiveRangeListEntry {
+                    range,
+                    index: empty_lr,
+                });
+                log::debug!(
+                    " -> bundle {:?} range {:?}: first use implies split point {:?}",
+                    bundle,
+                    entry.index,
+                    first_use,
+                );
+                log::debug!(
+                    " -> moving leading empty region to new spill bundle {:?} with new LR {:?}",
+                    spill,
+                    empty_lr
+                );
+            }
+            break;
+        }
+
+        if self.bundles[bundle.index()].ranges.len() > 0 {
+            self.recompute_bundle_properties(bundle);
+            let prio = self.compute_bundle_prio(bundle);
+            self.bundles[bundle.index()].prio = prio;
+            self.allocation_queue
+                .insert(bundle, prio as usize, reg_hint);
+        }
+        if self.bundles[new_bundle.index()].ranges.len() > 0 {
+            self.recompute_bundle_properties(new_bundle);
+            let new_prio = self.compute_bundle_prio(new_bundle);
+            self.bundles[new_bundle.index()].prio = new_prio;
+            self.allocation_queue
+                .insert(new_bundle, new_prio as usize, reg_hint);
+        }
     }
 
     fn compute_requirement(&self, bundle: LiveBundleIndex) -> Requirement {
@@ -2970,6 +3143,26 @@ impl<'a, F: Function> Env<'a, F> {
             return Ok(());
         }
 
+        // If no requirement at all (because no uses), and *if* a
+        // spill bundle is already present, then move the LRs over to
+        // the spill bundle right away.
+        match req {
+            Requirement::Unknown | Requirement::Any(_) => {
+                if let Some(spill) =
+                    self.get_or_create_spill_bundle(bundle, /* create_if_absent = */ false)
+                {
+                    let mut list =
+                        std::mem::replace(&mut self.bundles[bundle.index()].ranges, smallvec![]);
+                    for entry in &list {
+                        self.ranges[entry.index.index()].bundle = spill;
+                    }
+                    self.bundles[spill.index()].ranges.extend(list.drain(..));
+                    return Ok(());
+                }
+            }
+            _ => {}
+        }
+
         // Try to allocate!
         let mut attempts = 0;
         loop {
@@ -2988,14 +3181,13 @@ impl<'a, F: Function> Env<'a, F> {
                 }
 
                 Requirement::Any(_) | Requirement::Unknown => {
-                    // If a register is not *required*, spill now (we'll retry
-                    // allocation on spilled bundles later).
-                    log::debug!("spilling bundle {:?} to spilled_bundles list", bundle);
                     self.spilled_bundles.push(bundle);
                     return Ok(());
                 }
 
-                Requirement::Conflict => unreachable!(),
+                Requirement::Conflict => {
+                    unreachable!()
+                }
             };
             // Scan all pregs, or the one fixed preg, and attempt to allocate.
 
@@ -3238,6 +3430,7 @@ impl<'a, F: Function> Env<'a, F> {
             let bundle = self.spilled_bundles[i]; // don't borrow self
 
             let class = self.spillsets[self.bundles[bundle.index()].spillset.index()].class;
+            let hint = self.spillsets[self.bundles[bundle.index()].spillset.index()].reg_hint;
 
             // This may be an empty-range bundle whose ranges are not
             // sorted; sort all range-lists again here.
@@ -3247,14 +3440,9 @@ impl<'a, F: Function> Env<'a, F> {
 
             let mut success = false;
             self.stats.spill_bundle_reg_probes += 1;
-            for preg in RegTraversalIter::new(
-                self.env,
-                class,
-                PReg::invalid(),
-                PReg::invalid(),
-                bundle.index(),
-                None,
-            ) {
+            for preg in
+                RegTraversalIter::new(self.env, class, hint, PReg::invalid(), bundle.index(), None)
+            {
                 log::debug!("trying bundle {:?} to preg {:?}", bundle, preg);
                 let preg_idx = PRegIndex::new(preg.index());
                 if let AllocRegResult::Allocated(_) =
