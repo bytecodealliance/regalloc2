@@ -46,12 +46,6 @@
        first preferred one), reload into it, spill out of it, and then
        pop old val
 
-   - Play more with commitment-map probing: linear scan through btree
-     (good for dense bundles, i.e., close ranges) vs. independent
-     lookup per range in bundle. Adapt based on distance? Do a fresh
-     range lookup if we skip N btree entries without advancing into
-     current bundle range?
-
    - Profile allocations
  */
 
@@ -2532,6 +2526,7 @@ impl<'a, F: Function> Env<'a, F> {
             log::debug!(" -> range LR {:?}: {:?}", entry.index, entry.range);
             let key = LiveRangeKey::from_range(&entry.range);
 
+            let mut skips = 0;
             'alloc: loop {
                 log::debug!("  -> PReg range {:?}", preg_range_iter.peek());
 
@@ -2545,8 +2540,23 @@ impl<'a, F: Function> Env<'a, F> {
                         preg_range_iter.peek().unwrap().0
                     );
                     preg_range_iter.next();
+                    skips += 1;
+                    if skips >= 16 {
+                        let from_pos = entry.range.from;
+                        let from_key = LiveRangeKey::from_range(&CodeRange {
+                            from: from_pos,
+                            to: from_pos,
+                        });
+                        preg_range_iter = self.pregs[reg.index()]
+                            .allocations
+                            .btree
+                            .range(from_key..)
+                            .peekable();
+                        skips = 0;
+                    }
                     continue 'alloc;
                 }
+                skips = 0;
 
                 // If there are no more PReg allocations, we're done!
                 if preg_range_iter.peek().is_none() {
