@@ -451,6 +451,14 @@ impl LiveRangeKey {
             to: range.to.to_index(),
         }
     }
+
+    #[inline(always)]
+    fn to_range(&self) -> CodeRange {
+        CodeRange {
+            from: ProgPoint::from_index(self.from),
+            to: ProgPoint::from_index(self.to),
+        }
+    }
 }
 
 impl std::cmp::PartialEq for LiveRangeKey {
@@ -2761,7 +2769,7 @@ impl<'a, F: Function> Env<'a, F> {
         );
     }
 
-    fn minimal_bundle(&mut self, bundle: LiveBundleIndex) -> bool {
+    fn minimal_bundle(&self, bundle: LiveBundleIndex) -> bool {
         self.bundles[bundle.index()].cached_minimal()
     }
 
@@ -3379,6 +3387,7 @@ impl<'a, F: Function> Env<'a, F> {
                 if let Requirement::Register(class) = req {
                     // Check if this is a too-many-live-registers situation.
                     let range = self.bundles[bundle.index()].ranges[0].range;
+                    log::debug!("checking for too many live regs");
                     let mut min_bundles_assigned = 0;
                     let mut fixed_assigned = 0;
                     let mut total_regs = 0;
@@ -3386,22 +3395,40 @@ impl<'a, F: Function> Env<'a, F> {
                         .iter()
                         .chain(self.env.non_preferred_regs_by_class[class as u8 as usize].iter())
                     {
-                        if let Some(&lr) = self.pregs[preg.index()]
-                            .allocations
-                            .btree
-                            .get(&LiveRangeKey::from_range(&range))
-                        {
+                        log::debug!(" -> PR {:?}", preg);
+                        let start = LiveRangeKey::from_range(&CodeRange {
+                            from: range.from.prev(),
+                            to: range.from.prev(),
+                        });
+                        for (key, lr) in self.pregs[preg.index()].allocations.btree.range(start..) {
+                            let preg_range = key.to_range();
+                            if preg_range.to <= range.from {
+                                continue;
+                            }
+                            if preg_range.from >= range.to {
+                                break;
+                            }
                             if lr.is_valid() {
                                 if self.minimal_bundle(self.ranges[lr.index()].bundle) {
+                                    log::debug!("  -> min bundle {:?}", lr);
                                     min_bundles_assigned += 1;
+                                } else {
+                                    log::debug!("  -> non-min bundle {:?}", lr);
                                 }
                             } else {
+                                log::debug!("  -> fixed bundle");
                                 fixed_assigned += 1;
                             }
                         }
                         total_regs += 1;
                     }
-                    if min_bundles_assigned + fixed_assigned == total_regs {
+                    log::debug!(
+                        " -> total {}, fixed {}, min {}",
+                        total_regs,
+                        fixed_assigned,
+                        min_bundles_assigned
+                    );
+                    if min_bundles_assigned + fixed_assigned >= total_regs {
                         return Err(RegAllocError::TooManyLiveRegs);
                     }
                 }
