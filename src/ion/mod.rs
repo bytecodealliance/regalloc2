@@ -265,6 +265,16 @@ impl LiveBundle {
     }
 
     #[inline(always)]
+    fn set_cached_fixed(&mut self) {
+        self.spill_weight_and_props |= 1 << 30;
+    }
+
+    #[inline(always)]
+    fn set_cached_stack(&mut self) {
+        self.spill_weight_and_props |= 1 << 29;
+    }
+
+    #[inline(always)]
     fn cached_spill_weight(&self) -> u32 {
         self.spill_weight_and_props & ((1 << 29) - 1)
     }
@@ -2071,12 +2081,18 @@ impl<'a, F: Function> Env<'a, F> {
         }
 
         // Check for a requirements conflict.
-        let req = self
-            .compute_requirement(from)
-            .merge(self.compute_requirement(to));
-        if req == Requirement::Conflict {
-            log::debug!(" -> conflicting requirements; aborting merge");
-            return false;
+        if self.bundles[from.index()].cached_stack()
+            || self.bundles[from.index()].cached_fixed()
+            || self.bundles[to.index()].cached_stack()
+            || self.bundles[to.index()].cached_fixed()
+        {
+            let req = self
+                .compute_requirement(from)
+                .merge(self.compute_requirement(to));
+            if req == Requirement::Conflict {
+                log::debug!(" -> conflicting requirements; aborting merge");
+                return false;
+            }
         }
 
         log::debug!(" -> committing to merge");
@@ -2085,8 +2101,6 @@ impl<'a, F: Function> Env<'a, F> {
         // them!  We do this with a merge-sort-like scan over both
         // lists, building a new range list and replacing the list on
         // `to` when we're done.
-        let mut idx_from = 0;
-        let mut idx_to = 0;
         if ranges_from.is_empty() {
             // `from` bundle is empty -- trivial merge.
             log::debug!(" -> from bundle{} is empty; trivial merge", from.index());
@@ -2115,63 +2129,57 @@ impl<'a, F: Function> Env<'a, F> {
             }
             self.bundles[to.index()].ranges = list;
 
+            if self.bundles[from.index()].cached_stack() {
+                self.bundles[to.index()].set_cached_stack();
+            }
+            if self.bundles[from.index()].cached_fixed() {
+                self.bundles[to.index()].set_cached_fixed();
+            }
+
             return true;
         }
 
-        // Two non-empty lists of LiveRanges: traverse both simultaneously and
-        // merge ranges into `merged`.
-        let mut merged: LiveRangeList = smallvec![];
         log::debug!(
             "merging: ranges_from = {:?} ranges_to = {:?}",
             ranges_from,
             ranges_to
         );
-        while idx_from < ranges_from.len() || idx_to < ranges_to.len() {
-            if idx_from < ranges_from.len() && idx_to < ranges_to.len() {
-                if ranges_from[idx_from].range.from <= ranges_to[idx_to].range.from {
-                    self.ranges[ranges_from[idx_from].index.index()].bundle = to;
-                    merged.push(ranges_from[idx_from]);
-                    idx_from += 1;
-                } else {
-                    merged.push(ranges_to[idx_to]);
-                    idx_to += 1;
-                }
-            } else if idx_from < ranges_from.len() {
-                for entry in &ranges_from[idx_from..] {
-                    self.ranges[entry.index.index()].bundle = to;
-                }
-                merged.extend_from_slice(&ranges_from[idx_from..]);
-                break;
-            } else {
-                assert!(idx_to < ranges_to.len());
-                merged.extend_from_slice(&ranges_to[idx_to..]);
-                break;
-            }
-        }
 
-        #[cfg(debug_assertions)]
-        {
-            log::debug!("merging: merged = {:?}", merged);
+        // Two non-empty lists of LiveRanges: concatenate and
+        // sort. This is faster than a mergesort-like merge into a new
+        // list, empirically.
+        let from_list = std::mem::replace(&mut self.bundles[from.index()].ranges, smallvec![]);
+        for entry in &from_list {
+            self.ranges[entry.index.index()].bundle = to;
+        }
+        self.bundles[to.index()]
+            .ranges
+            .extend_from_slice(&from_list[..]);
+        self.bundles[to.index()]
+            .ranges
+            .sort_unstable_by_key(|entry| entry.range.from);
+
+        if self.annotations_enabled {
+            log::debug!("merging: merged = {:?}", self.bundles[to.index()].ranges);
             let mut last_range = None;
-            for entry in &merged {
+            for i in 0..self.bundles[to.index()].ranges.len() {
+                let entry = self.bundles[to.index()].ranges[i];
                 if last_range.is_some() {
                     assert!(last_range.unwrap() < entry.range);
                 }
                 last_range = Some(entry.range);
 
                 if self.ranges[entry.index.index()].bundle == from {
-                    if self.annotations_enabled {
-                        self.annotate(
-                            entry.range.from,
-                            format!(
-                                " MERGE range{} v{} from bundle{} to bundle{}",
-                                entry.index.index(),
-                                self.ranges[entry.index.index()].vreg.index(),
-                                from.index(),
-                                to.index(),
-                            ),
-                        );
-                    }
+                    self.annotate(
+                        entry.range.from,
+                        format!(
+                            " MERGE range{} v{} from bundle{} to bundle{}",
+                            entry.index.index(),
+                            self.ranges[entry.index.index()].vreg.index(),
+                            from.index(),
+                            to.index(),
+                        ),
+                    );
                 }
 
                 log::debug!(
@@ -2181,9 +2189,6 @@ impl<'a, F: Function> Env<'a, F> {
                 );
             }
         }
-
-        self.bundles[to.index()].ranges = merged;
-        self.bundles[from.index()].ranges.clear();
 
         if self.bundles[from.index()].spillset != self.bundles[to.index()].spillset {
             let from_vregs = std::mem::replace(
@@ -2196,6 +2201,13 @@ impl<'a, F: Function> Env<'a, F> {
                     to_vregs.push(vreg);
                 }
             }
+        }
+
+        if self.bundles[from.index()].cached_stack() {
+            self.bundles[to.index()].set_cached_stack();
+        }
+        if self.bundles[from.index()].cached_fixed() {
+            self.bundles[to.index()].set_cached_fixed();
         }
 
         true
@@ -2237,6 +2249,28 @@ impl<'a, F: Function> Env<'a, F> {
                     entry.range
                 );
                 self.ranges[entry.index.index()].bundle = bundle;
+            }
+
+            let mut fixed = false;
+            let mut stack = false;
+            for entry in &self.bundles[bundle.index()].ranges {
+                for u in &self.ranges[entry.index.index()].uses {
+                    if let OperandPolicy::FixedReg(_) = u.operand.policy() {
+                        fixed = true;
+                    }
+                    if let OperandPolicy::Stack = u.operand.policy() {
+                        stack = true;
+                    }
+                    if fixed && stack {
+                        break;
+                    }
+                }
+            }
+            if fixed {
+                self.bundles[bundle.index()].set_cached_fixed();
+            }
+            if stack {
+                self.bundles[bundle.index()].set_cached_stack();
             }
 
             // Create a spillslot for this bundle.
