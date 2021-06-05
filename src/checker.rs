@@ -613,10 +613,16 @@ impl<'a, F: Function> Checker<'a, F> {
     /// Perform the dataflow analysis to compute checker state at each BB entry.
     fn analyze(&mut self) {
         let mut queue = VecDeque::new();
-        queue.push_back(self.f.entry_block());
+        let mut queue_set = HashSet::new();
+        for block in 0..self.f.blocks() {
+            let block = Block::new(block);
+            queue.push_back(block);
+            queue_set.insert(block);
+        }
 
         while !queue.is_empty() {
             let block = queue.pop_front().unwrap();
+            queue_set.remove(&block);
             let mut state = self.bb_in.get(&block).cloned().unwrap();
             debug!("analyze: block {} has state {:?}", block.index(), state);
             for inst in self.bb_insts.get(&block).unwrap() {
@@ -637,7 +643,10 @@ impl<'a, F: Function> Checker<'a, F> {
                         new_state
                     );
                     self.bb_in.insert(succ, new_state);
-                    queue.push_back(succ);
+                    if !queue_set.contains(&succ) {
+                        queue.push_back(succ);
+                        queue_set.insert(succ);
+                    }
                 }
             }
         }
