@@ -619,7 +619,7 @@ impl Requirement {
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum AllocRegResult {
     Allocated(Allocation),
-    Conflict(LiveBundleVec),
+    Conflict(LiveBundleVec, ProgPoint),
     ConflictWithFixed(u32, ProgPoint),
     ConflictHighCost,
 }
@@ -2530,6 +2530,8 @@ impl<'a, F: Function> Env<'a, F> {
             from_key,
             self.pregs[reg.index()].allocations.btree
         );
+        let mut first_conflict: Option<ProgPoint> = None;
+
         'ranges: for entry in bundle_ranges {
             log::debug!(" -> range LR {:?}: {:?}", entry.index, entry.range);
             let key = LiveRangeKey::from_range(&entry.range);
@@ -2606,6 +2608,13 @@ impl<'a, F: Function> Env<'a, F> {
                             return AllocRegResult::ConflictHighCost;
                         }
                     }
+
+                    if first_conflict.is_none() {
+                        first_conflict = Some(ProgPoint::from_index(std::cmp::max(
+                            preg_key.from,
+                            key.from,
+                        )));
+                    }
                 } else {
                     log::debug!("   -> conflict with fixed reservation");
                     // range from a direct use of the PReg (due to clobber).
@@ -2618,7 +2627,7 @@ impl<'a, F: Function> Env<'a, F> {
         }
 
         if conflicts.len() > 0 {
-            return AllocRegResult::Conflict(conflicts);
+            return AllocRegResult::Conflict(conflicts, first_conflict.unwrap());
         }
 
         // We can allocate! Add our ranges to the preg's BTree.
@@ -3290,11 +3299,12 @@ impl<'a, F: Function> Env<'a, F> {
                             alloc.as_reg().unwrap();
                         return Ok(());
                     }
-                    AllocRegResult::Conflict(bundles) => {
-                        log::debug!(" -> conflict with bundles {:?}", bundles);
-
-                        let first_conflict_point =
-                            self.bundles[bundles[0].index()].ranges[0].range.from;
+                    AllocRegResult::Conflict(bundles, first_conflict_point) => {
+                        log::debug!(
+                            " -> conflict with bundles {:?}, first conflict at {:?}",
+                            bundles,
+                            first_conflict_point
+                        );
 
                         let conflict_cost = self.maximum_spill_weight_in_bundle_set(&bundles);
 
