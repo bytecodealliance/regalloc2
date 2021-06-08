@@ -883,6 +883,9 @@ impl RedundantMoveEliminator {
         log::debug!("      -> existing_dst_vreg {:?}", existing_dst_vreg);
 
         let elide = match (from_state, to_state) {
+            // can't elide if we don't know the implications for the
+            // checker.
+            _ if src_vreg.is_none() && dst_vreg.is_none() => false,
             (_, RedundantMoveState::Copy(orig_alloc, _)) if orig_alloc == from => true,
             (RedundantMoveState::Copy(new_alloc, _), _) if new_alloc == to => true,
             _ => false,
@@ -930,6 +933,14 @@ impl RedundantMoveEliminator {
         if let Some(ref mut existing_copies) = self.reverse_allocs.get_mut(&alloc) {
             for to_inval in existing_copies.iter() {
                 log::debug!("     -> clear existing copy: {:?}", to_inval);
+                if let Some(val) = self.allocs.get_mut(to_inval) {
+                    match val {
+                        RedundantMoveState::Copy(_, Some(vreg)) => {
+                            *val = RedundantMoveState::Orig(*vreg);
+                        }
+                        _ => *val = RedundantMoveState::None,
+                    }
+                }
                 self.allocs.remove(to_inval);
             }
             existing_copies.clear();
