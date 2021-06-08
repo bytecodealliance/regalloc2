@@ -43,7 +43,7 @@ pub struct PReg(u8, RegClass);
 impl PReg {
     pub const MAX_BITS: usize = 5;
     pub const MAX: usize = (1 << Self::MAX_BITS) - 1;
-    pub const MAX_INDEX: usize = 2 * Self::MAX; // including RegClass bit
+    pub const MAX_INDEX: usize = 1 << (Self::MAX_BITS + 1); // including RegClass bit
 
     /// Create a new PReg. The `hw_enc` range is 6 bits.
     #[inline(always)]
@@ -187,6 +187,19 @@ impl SpillSlot {
     #[inline(always)]
     pub fn plus(self, offset: usize) -> Self {
         SpillSlot::new(self.index() + offset, self.class())
+    }
+
+    #[inline(always)]
+    pub fn invalid() -> Self {
+        SpillSlot(0xffff_ffff)
+    }
+    #[inline(always)]
+    pub fn is_invalid(self) -> bool {
+        self == Self::invalid()
+    }
+    #[inline(always)]
+    pub fn is_valid(self) -> bool {
+        self != Self::invalid()
     }
 }
 

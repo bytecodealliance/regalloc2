@@ -3849,8 +3849,6 @@ impl<'a, F: Function> Env<'a, F> {
                 None
             };
 
-            let mut clean_spillslot: Option<SpillSlot> = None;
-
             // For each range in each vreg, insert moves or
             // half-moves.  We also scan over `blockparam_ins` and
             // `blockparam_outs`, which are sorted by (block, vreg),
@@ -3925,19 +3923,9 @@ impl<'a, F: Function> Env<'a, F> {
                         self.ranges[entry.index.index()].has_flag(LiveRangeFlag::StartsAtDef);
                     debug_assert!(prev_alloc != Allocation::none());
 
-                    // If this is a stack-to-reg move, track that the reg is a clean copy of a spillslot.
-                    if prev_alloc.is_stack() && alloc.is_reg() {
-                        clean_spillslot = Some(prev_alloc.as_stack().unwrap());
-                    }
-                    // If this is a reg-to-stack move, elide it if the spillslot is still clean.
-                    let skip_spill = prev_alloc.is_reg()
-                        && alloc.is_stack()
-                        && clean_spillslot == alloc.as_stack();
-
                     if prev_range.to == range.from
                         && !self.is_start_of_block(range.from)
                         && !first_is_def
-                        && !skip_spill
                     {
                         log::debug!(
                             "prev LR {} abuts LR {} in same block; moving {} -> {} for v{}",
@@ -3955,33 +3943,6 @@ impl<'a, F: Function> Env<'a, F> {
                             alloc,
                             Some(self.vreg_regs[vreg.index()]),
                         );
-                    }
-                }
-
-                // If this range either spans any block boundary, or
-                // has any mods/defs, then the spillslot (if any) that
-                // its value came from is no longer 'clean'.
-                if clean_spillslot.is_some() {
-                    if self.cfginfo.insn_block[range.from.inst().index()]
-                        != self.cfginfo.insn_block[range.to.prev().inst().index()]
-                        || range.from
-                            == self.cfginfo.block_entry
-                                [self.cfginfo.insn_block[range.from.inst().index()].index()]
-                    {
-                        clean_spillslot = None;
-                    } else if self.ranges[entry.index.index()].has_flag(LiveRangeFlag::StartsAtDef)
-                    {
-                        clean_spillslot = None;
-                    } else {
-                        for u in &self.ranges[entry.index.index()].uses {
-                            match u.operand.kind() {
-                                OperandKind::Def | OperandKind::Mod => {
-                                    clean_spillslot = None;
-                                    break;
-                                }
-                                _ => {}
-                            }
-                        }
                     }
                 }
 
@@ -4540,6 +4501,132 @@ impl<'a, F: Function> Env<'a, F> {
         let mut i = 0;
         self.inserted_moves
             .sort_unstable_by_key(|m| (m.pos.to_index(), m.prio));
+
+        // Simple redundant-spill/reload removal: track which
+        // stackslot each preg is a clean copy of, if any, and remove
+        // spills and reloads that are unnecessary.
+        let mut preg_state: [(Block, SpillSlot); PReg::MAX_INDEX] =
+            [(Block::new(0), SpillSlot::invalid()); PReg::MAX_INDEX];
+
+        fn process_move_maybe_elide(
+            preg_state: &mut [(Block, SpillSlot); PReg::MAX_INDEX],
+            block: Block,
+            from: Allocation,
+            to: Allocation,
+        ) -> bool {
+            if from.is_reg() && to.is_reg() {
+                let from = from.as_reg().unwrap().hw_enc();
+                let to = to.as_reg().unwrap().hw_enc();
+                if preg_state[to] == preg_state[from]
+                    && preg_state[from].1.is_valid()
+                    && preg_state[from].0 == block
+                {
+                    true
+                } else {
+                    preg_state[to] = preg_state[from];
+                    false
+                }
+            } else if from.is_stack() && to.is_stack() {
+                let from = from.as_stack().unwrap();
+                let to = to.as_stack().unwrap();
+                update_copies_of_slot(preg_state, to, from);
+                false
+            } else if from.is_reg() && to.is_stack() {
+                // Reg-to-stack spill: determine if value in slot is
+                // still up-to-date, and skip the store if so.
+                let from = from.as_reg().unwrap().hw_enc();
+                let to = to.as_stack().unwrap();
+                if preg_state[from] == (block, to) {
+                    // Redundant spill: elide.
+                    true
+                } else {
+                    // Don't elide; but this register now has a clean
+                    // copy of the slot (because its value is now
+                    // being written to the slot). However, no other
+                    // register that previously had a clean copy of
+                    // this slot does anymore.
+                    update_copies_of_slot(preg_state, to, SpillSlot::invalid());
+                    preg_state[from] = (block, to);
+                    false
+                }
+            } else {
+                // Stack-to-reg reload: determine if reg is already an
+                // up-to-date copy of value in slot, and skip reload
+                // if so. Otherwise, don't skip reload, and update
+                // metadata to indicate reg is now up-to-date.
+                let from = from.as_stack().unwrap();
+                let to = to.as_reg().unwrap().hw_enc();
+                if preg_state[to] == (block, from) {
+                    true
+                } else {
+                    preg_state[to] = (block, from);
+                    false
+                }
+            }
+        }
+        fn update_copies_of_slot(
+            preg_state: &mut [(Block, SpillSlot); PReg::MAX_INDEX],
+            slot: SpillSlot,
+            updated: SpillSlot,
+        ) {
+            for entry in preg_state.iter_mut() {
+                if entry.1 == slot {
+                    entry.1 = updated;
+                }
+            }
+        }
+        fn clear_preg_state<'a, F: Function>(
+            this: &Env<'a, F>,
+            preg_state: &mut [(Block, SpillSlot); PReg::MAX_INDEX],
+            from: ProgPoint,
+            to: ProgPoint,
+        ) {
+            let start_inst = if from.pos() == InstPosition::Before {
+                from.inst()
+            } else {
+                from.inst().next()
+            };
+            let end_inst = if to.pos() == InstPosition::Before {
+                to.inst()
+            } else {
+                to.inst().next()
+            };
+            for inst in start_inst.index()..end_inst.index() {
+                let inst = Inst::new(inst);
+
+                if this.func.is_safepoint(inst) {
+                    for entry in preg_state.iter_mut() {
+                        entry.1 = SpillSlot::invalid();
+                    }
+                    continue;
+                }
+
+                for (i, op) in this.func.inst_operands(inst).iter().enumerate() {
+                    match op.kind() {
+                        OperandKind::Def | OperandKind::Use => {
+                            let alloc = this.get_alloc(inst, i);
+                            if let Some(preg) = alloc.as_reg() {
+                                preg_state[preg.hw_enc()].1 = SpillSlot::invalid();
+                            } else if let Some(stack) = alloc.as_stack() {
+                                update_copies_of_slot(preg_state, stack, SpillSlot::invalid());
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                for reg in this.func.inst_clobbers(inst) {
+                    preg_state[reg.hw_enc()].1 = SpillSlot::invalid();
+                }
+            }
+            if to.pos() == InstPosition::Before && this.func.is_safepoint(to.inst()) {
+                for entry in preg_state.iter_mut() {
+                    entry.1 = SpillSlot::invalid();
+                }
+            }
+        }
+
+        let mut last_pos = ProgPoint::before(Inst::new(0));
+
         while i < self.inserted_moves.len() {
             let start = i;
             let pos = self.inserted_moves[i].pos;
@@ -4551,6 +4638,11 @@ impl<'a, F: Function> Env<'a, F> {
                 i += 1;
             }
             let moves = &self.inserted_moves[start..i];
+
+            let block = self.cfginfo.insn_block[pos.inst().index()];
+
+            clear_preg_state(self, &mut preg_state, last_pos, pos);
+            last_pos = pos;
 
             // Gather all the moves with Int class and Float class
             // separately. These cannot interact, so it is safe to
@@ -4616,6 +4708,13 @@ impl<'a, F: Function> Env<'a, F> {
 
                 for (src, dst, to_vreg) in resolved {
                     log::debug!("  resolved: {} -> {} ({:?})", src, dst, to_vreg);
+                    if process_move_maybe_elide(&mut preg_state, block, src, dst) {
+                        log::debug!("   -> eliding (redundant)!");
+                        if let Some(vreg) = to_vreg {
+                            self.add_edit(pos, prio, Edit::DefAlloc { alloc: dst, vreg });
+                        }
+                        continue;
+                    }
                     self.add_edit(
                         pos,
                         prio,

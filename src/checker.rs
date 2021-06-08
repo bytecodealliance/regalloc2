@@ -394,6 +394,11 @@ impl CheckerState {
                         .insert(*alloc, CheckerValue::Reg(*vreg, reftyped));
                 }
             }
+            &CheckerInst::DefAlloc { alloc, vreg } => {
+                let reftyped = checker.reftyped_vregs.contains(&vreg);
+                self.allocations
+                    .insert(alloc, CheckerValue::Reg(vreg, reftyped));
+            }
             &CheckerInst::Safepoint { ref slots, .. } => {
                 for (alloc, value) in &mut self.allocations {
                     if let CheckerValue::Reg(_, true) = *value {
@@ -474,6 +479,11 @@ pub(crate) enum CheckerInst {
         vregs: Vec<VReg>,
         allocs: Vec<Allocation>,
     },
+
+    /// Define an allocation's contents. Like BlockParams but for one
+    /// allocation. Used sometimes when moves are elided but ownership
+    /// of a value is logically transferred to a new vreg.
+    DefAlloc { alloc: Allocation, vreg: VReg },
 
     /// A safepoint, with the given SpillSlots specified as containing
     /// reftyped values. All other reftyped values become invalid.
@@ -583,17 +593,23 @@ impl<'a, F: Function> Checker<'a, F> {
             }
             debug!("checker: adding edit {:?} at pos {:?}", edit, pos);
             match edit {
-                &Edit::Move { from, to, .. } => {
+                &Edit::Move { from, to, to_vreg } => {
                     self.bb_insts
                         .get_mut(&block)
                         .unwrap()
                         .push(CheckerInst::Move { into: to, from });
+                    if let Some(vreg) = to_vreg {
+                        self.bb_insts
+                            .get_mut(&block)
+                            .unwrap()
+                            .push(CheckerInst::DefAlloc { alloc: to, vreg });
+                    }
                 }
-                &Edit::DefAlloc { .. } => {
-                    unimplemented!(concat!(
-                        "DefAlloc is used only when dealing with pinned vregs, ",
-                        "which are only used by regalloc.rs shim; use checker at that level!"
-                    ));
+                &Edit::DefAlloc { alloc, vreg } => {
+                    self.bb_insts
+                        .get_mut(&block)
+                        .unwrap()
+                        .push(CheckerInst::DefAlloc { alloc, vreg });
                 }
                 &Edit::BlockParams {
                     ref vregs,
@@ -731,6 +747,9 @@ impl<'a, F: Function> Checker<'a, F> {
                             args.push(format!("{}:{}", vreg, alloc));
                         }
                         debug!("    blockparams: {}", args.join(", "));
+                    }
+                    &CheckerInst::DefAlloc { alloc, vreg } => {
+                        debug!("    defalloc: {}:{}", vreg, alloc);
                     }
                     &CheckerInst::Safepoint { ref slots, .. } => {
                         let mut slotargs = vec![];
