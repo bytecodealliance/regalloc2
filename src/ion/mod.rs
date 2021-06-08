@@ -809,6 +809,135 @@ impl<'a> std::iter::Iterator for RegTraversalIter<'a> {
     }
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum RedundantMoveState {
+    Copy(Allocation, Option<VReg>),
+    Orig(VReg),
+    None,
+}
+#[derive(Clone, Debug, Default)]
+struct RedundantMoveEliminator {
+    allocs: HashMap<Allocation, RedundantMoveState>,
+    reverse_allocs: HashMap<Allocation, SmallVec<[Allocation; 4]>>,
+}
+#[derive(Copy, Clone, Debug)]
+struct RedundantMoveAction {
+    elide: bool,
+    def_alloc: Option<(Allocation, VReg)>,
+}
+
+impl RedundantMoveEliminator {
+    fn process_move(
+        &mut self,
+        from: Allocation,
+        to: Allocation,
+        to_vreg: Option<VReg>,
+    ) -> RedundantMoveAction {
+        // Look up the src and dest.
+        let from_state = self
+            .allocs
+            .get(&from)
+            .map(|&p| p)
+            .unwrap_or(RedundantMoveState::None);
+        let to_state = self
+            .allocs
+            .get(&to)
+            .map(|&p| p)
+            .unwrap_or(RedundantMoveState::None);
+
+        log::debug!(
+            "     -> redundant move tracker: from {} to {} to_vreg {:?}",
+            from,
+            to,
+            to_vreg
+        );
+        log::debug!(
+            "       -> from_state {:?} to_state {:?}",
+            from_state,
+            to_state
+        );
+
+        if from == to && to_vreg.is_some() {
+            self.clear_alloc(to);
+            self.allocs
+                .insert(to, RedundantMoveState::Orig(to_vreg.unwrap()));
+            return RedundantMoveAction {
+                elide: true,
+                def_alloc: Some((to, to_vreg.unwrap())),
+            };
+        }
+
+        let src_vreg = match from_state {
+            RedundantMoveState::Copy(_, opt_r) => opt_r,
+            RedundantMoveState::Orig(r) => Some(r),
+            _ => None,
+        };
+        log::debug!("      -> src_vreg {:?}", src_vreg);
+        let dst_vreg = to_vreg.or(src_vreg);
+        log::debug!("      -> dst_vreg {:?}", dst_vreg);
+        let existing_dst_vreg = match to_state {
+            RedundantMoveState::Copy(_, opt_r) => opt_r,
+            RedundantMoveState::Orig(r) => Some(r),
+            _ => None,
+        };
+        log::debug!("      -> existing_dst_vreg {:?}", existing_dst_vreg);
+
+        let elide = match (from_state, to_state) {
+            (_, RedundantMoveState::Copy(orig_alloc, _)) if orig_alloc == from => true,
+            (RedundantMoveState::Copy(new_alloc, _), _) if new_alloc == to => true,
+            _ => false,
+        };
+        log::debug!("      -> elide {}", elide);
+
+        let def_alloc = if dst_vreg != existing_dst_vreg && dst_vreg.is_some() && elide {
+            Some((to, dst_vreg.unwrap()))
+        } else {
+            None
+        };
+        log::debug!("      -> def_alloc {:?}", def_alloc);
+
+        // Invalidate all existing copies of `to` if `to` actually changed value.
+        if !elide {
+            self.clear_alloc(to);
+        }
+
+        // Set up forward and reverse mapping. Don't track stack-to-stack copies.
+        if from.is_reg() || to.is_reg() {
+            self.allocs
+                .insert(to, RedundantMoveState::Copy(from, dst_vreg));
+            log::debug!(
+                "     -> create mapping {} -> {:?}",
+                to,
+                RedundantMoveState::Copy(from, dst_vreg)
+            );
+            self.reverse_allocs
+                .entry(from)
+                .or_insert_with(|| smallvec![])
+                .push(to);
+        }
+
+        RedundantMoveAction { elide, def_alloc }
+    }
+
+    fn clear(&mut self) {
+        log::debug!("   redundant move eliminator cleared");
+        self.allocs.clear();
+        self.reverse_allocs.clear();
+    }
+
+    fn clear_alloc(&mut self, alloc: Allocation) {
+        log::debug!("   redundant move eliminator: clear {:?}", alloc);
+        if let Some(ref mut existing_copies) = self.reverse_allocs.get_mut(&alloc) {
+            for to_inval in existing_copies.iter() {
+                log::debug!("     -> clear existing copy: {:?}", to_inval);
+                self.allocs.remove(to_inval);
+            }
+            existing_copies.clear();
+        }
+        self.allocs.remove(&alloc);
+    }
+}
+
 impl<'a, F: Function> Env<'a, F> {
     pub(crate) fn new(
         func: &'a F,
@@ -4502,85 +4631,30 @@ impl<'a, F: Function> Env<'a, F> {
         self.inserted_moves
             .sort_unstable_by_key(|m| (m.pos.to_index(), m.prio));
 
-        // Simple redundant-spill/reload removal: track which
-        // stackslot each preg is a clean copy of, if any, and remove
-        // spills and reloads that are unnecessary.
-        let mut preg_state: [(Block, SpillSlot); PReg::MAX_INDEX] =
-            [(Block::new(0), SpillSlot::invalid()); PReg::MAX_INDEX];
+        // Redundant-move elimination state tracker.
+        let mut redundant_moves = RedundantMoveEliminator::default();
 
-        fn process_move_maybe_elide(
-            preg_state: &mut [(Block, SpillSlot); PReg::MAX_INDEX],
-            block: Block,
-            from: Allocation,
-            to: Allocation,
-        ) -> bool {
-            if from.is_reg() && to.is_reg() {
-                let from = from.as_reg().unwrap().hw_enc();
-                let to = to.as_reg().unwrap().hw_enc();
-                if preg_state[to] == preg_state[from]
-                    && preg_state[from].1.is_valid()
-                    && preg_state[from].0 == block
-                {
-                    true
-                } else {
-                    preg_state[to] = preg_state[from];
-                    false
-                }
-            } else if from.is_stack() && to.is_stack() {
-                let from = from.as_stack().unwrap();
-                let to = to.as_stack().unwrap();
-                update_copies_of_slot(preg_state, to, from);
-                false
-            } else if from.is_reg() && to.is_stack() {
-                // Reg-to-stack spill: determine if value in slot is
-                // still up-to-date, and skip the store if so.
-                let from = from.as_reg().unwrap().hw_enc();
-                let to = to.as_stack().unwrap();
-                if preg_state[from] == (block, to) {
-                    // Redundant spill: elide.
-                    true
-                } else {
-                    // Don't elide; but this register now has a clean
-                    // copy of the slot (because its value is now
-                    // being written to the slot). However, no other
-                    // register that previously had a clean copy of
-                    // this slot does anymore.
-                    update_copies_of_slot(preg_state, to, SpillSlot::invalid());
-                    preg_state[from] = (block, to);
-                    false
-                }
-            } else {
-                // Stack-to-reg reload: determine if reg is already an
-                // up-to-date copy of value in slot, and skip reload
-                // if so. Otherwise, don't skip reload, and update
-                // metadata to indicate reg is now up-to-date.
-                let from = from.as_stack().unwrap();
-                let to = to.as_reg().unwrap().hw_enc();
-                if preg_state[to] == (block, from) {
-                    true
-                } else {
-                    preg_state[to] = (block, from);
-                    false
-                }
-            }
-        }
-        fn update_copies_of_slot(
-            preg_state: &mut [(Block, SpillSlot); PReg::MAX_INDEX],
-            slot: SpillSlot,
-            updated: SpillSlot,
-        ) {
-            for entry in preg_state.iter_mut() {
-                if entry.1 == slot {
-                    entry.1 = updated;
-                }
-            }
-        }
-        fn clear_preg_state<'a, F: Function>(
+        fn redundant_move_process_side_effects<'a, F: Function>(
             this: &Env<'a, F>,
-            preg_state: &mut [(Block, SpillSlot); PReg::MAX_INDEX],
+            redundant_moves: &mut RedundantMoveEliminator,
             from: ProgPoint,
             to: ProgPoint,
         ) {
+            // If any safepoints in range, clear and return.
+            // Also, if we cross a block boundary, clear and return.
+            if this.cfginfo.insn_block[from.inst().index()]
+                != this.cfginfo.insn_block[to.inst().index()]
+            {
+                redundant_moves.clear();
+                return;
+            }
+            for inst in from.inst().index()..=to.inst().index() {
+                if this.func.is_safepoint(Inst::new(inst)) {
+                    redundant_moves.clear();
+                    return;
+                }
+            }
+
             let start_inst = if from.pos() == InstPosition::Before {
                 from.inst()
             } else {
@@ -4593,34 +4667,17 @@ impl<'a, F: Function> Env<'a, F> {
             };
             for inst in start_inst.index()..end_inst.index() {
                 let inst = Inst::new(inst);
-
-                if this.func.is_safepoint(inst) {
-                    for entry in preg_state.iter_mut() {
-                        entry.1 = SpillSlot::invalid();
-                    }
-                    continue;
-                }
-
                 for (i, op) in this.func.inst_operands(inst).iter().enumerate() {
                     match op.kind() {
                         OperandKind::Def | OperandKind::Use => {
                             let alloc = this.get_alloc(inst, i);
-                            if let Some(preg) = alloc.as_reg() {
-                                preg_state[preg.hw_enc()].1 = SpillSlot::invalid();
-                            } else if let Some(stack) = alloc.as_stack() {
-                                update_copies_of_slot(preg_state, stack, SpillSlot::invalid());
-                            }
+                            redundant_moves.clear_alloc(alloc);
                         }
                         _ => {}
                     }
                 }
                 for reg in this.func.inst_clobbers(inst) {
-                    preg_state[reg.hw_enc()].1 = SpillSlot::invalid();
-                }
-            }
-            if to.pos() == InstPosition::Before && this.func.is_safepoint(to.inst()) {
-                for entry in preg_state.iter_mut() {
-                    entry.1 = SpillSlot::invalid();
+                    redundant_moves.clear_alloc(Allocation::reg(*reg));
                 }
             }
         }
@@ -4639,9 +4696,7 @@ impl<'a, F: Function> Env<'a, F> {
             }
             let moves = &self.inserted_moves[start..i];
 
-            let block = self.cfginfo.insn_block[pos.inst().index()];
-
-            clear_preg_state(self, &mut preg_state, last_pos, pos);
+            redundant_move_process_side_effects(self, &mut redundant_moves, last_pos, pos);
             last_pos = pos;
 
             // Gather all the moves with Int class and Float class
@@ -4676,15 +4731,11 @@ impl<'a, F: Function> Env<'a, F> {
             }
 
             for m in &self_moves {
-                self.add_edit(
-                    pos,
-                    prio,
-                    Edit::Move {
-                        from: m.from_alloc,
-                        to: m.to_alloc,
-                        to_vreg: m.to_vreg,
-                    },
-                );
+                let action = redundant_moves.process_move(m.from_alloc, m.to_alloc, m.to_vreg);
+                assert!(action.elide);
+                if let Some((alloc, vreg)) = action.def_alloc {
+                    self.add_edit(pos, prio, Edit::DefAlloc { alloc, vreg });
+                }
             }
 
             for &(regclass, moves) in
@@ -4708,22 +4759,28 @@ impl<'a, F: Function> Env<'a, F> {
 
                 for (src, dst, to_vreg) in resolved {
                     log::debug!("  resolved: {} -> {} ({:?})", src, dst, to_vreg);
-                    if process_move_maybe_elide(&mut preg_state, block, src, dst) {
-                        log::debug!("   -> eliding (redundant)!");
-                        if let Some(vreg) = to_vreg {
-                            self.add_edit(pos, prio, Edit::DefAlloc { alloc: dst, vreg });
-                        }
-                        continue;
+                    let action = redundant_moves.process_move(src, dst, to_vreg);
+                    if !action.elide {
+                        self.add_edit(
+                            pos,
+                            prio,
+                            Edit::Move {
+                                from: src,
+                                to: dst,
+                                to_vreg,
+                            },
+                        );
+                    } else {
+                        log::debug!("    -> redundant move elided");
                     }
-                    self.add_edit(
-                        pos,
-                        prio,
-                        Edit::Move {
-                            from: src,
-                            to: dst,
-                            to_vreg,
-                        },
-                    );
+                    if let Some((alloc, vreg)) = action.def_alloc {
+                        log::debug!(
+                            "     -> converted to DefAlloc: alloc {} vreg {}",
+                            alloc,
+                            vreg
+                        );
+                        self.add_edit(pos, prio, Edit::DefAlloc { alloc, vreg });
+                    }
                 }
             }
         }
