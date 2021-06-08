@@ -1548,21 +1548,19 @@ impl<'a, F: Function> Env<'a, F> {
                                     // after, it is known as the preg
                                     // again. This is used by the
                                     // checker.
-                                    self.add_edit(
+                                    self.insert_move(
                                         ProgPoint::before(inst),
                                         InsertMovePrio::MultiFixedReg,
-                                        Edit::DefAlloc {
-                                            alloc: Allocation::reg(preg),
-                                            vreg: dst.vreg(),
-                                        },
+                                        Allocation::reg(preg),
+                                        Allocation::reg(preg),
+                                        Some(dst.vreg()),
                                     );
-                                    self.add_edit(
+                                    self.insert_move(
                                         ProgPoint::after(inst),
                                         InsertMovePrio::Regular,
-                                        Edit::DefAlloc {
-                                            alloc: Allocation::reg(preg),
-                                            vreg: src.vreg(),
-                                        },
+                                        Allocation::reg(preg),
+                                        Allocation::reg(preg),
+                                        Some(src.vreg()),
                                     );
                                 } else {
                                     if inst > self.cfginfo.block_entry[block.index()].inst() {
@@ -1586,13 +1584,12 @@ impl<'a, F: Function> Env<'a, F> {
                                     // preg is now known as that vreg,
                                     // not the preg. This is used by
                                     // the checker.
-                                    self.add_edit(
+                                    self.insert_move(
                                         ProgPoint::after(inst),
                                         InsertMovePrio::Regular,
-                                        Edit::DefAlloc {
-                                            alloc: Allocation::reg(preg),
-                                            vreg: dst.vreg(),
-                                        },
+                                        Allocation::reg(preg),
+                                        Allocation::reg(preg),
+                                        Some(dst.vreg()),
                                     );
                                 }
                             } else {
@@ -1616,13 +1613,12 @@ impl<'a, F: Function> Env<'a, F> {
                                     // given preg is now known as that
                                     // preg, not the vreg. This is
                                     // used by the checker.
-                                    self.add_edit(
+                                    self.insert_move(
                                         ProgPoint::after(inst),
                                         InsertMovePrio::Regular,
-                                        Edit::DefAlloc {
-                                            alloc: Allocation::reg(preg),
-                                            vreg: dst.vreg(),
-                                        },
+                                        Allocation::reg(preg),
+                                        Allocation::reg(preg),
+                                        Some(dst.vreg()),
                                     );
                                 }
                                 // Otherwise, if dead, no need to create
