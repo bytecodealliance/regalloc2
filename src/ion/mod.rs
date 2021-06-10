@@ -818,8 +818,8 @@ enum RedundantMoveState {
 }
 #[derive(Clone, Debug, Default)]
 struct RedundantMoveEliminator {
-    allocs: HashMap<Allocation, RedundantMoveState>,
-    reverse_allocs: HashMap<Allocation, SmallVec<[Allocation; 4]>>,
+    allocs: FxHashMap<Allocation, RedundantMoveState>,
+    reverse_allocs: FxHashMap<Allocation, SmallVec<[Allocation; 4]>>,
 }
 #[derive(Copy, Clone, Debug)]
 struct RedundantMoveAction {
@@ -2634,6 +2634,7 @@ impl<'a, F: Function> Env<'a, F> {
     ) -> AllocRegResult {
         log::debug!("try_to_allocate_bundle_to_reg: {:?} -> {:?}", bundle, reg);
         let mut conflicts = smallvec![];
+        let mut conflict_set = FxHashSet::default();
         let mut max_conflict_weight = 0;
         // Traverse the BTreeMap in order by requesting the whole
         // range spanned by the bundle and iterating over that
@@ -2729,8 +2730,9 @@ impl<'a, F: Function> Env<'a, F> {
                     // conflicts list.
                     let conflict_bundle = self.ranges[preg_range.index()].bundle;
                     log::debug!("   -> conflict bundle {:?}", conflict_bundle);
-                    if !conflicts.iter().any(|b| *b == conflict_bundle) {
+                    if !conflict_set.contains(&conflict_bundle) {
                         conflicts.push(conflict_bundle);
+                        conflict_set.insert(conflict_bundle);
                         max_conflict_weight = std::cmp::max(
                             max_conflict_weight,
                             self.bundles[conflict_bundle.index()].cached_spill_weight(),
