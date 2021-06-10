@@ -884,9 +884,6 @@ impl RedundantMoveEliminator {
         log::debug!("      -> existing_dst_vreg {:?}", existing_dst_vreg);
 
         let elide = match (from_state, to_state) {
-            // can't elide if we don't know the implications for the
-            // checker.
-            _ if src_vreg.is_none() && dst_vreg.is_none() => false,
             (_, RedundantMoveState::Copy(orig_alloc, _)) if orig_alloc == from => true,
             (RedundantMoveState::Copy(new_alloc, _), _) if new_alloc == to => true,
             _ => false,
@@ -4078,7 +4075,7 @@ impl<'a, F: Function> Env<'a, F> {
                             InsertMovePrio::Regular,
                             prev_alloc,
                             alloc,
-                            None,
+                            Some(self.vreg_regs[vreg.index()]),
                         );
                     }
                 }
@@ -4478,7 +4475,13 @@ impl<'a, F: Function> Env<'a, F> {
                 if last == Some(dest.alloc) {
                     continue;
                 }
-                self.insert_move(insertion_point, prio, src.alloc, dest.alloc, None);
+                self.insert_move(
+                    insertion_point,
+                    prio,
+                    src.alloc,
+                    dest.alloc,
+                    Some(self.vreg_regs[dest.to_vreg().index()]),
+                );
                 last = Some(dest.alloc);
             }
         }
@@ -4582,12 +4585,13 @@ impl<'a, F: Function> Env<'a, F> {
                                 );
                             }
                         }
+                        let input_operand = self.func.inst_operands(inst)[input_idx];
                         self.insert_move(
                             ProgPoint::before(inst),
                             InsertMovePrio::ReusedInput,
                             input_alloc,
                             output_alloc,
-                            None,
+                            Some(input_operand.vreg()),
                         );
                         self.set_alloc(inst, input_idx, output_alloc);
                     }
