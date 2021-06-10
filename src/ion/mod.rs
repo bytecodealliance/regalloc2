@@ -644,6 +644,7 @@ enum InsertMovePrio {
     InEdgeMoves,
     BlockParam,
     Regular,
+    PostRegular,
     MultiFixedReg,
     ReusedInput,
     OutEdgeMoves,
@@ -892,7 +893,7 @@ impl RedundantMoveEliminator {
         };
         log::debug!("      -> elide {}", elide);
 
-        let def_alloc = if dst_vreg != existing_dst_vreg && dst_vreg.is_some() && elide {
+        let def_alloc = if dst_vreg != existing_dst_vreg && dst_vreg.is_some() {
             Some((to, dst_vreg.unwrap()))
         } else {
             None
@@ -1560,15 +1561,15 @@ impl<'a, F: Function> Env<'a, F> {
                                     // again. This is used by the
                                     // checker.
                                     self.insert_move(
-                                        ProgPoint::before(inst),
-                                        InsertMovePrio::MultiFixedReg,
+                                        ProgPoint::after(inst),
+                                        InsertMovePrio::Regular,
                                         Allocation::reg(preg),
                                         Allocation::reg(preg),
                                         Some(dst.vreg()),
                                     );
                                     self.insert_move(
-                                        ProgPoint::after(inst),
-                                        InsertMovePrio::Regular,
+                                        ProgPoint::before(inst.next()),
+                                        InsertMovePrio::MultiFixedReg,
                                         Allocation::reg(preg),
                                         Allocation::reg(preg),
                                         Some(src.vreg()),
@@ -1597,7 +1598,7 @@ impl<'a, F: Function> Env<'a, F> {
                                     // the checker.
                                     self.insert_move(
                                         ProgPoint::after(inst),
-                                        InsertMovePrio::Regular,
+                                        InsertMovePrio::BlockParam,
                                         Allocation::reg(preg),
                                         Allocation::reg(preg),
                                         Some(dst.vreg()),
@@ -1625,8 +1626,8 @@ impl<'a, F: Function> Env<'a, F> {
                                     // preg, not the vreg. This is
                                     // used by the checker.
                                     self.insert_move(
-                                        ProgPoint::after(inst),
-                                        InsertMovePrio::Regular,
+                                        ProgPoint::before(inst.next()),
+                                        InsertMovePrio::PostRegular,
                                         Allocation::reg(preg),
                                         Allocation::reg(preg),
                                         Some(dst.vreg()),
@@ -4077,7 +4078,7 @@ impl<'a, F: Function> Env<'a, F> {
                             InsertMovePrio::Regular,
                             prev_alloc,
                             alloc,
-                            Some(self.vreg_regs[vreg.index()]),
+                            None,
                         );
                     }
                 }
@@ -4737,14 +4738,6 @@ impl<'a, F: Function> Env<'a, F> {
                 }
             }
 
-            for m in &self_moves {
-                let action = redundant_moves.process_move(m.from_alloc, m.to_alloc, m.to_vreg);
-                assert!(action.elide);
-                if let Some((alloc, vreg)) = action.def_alloc {
-                    self.add_edit(pos, prio, Edit::DefAlloc { alloc, vreg });
-                }
-            }
-
             for &(regclass, moves) in
                 &[(RegClass::Int, &int_moves), (RegClass::Float, &float_moves)]
             {
@@ -4788,6 +4781,23 @@ impl<'a, F: Function> Env<'a, F> {
                         );
                         self.add_edit(pos, prio, Edit::DefAlloc { alloc, vreg });
                     }
+                }
+            }
+
+            for m in &self_moves {
+                log::debug!(
+                    "self move at pos {:?} prio {:?}: {} -> {} to_vreg {:?}",
+                    pos,
+                    prio,
+                    m.from_alloc,
+                    m.to_alloc,
+                    m.to_vreg
+                );
+                let action = redundant_moves.process_move(m.from_alloc, m.to_alloc, m.to_vreg);
+                assert!(action.elide);
+                if let Some((alloc, vreg)) = action.def_alloc {
+                    log::debug!(" -> DefAlloc: alloc {} vreg {}", alloc, vreg);
+                    self.add_edit(pos, prio, Edit::DefAlloc { alloc, vreg });
                 }
             }
         }
