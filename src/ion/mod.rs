@@ -2823,6 +2823,8 @@ impl<'a, F: Function> Env<'a, F> {
         let first_range = bundledata.ranges[0].index;
         let first_range_data = &self.ranges[first_range.index()];
 
+        self.bundles[bundle.index()].prio = self.compute_bundle_prio(bundle);
+
         if first_range_data.vreg.is_invalid() {
             log::debug!("  -> no vreg; minimal and fixed");
             minimal = true;
@@ -3264,17 +3266,15 @@ impl<'a, F: Function> Env<'a, F> {
 
         if self.bundles[bundle.index()].ranges.len() > 0 {
             self.recompute_bundle_properties(bundle);
-            let prio = self.compute_bundle_prio(bundle);
-            self.bundles[bundle.index()].prio = prio;
+            let prio = self.bundles[bundle.index()].prio;
             self.allocation_queue
                 .insert(bundle, prio as usize, reg_hint);
         }
         if self.bundles[new_bundle.index()].ranges.len() > 0 {
             self.recompute_bundle_properties(new_bundle);
-            let new_prio = self.compute_bundle_prio(new_bundle);
-            self.bundles[new_bundle.index()].prio = new_prio;
+            let prio = self.bundles[new_bundle.index()].prio;
             self.allocation_queue
-                .insert(new_bundle, new_prio as usize, reg_hint);
+                .insert(new_bundle, prio as usize, reg_hint);
         }
     }
 
