@@ -22,16 +22,6 @@
 /*
    Performance and code-quality ideas:
 
-   - Avoid requiring two scratch regs:
-     - Require machine impl to be able to (i) push a reg, (ii) pop a
-       reg; then generate a balanced pair of push/pop, using the stack
-       slot as the scratch.
-       - on Cranelift side, take care to generate virtual-SP
-         adjustments!
-     - For a spillslot->spillslot move, push a fixed reg (say the
-       first preferred one), reload into it, spill out of it, and then
-       pop old val
-
    - Better hinting: collect N regs associated with one spillslot?
      Collect pointers to other "connected" spillslots (via moves) to
      allow move to be elided if possible?
