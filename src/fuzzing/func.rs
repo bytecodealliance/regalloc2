@@ -146,7 +146,7 @@ impl Function for Func {
         self.num_vregs
     }
 
-    fn spillslot_size(&self, regclass: RegClass, _: VReg) -> usize {
+    fn spillslot_size(&self, regclass: RegClass) -> usize {
         match regclass {
             RegClass::Int => 1,
             RegClass::Float => 2,

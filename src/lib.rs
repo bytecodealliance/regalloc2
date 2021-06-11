@@ -797,16 +797,9 @@ pub trait Function {
     /// 128-bit vector value will require two slots.  The regalloc will always
     /// align on this size.
     ///
-    /// This passes the associated virtual register to the client as well,
-    /// because the way in which we spill a real register may depend on the
-    /// value that we are using it for. E.g., if a machine has V128 registers
-    /// but we also use them for F32 and F64 values, we may use a different
-    /// store-slot size and smaller-operand store/load instructions for an F64
-    /// than for a true V128.
-    ///
     /// (This trait method's design and doc text derives from
     /// regalloc.rs' trait of the same name.)
-    fn spillslot_size(&self, regclass: RegClass, for_vreg: VReg) -> usize;
+    fn spillslot_size(&self, regclass: RegClass) -> usize;
 
     /// When providing a spillslot number for a multi-slot spillslot,
     /// do we provide the first or the last? This is usually related

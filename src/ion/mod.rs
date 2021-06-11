@@ -351,6 +351,8 @@ struct Env<'a, F: Function> {
     spillslots: Vec<SpillSlotData>,
     slots_by_size: Vec<SpillSlotList>,
 
+    extra_spillslot: Vec<Option<Allocation>>,
+
     // Program moves: these are moves in the provided program that we
     // handle with our internal machinery, in order to avoid the
     // overhead of ordinary operand processing. We expect the client
@@ -399,7 +401,6 @@ struct Env<'a, F: Function> {
 struct SpillSlotData {
     ranges: LiveRangeSet,
     class: RegClass,
-    size: u32,
     alloc: Allocation,
     next_spillslot: SpillSlotIndex,
 }
@@ -968,6 +969,8 @@ impl<'a, F: Function> Env<'a, F> {
             spilled_bundles: vec![],
             spillslots: vec![],
             slots_by_size: vec![],
+
+            extra_spillslot: vec![None, None],
 
             prog_move_srcs: Vec::with_capacity(n / 2),
             prog_move_dsts: Vec::with_capacity(n / 2),
@@ -2402,7 +2405,7 @@ impl<'a, F: Function> Env<'a, F> {
             // Create a spillslot for this bundle.
             let ssidx = SpillSetIndex::new(self.spillsets.len());
             let reg = self.vreg_regs[vreg.index()];
-            let size = self.func.spillslot_size(reg.class(), reg) as u8;
+            let size = self.func.spillslot_size(reg.class()) as u8;
             self.spillsets.push(SpillSet {
                 vregs: smallvec![vreg],
                 slot: SpillSlotIndex::invalid(),
@@ -3791,7 +3794,6 @@ impl<'a, F: Function> Env<'a, F> {
                 self.spillslots.push(SpillSlotData {
                     ranges: LiveRangeSet::new(),
                     next_spillslot: next,
-                    size: size as u32,
                     alloc: Allocation::none(),
                     class: self.spillsets[spillset.index()].class,
                 });
@@ -3805,22 +3807,27 @@ impl<'a, F: Function> Env<'a, F> {
         }
 
         // Assign actual slot indices to spillslots.
-        let mut offset: u32 = 0;
-        for data in &mut self.spillslots {
-            // Align up to `size`.
-            debug_assert!(data.size.is_power_of_two());
-            offset = (offset + data.size - 1) & !(data.size - 1);
-            let slot = if self.func.multi_spillslot_named_by_last_slot() {
-                offset + data.size - 1
-            } else {
-                offset
-            };
-            data.alloc = Allocation::stack(SpillSlot::new(slot as usize, data.class));
-            offset += data.size;
+        for i in 0..self.spillslots.len() {
+            self.spillslots[i].alloc = self.allocate_spillslot(self.spillslots[i].class);
         }
-        self.num_spillslots = offset;
 
         log::debug!("spillslot allocator done");
+    }
+
+    fn allocate_spillslot(&mut self, class: RegClass) -> Allocation {
+        let size = self.func.spillslot_size(class) as u32;
+        let mut offset = self.num_spillslots;
+        // Align up to `size`.
+        debug_assert!(size.is_power_of_two());
+        offset = (offset + size - 1) & !(size - 1);
+        let slot = if self.func.multi_spillslot_named_by_last_slot() {
+            offset + size - 1
+        } else {
+            offset
+        };
+        offset += size;
+        self.num_spillslots = offset;
+        Allocation::stack(SpillSlot::new(slot as usize, class))
     }
 
     fn is_start_of_block(&self, pos: ProgPoint) -> bool {
@@ -4740,9 +4747,8 @@ impl<'a, F: Function> Env<'a, F> {
                 // All moves in `moves` semantically happen in
                 // parallel. Let's resolve these to a sequence of moves
                 // that can be done one at a time.
-                let mut parallel_moves = ParallelMoves::new(Allocation::reg(
-                    self.env.scratch_by_class[regclass as u8 as usize],
-                ));
+                let scratch = self.env.scratch_by_class[regclass as u8 as usize];
+                let mut parallel_moves = ParallelMoves::new(Allocation::reg(scratch));
                 log::debug!("parallel moves at pos {:?} prio {:?}", pos, prio);
                 for m in moves {
                     if (m.from_alloc != m.to_alloc) || m.to_vreg.is_some() {
@@ -4753,19 +4759,106 @@ impl<'a, F: Function> Env<'a, F> {
 
                 let resolved = parallel_moves.resolve();
 
+                // If (i) the scratch register is used, and (ii) a
+                // stack-to-stack move exists, then we need to
+                // allocate an additional scratch spillslot to which
+                // we can temporarily spill the scratch reg when we
+                // lower the stack-to-stack move to a
+                // stack-to-scratch-to-stack sequence.
+                let scratch_used = resolved.iter().any(|&(src, dst, _)| {
+                    src == Allocation::reg(scratch) || dst == Allocation::reg(scratch)
+                });
+                let stack_stack_move = resolved
+                    .iter()
+                    .any(|&(src, dst, _)| src.is_stack() && dst.is_stack());
+                let extra_slot = if scratch_used && stack_stack_move {
+                    if self.extra_spillslot[regclass as u8 as usize].is_none() {
+                        let slot = self.allocate_spillslot(regclass);
+                        self.extra_spillslot[regclass as u8 as usize] = Some(slot);
+                    }
+                    self.extra_spillslot[regclass as u8 as usize]
+                } else {
+                    None
+                };
+
+                let mut scratch_used_yet = false;
                 for (src, dst, to_vreg) in resolved {
                     log::debug!("  resolved: {} -> {} ({:?})", src, dst, to_vreg);
                     let action = redundant_moves.process_move(src, dst, to_vreg);
                     if !action.elide {
-                        self.add_edit(
-                            pos,
-                            prio,
-                            Edit::Move {
-                                from: src,
-                                to: dst,
-                                to_vreg,
-                            },
-                        );
+                        if dst == Allocation::reg(scratch) {
+                            scratch_used_yet = true;
+                        }
+                        if src.is_stack() && dst.is_stack() {
+                            if !scratch_used_yet {
+                                self.add_edit(
+                                    pos,
+                                    prio,
+                                    Edit::Move {
+                                        from: src,
+                                        to: Allocation::reg(scratch),
+                                        to_vreg,
+                                    },
+                                );
+                                self.add_edit(
+                                    pos,
+                                    prio,
+                                    Edit::Move {
+                                        from: Allocation::reg(scratch),
+                                        to: dst,
+                                        to_vreg,
+                                    },
+                                );
+                            } else {
+                                assert!(extra_slot.is_some());
+                                self.add_edit(
+                                    pos,
+                                    prio,
+                                    Edit::Move {
+                                        from: Allocation::reg(scratch),
+                                        to: extra_slot.unwrap(),
+                                        to_vreg: None,
+                                    },
+                                );
+                                self.add_edit(
+                                    pos,
+                                    prio,
+                                    Edit::Move {
+                                        from: src,
+                                        to: Allocation::reg(scratch),
+                                        to_vreg,
+                                    },
+                                );
+                                self.add_edit(
+                                    pos,
+                                    prio,
+                                    Edit::Move {
+                                        from: Allocation::reg(scratch),
+                                        to: dst,
+                                        to_vreg,
+                                    },
+                                );
+                                self.add_edit(
+                                    pos,
+                                    prio,
+                                    Edit::Move {
+                                        from: extra_slot.unwrap(),
+                                        to: Allocation::reg(scratch),
+                                        to_vreg: None,
+                                    },
+                                );
+                            }
+                        } else {
+                            self.add_edit(
+                                pos,
+                                prio,
+                                Edit::Move {
+                                    from: src,
+                                    to: dst,
+                                    to_vreg,
+                                },
+                            );
+                        }
                     } else {
                         log::debug!("    -> redundant move elided");
                     }
