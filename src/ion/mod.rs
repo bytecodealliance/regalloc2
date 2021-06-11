@@ -22,20 +22,6 @@
 /*
    Performance and code-quality ideas:
 
-   - Reduced spilling when spillslot is still "clean":
-     - Track 'dirty' status of reg and elide spill when not dirty.
-       - This is slightly tricky: fixpoint problem, across edges.
-       - We can simplify by assuming spillslot is dirty if value came
-         in on BB edge; only clean if we reload in same block we spill
-         in.
-       - As a slightly better variation on this, track dirty during
-         scan in a single range while resolving moves; in-edge makes
-         dirty.
-
-      - or: track "at most one" def-points: at a join, new def point
-        if at least one of the in-edges is a def point. Do this during
-        liveness by tracking ...?
-
    - Avoid requiring two scratch regs:
      - Require machine impl to be able to (i) push a reg, (ii) pop a
        reg; then generate a balanced pair of push/pop, using the stack
@@ -45,6 +31,10 @@
      - For a spillslot->spillslot move, push a fixed reg (say the
        first preferred one), reload into it, spill out of it, and then
        pop old val
+
+   - Better hinting: collect N regs associated with one spillslot?
+     Collect pointers to other "connected" spillslots (via moves) to
+     allow move to be elided if possible?
 
    - Profile allocations
  */
