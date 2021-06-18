@@ -1,5 +1,5 @@
 /*
- * The fellowing license applies to this file, which derives many
+ * The following license applies to this file, which derives many
  * details (register and constraint definitions, for example) from the
  * files `BacktrackingAllocator.h`, `BacktrackingAllocator.cpp`,
  * `LIR.h`, and possibly definitions in other related files in
