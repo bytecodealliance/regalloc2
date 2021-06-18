@@ -1,0 +1,15 @@
+# Features
+
+- Rematerialization
+- Stack-location constraints that place operands in user-defined stack
+  locations (distinct from SpillSlots) (e.g., stack args)
+
+# Performance
+
+- Investigate better register hinting
+- Investigate more principled cost functions and split locations,
+  especially around loop nests
+
+# Cleanup
+
+- Remove support for non-SSA code once no longer necessary
