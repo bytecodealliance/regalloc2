@@ -42,7 +42,7 @@ the client ("swap"), but we have not pursued this.
 
 The allocator operates on an input program that is in a standard CFG
 representation: the function body is a list of basic blocks, and each
-block has a list of insructions and zero or more successors. The
+block has a list of instructions and zero or more successors. The
 allocator also requires the client to provide predecessors for each
 block, and these must be consistent with the successor
 lists.
