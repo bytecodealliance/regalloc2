@@ -568,16 +568,16 @@ For each instruction, we process its effects on the scan state:
   preg.
 
 - If not a move:
-  - for each program point [after, before]:
-    - for each operand at this point(\*):
-      - if a def or mod:
-        - if not currently live, this is a dead def; create an empty
-          LR.
-      - if a def:
-        - set the start of the LR for this vreg to this point.
-        - set as dead.
-      - if a use:
-        - create LR if not live, with start at beginning of block.
+  - for each program point [after, before], for each operand at
+    this point(\*):
+    - if a def or mod:
+      - if not currently live, this is a dead def; create an empty
+        LR.
+    - if a def:
+      - set the start of the LR for this vreg to this point.
+      - set as dead.
+    - if a use:
+      - create LR if not live, with start at beginning of block.
       
 - Else, if a move:
   - simple case (no pinned vregs): 
