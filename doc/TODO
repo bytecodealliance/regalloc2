@@ -1,5 +1,14 @@
 # Features
 
+- Large-input support (> 1M vregs, > 1M blocks)
+  - Two operand impls: u64-based and u32-based. Always accept
+    u64-based `Operand` publicly (do not expose this in interface).
+  - Trait to generalize over them and support both internally
+    (parameterize the whole allocator impl)
+  - On data-structure init, choose one or the other based on max vreg
+    index
+  - Update halfmove keys: u128 rather than u64
+
 - Rematerialization
 - Stack-location constraints that place operands in user-defined stack
   locations (distinct from SpillSlots) (e.g., stack args)
