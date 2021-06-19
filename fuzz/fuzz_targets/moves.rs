@@ -7,7 +7,7 @@
 use libfuzzer_sys::arbitrary::{Arbitrary, Result, Unstructured};
 use libfuzzer_sys::fuzz_target;
 
-use regalloc2::moves::ParallelMoves;
+use regalloc2::fuzzing::moves::ParallelMoves;
 use regalloc2::{Allocation, PReg, RegClass};
 use std::collections::HashSet;
 

@@ -12,16 +12,16 @@
 
 #![allow(dead_code)]
 
-pub mod bitvec;
-pub mod cfg;
-pub mod domtree;
-pub mod ion;
-pub mod moves;
-pub mod postorder;
-pub mod ssa;
+pub(crate) mod bitvec;
+pub(crate) mod cfg;
+pub(crate) mod domtree;
+pub(crate) mod ion;
+pub(crate) mod moves;
+pub(crate) mod postorder;
+pub(crate) mod ssa;
 
 #[macro_use]
-pub mod index;
+mod index;
 pub use index::{Block, Inst, InstRange, InstRangeIter};
 
 pub mod checker;

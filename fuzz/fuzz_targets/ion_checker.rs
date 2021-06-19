@@ -7,7 +7,7 @@
 use libfuzzer_sys::arbitrary::{Arbitrary, Result, Unstructured};
 use libfuzzer_sys::fuzz_target;
 
-use regalloc2::checker::Checker;
+use regalloc2::fuzzing::checker::Checker;
 use regalloc2::fuzzing::func::{Func, Options};
 
 #[derive(Clone, Debug)]
@@ -40,7 +40,7 @@ fuzz_target!(|testcase: TestCase| {
     let _ = env_logger::try_init();
     log::debug!("func:\n{:?}", func);
     let env = regalloc2::fuzzing::func::machine_env();
-    let out = regalloc2::ion::run(&func, &env, true).expect("regalloc did not succeed");
+    let out = regalloc2::fuzzing::ion::run(&func, &env, true).expect("regalloc did not succeed");
 
     let mut checker = Checker::new(&func);
     checker.prepare(&out);

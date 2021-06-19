@@ -8,7 +8,10 @@ use libfuzzer_sys::arbitrary::{Arbitrary, Result, Unstructured};
 use libfuzzer_sys::fuzz_target;
 use std::collections::HashSet;
 
-use regalloc2::{domtree, postorder, Block};
+use regalloc2::{
+    fuzzing::{domtree, postorder},
+    Block,
+};
 
 #[derive(Clone, Debug)]
 struct CFG {
@@ -96,7 +99,10 @@ fn check_idom_violations(idom: &[Block], path: &Path) {
         // and false for every other block.
         for domblock in 0..idom.len() {
             let domblock = Block::new(domblock);
-            assert_eq!(domset.contains(&domblock), domtree::dominates(idom, domblock, *block));
+            assert_eq!(
+                domset.contains(&domblock),
+                domtree::dominates(idom, domblock, *block)
+            );
         }
         visited.insert(*block);
     }
@@ -112,10 +118,7 @@ impl Arbitrary for TestCase {
     fn arbitrary(u: &mut Unstructured) -> Result<TestCase> {
         let cfg = CFG::arbitrary(u)?;
         let path = Path::choose_from_cfg(&cfg, u)?;
-        Ok(TestCase {
-            cfg,
-            path,
-        })
+        Ok(TestCase { cfg, path })
     }
 }
 
