@@ -892,7 +892,8 @@ impl ProgPoint {
 #[derive(Clone, Debug)]
 pub enum Edit {
     /// Move one allocation to another. Each allocation may be a
-    /// register or a stack slot (spillslot).
+    /// register or a stack slot (spillslot). However, stack-to-stack
+    /// moves will never be generated.
     ///
     /// `to_vreg`, if defined, is useful as metadata: it indicates
     /// that the moved value is a def of a new vreg.
