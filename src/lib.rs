@@ -12,7 +12,7 @@
 
 #![allow(dead_code)]
 
-pub(crate) mod bitvec;
+pub mod bitvec;
 pub(crate) mod cfg;
 pub(crate) mod domtree;
 pub(crate) mod ion;
