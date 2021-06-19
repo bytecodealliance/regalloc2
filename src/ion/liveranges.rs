@@ -272,6 +272,9 @@ impl<'a, F: Function> Env<'a, F> {
 
                 for pos in &[OperandPos::After, OperandPos::Before] {
                     for op in self.func.inst_operands(inst) {
+                        if op.as_fixed().is_some() {
+                            continue;
+                        }
                         if op.pos() == *pos {
                             let was_live = live.get(op.vreg().vreg());
                             log::debug!("op {:?} was_live = {}", op, was_live);
@@ -867,6 +870,15 @@ impl<'a, F: Function> Env<'a, F> {
                             pos,
                             operand
                         );
+
+                        // If this is a "fixed non-allocatable
+                        // register" operand, set the alloc
+                        // immediately and then ignore the operand
+                        // hereafter.
+                        if let Some(preg) = operand.as_fixed() {
+                            self.set_alloc(inst, i, Allocation::reg(preg));
+                            continue;
+                        }
 
                         match operand.kind() {
                             OperandKind::Def | OperandKind::Mod => {

@@ -144,6 +144,15 @@ impl VReg {
     pub fn invalid() -> Self {
         VReg::new(Self::MAX, RegClass::Int)
     }
+
+    #[inline(always)]
+    pub fn is_valid(self) -> bool {
+        self != Self::invalid()
+    }
+    #[inline(always)]
+    pub fn is_invalid(self) -> bool {
+        self == Self::invalid()
+    }
 }
 
 impl std::fmt::Debug for VReg {
@@ -328,6 +337,19 @@ impl Operand {
         )
     }
 
+    /// Create an Operand that always results in an assignment to the
+    /// given fixed `preg`, *without* tracking liveranges in that
+    /// `preg`. Must only be used for non-allocatable registers.
+    #[inline(always)]
+    pub fn fixed(preg: PReg) -> Self {
+        Operand::new(
+            VReg::invalid(),
+            OperandPolicy::FixedReg(preg),
+            OperandKind::Use,   // doesn't matter
+            OperandPos::Before, // doesn't matter
+        )
+    }
+
     #[inline(always)]
     pub fn vreg(self) -> VReg {
         let vreg_idx = ((self.bits as usize) & VReg::MAX) as usize;
@@ -376,6 +398,14 @@ impl Operand {
             3 => OperandPolicy::FixedReg(PReg::new(preg_field, self.class())),
             4 => OperandPolicy::Reuse(preg_field),
             _ => unreachable!(),
+        }
+    }
+
+    #[inline(always)]
+    pub fn as_fixed(self) -> Option<PReg> {
+        match (self.vreg().is_invalid(), self.policy()) {
+            (true, OperandPolicy::FixedReg(preg)) => Some(preg),
+            _ => None,
         }
     }
 
