@@ -1,7 +1,7 @@
 //! Debugging output.
 
 use super::Env;
-use crate::{Block, Function, ProgPoint};
+use crate::{Function, ProgPoint, Block};
 
 impl<'a, F: Function> Env<'a, F> {
     pub fn dump_state(&self) {
