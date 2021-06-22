@@ -955,9 +955,11 @@ impl<'a, F: Function> Env<'a, F> {
                 }
 
                 if self.func.is_safepoint(inst) {
+                    log::debug!("inst{} is safepoint", inst.index());
                     self.safepoints.push(inst);
                     for vreg in live.iter() {
                         if let Some(safepoints) = self.safepoints_per_vreg.get_mut(&vreg) {
+                            log::debug!("vreg v{} live at safepoint inst{}", vreg, inst.index());
                             safepoints.insert(inst);
                         }
                     }

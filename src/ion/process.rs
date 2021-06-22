@@ -363,6 +363,29 @@ impl<'a, F: Function> Env<'a, F> {
         }
     }
 
+    pub fn find_conflict_split_point(&self, bundle: LiveBundleIndex) -> ProgPoint {
+        // Find the first use whose requirement causes the merge up to
+        // this point to go to Conflict.
+        let mut req = Requirement::Unknown;
+        for entry in &self.bundles[bundle.index()].ranges {
+            for u in &self.ranges[entry.index.index()].uses {
+                let this_req = Requirement::from_operand(u.operand);
+                req = req.merge(this_req);
+                if req == Requirement::Conflict {
+                    return u.pos;
+                }
+            }
+        }
+
+        // Fallback: start of bundle.
+        self.bundles[bundle.index()]
+            .ranges
+            .first()
+            .unwrap()
+            .range
+            .from
+    }
+
     pub fn get_or_create_spill_bundle(
         &mut self,
         bundle: LiveBundleIndex,
@@ -734,15 +757,17 @@ impl<'a, F: Function> Env<'a, F> {
         log::debug!("process_bundle: bundle {:?} hint {:?}", bundle, hint_reg,);
 
         if let Requirement::Conflict = req {
-            // We have to split right away.
+            // We have to split right away. We'll find a point to
+            // split that would allow at least the first half of the
+            // split to be conflict-free.
             assert!(
                 !self.minimal_bundle(bundle),
                 "Minimal bundle with conflict!"
             );
-            let bundle_start = self.bundles[bundle.index()].ranges[0].range.from;
+            let split_point = self.find_conflict_split_point(bundle);
             self.split_and_requeue_bundle(
                 bundle,
-                /* split_at_point = */ bundle_start,
+                /* split_at_point = */ split_point,
                 reg_hint,
             );
             return Ok(());
