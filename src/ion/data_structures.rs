@@ -337,6 +337,8 @@ pub struct Env<'a, F: Function> {
     pub num_spillslots: u32,
     pub safepoint_slots: Vec<(ProgPoint, SpillSlot)>,
 
+    pub allocated_bundle_count: usize,
+
     pub stats: Stats,
 
     // For debug output only: a list of textual annotations at every

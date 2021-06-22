@@ -68,6 +68,7 @@ impl<'a, F: Function> Env<'a, F> {
             spilled_bundles: vec![],
             spillslots: vec![],
             slots_by_size: vec![],
+            allocated_bundle_count: 0,
 
             extra_spillslot: vec![None, None],
 

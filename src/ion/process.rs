@@ -36,15 +36,9 @@ pub enum AllocRegResult {
 
 impl<'a, F: Function> Env<'a, F> {
     pub fn process_bundles(&mut self) -> Result<(), RegAllocError> {
-        let mut count = 0;
         while let Some((bundle, reg_hint)) = self.allocation_queue.pop() {
             self.stats.process_bundle_count += 1;
             self.process_bundle(bundle, reg_hint)?;
-            count += 1;
-            if count > self.func.insts() * 50 {
-                self.dump_state();
-                panic!("Infinite loop!");
-            }
         }
         self.stats.final_liverange_count = self.ranges.len();
         self.stats.final_bundle_count = self.bundles.len();
