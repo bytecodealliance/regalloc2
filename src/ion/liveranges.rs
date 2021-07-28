@@ -32,7 +32,9 @@ use std::convert::TryFrom;
 pub fn spill_weight_from_policy(policy: OperandPolicy, loop_depth: usize, is_def: bool) -> u32 {
     // A bonus of 1000 for one loop level, 4000 for two loop levels,
     // 16000 for three loop levels, etc. Avoids exponentiation.
-    let hot_bonus = std::cmp::min(16000, 1000 * (1 << (2 * loop_depth)));
+    // Bound `loop_depth` at 2 so that `hot_bonus` is at most 16000.
+    let loop_depth = std::cmp::min(2, loop_depth);
+    let hot_bonus = 1000 * (1 << (2 * loop_depth));
     let def_bonus = if is_def { 2000 } else { 0 };
     let policy_bonus = match policy {
         OperandPolicy::Any => 1000,
