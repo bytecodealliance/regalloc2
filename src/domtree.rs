@@ -98,6 +98,10 @@ pub fn calculate<'a, PredFn: Fn(Block) -> &'a [Block]>(
         }
     }
 
+    // Now set the start node's dominator-tree parent to "invalid";
+    // this allows the loop in `dominates` to terminate.
+    idom[start.index()] = Block::invalid();
+
     idom
 }
 
@@ -107,10 +111,6 @@ pub fn dominates(idom: &[Block], a: Block, mut b: Block) -> bool {
             return true;
         }
         if b.is_invalid() {
-            return false;
-        }
-        let parent = idom[b.index()];
-        if b == parent {
             return false;
         }
         b = idom[b.index()];

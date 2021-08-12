@@ -85,16 +85,13 @@ fn check_idom_violations(idom: &[Block], path: &Path) {
         let mut parent = idom[block.index()];
         let mut domset = HashSet::new();
         domset.insert(*block);
-        loop {
-            assert!(parent.is_valid());
+        while parent.is_valid() {
             assert!(visited.contains(&parent));
             domset.insert(parent);
             let next = idom[parent.index()];
-            if next == parent {
-                break;
-            }
             parent = next;
         }
+
         // Check that `dominates()` returns true for every block in domset,
         // and false for every other block.
         for domblock in 0..idom.len() {
