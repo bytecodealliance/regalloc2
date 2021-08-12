@@ -217,7 +217,7 @@ impl std::fmt::Display for SpillSlot {
 ///
 /// An Operand may be a use or def (this corresponds to `LUse` and
 /// `LAllocation` in Ion).
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Operand {
     /// Bit-pack into 32 bits.
     ///
