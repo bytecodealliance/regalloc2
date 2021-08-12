@@ -210,34 +210,34 @@ impl std::fmt::Display for SpillSlot {
 }
 
 /// An `Operand` encodes everything about a mention of a register in
-/// an instruction: virtual register number, and any constraint/policy
-/// that applies to the register at this program point.
+/// an instruction: virtual register number, and any constraint that
+/// applies to the register at this program point.
 ///
 /// An Operand may be a use or def (this corresponds to `LUse` and
 /// `LAllocation` in Ion).
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Operand {
-    /// Bit-pack into 32 bits. Note that `policy` overlaps with `kind`
+    /// Bit-pack into 32 bits. Note that `constraint` overlaps with `kind`
     /// in `Allocation` and we use mutually disjoint tag-value ranges
     /// so that clients, if they wish, can track just one `u32` per
     /// register slot and edit it in-place after allocation.
     ///
-    /// policy:3 kind:2 pos:1 class:1 preg:5 vreg:20
+    /// constraint:3 kind:2 pos:1 class:1 preg:5 vreg:20
     bits: u32,
 }
 
 impl Operand {
     #[inline(always)]
-    pub fn new(vreg: VReg, policy: OperandPolicy, kind: OperandKind, pos: OperandPos) -> Self {
-        let (preg_field, policy_field): (u32, u32) = match policy {
-            OperandPolicy::Any => (0, 0),
-            OperandPolicy::Reg => (0, 1),
-            OperandPolicy::Stack => (0, 2),
-            OperandPolicy::FixedReg(preg) => {
+    pub fn new(vreg: VReg, constraint: OperandConstraint, kind: OperandKind, pos: OperandPos) -> Self {
+        let (preg_field, constraint_field): (u32, u32) = match constraint {
+            OperandConstraint::Any => (0, 0),
+            OperandConstraint::Reg => (0, 1),
+            OperandConstraint::Stack => (0, 2),
+            OperandConstraint::FixedReg(preg) => {
                 assert_eq!(preg.class(), vreg.class());
                 (preg.hw_enc() as u32, 3)
             }
-            OperandPolicy::Reuse(which) => {
+            OperandConstraint::Reuse(which) => {
                 assert!(which <= PReg::MAX);
                 (which as u32, 4)
             }
@@ -251,7 +251,7 @@ impl Operand {
                 | (class_field << 25)
                 | (pos_field << 26)
                 | (kind_field << 27)
-                | (policy_field << 29),
+                | (constraint_field << 29),
         }
     }
 
@@ -259,7 +259,7 @@ impl Operand {
     pub fn reg_use(vreg: VReg) -> Self {
         Operand::new(
             vreg,
-            OperandPolicy::Reg,
+            OperandConstraint::Reg,
             OperandKind::Use,
             OperandPos::Before,
         )
@@ -268,7 +268,7 @@ impl Operand {
     pub fn reg_use_at_end(vreg: VReg) -> Self {
         Operand::new(
             vreg,
-            OperandPolicy::Reg,
+            OperandConstraint::Reg,
             OperandKind::Use,
             OperandPos::After,
         )
@@ -277,7 +277,7 @@ impl Operand {
     pub fn reg_def(vreg: VReg) -> Self {
         Operand::new(
             vreg,
-            OperandPolicy::Reg,
+            OperandConstraint::Reg,
             OperandKind::Def,
             OperandPos::After,
         )
@@ -286,7 +286,7 @@ impl Operand {
     pub fn reg_def_at_start(vreg: VReg) -> Self {
         Operand::new(
             vreg,
-            OperandPolicy::Reg,
+            OperandConstraint::Reg,
             OperandKind::Def,
             OperandPos::Before,
         )
@@ -295,7 +295,7 @@ impl Operand {
     pub fn reg_temp(vreg: VReg) -> Self {
         Operand::new(
             vreg,
-            OperandPolicy::Reg,
+            OperandConstraint::Reg,
             OperandKind::Def,
             OperandPos::Before,
         )
@@ -304,7 +304,7 @@ impl Operand {
     pub fn reg_reuse_def(vreg: VReg, idx: usize) -> Self {
         Operand::new(
             vreg,
-            OperandPolicy::Reuse(idx),
+            OperandConstraint::Reuse(idx),
             OperandKind::Def,
             OperandPos::After,
         )
@@ -313,7 +313,7 @@ impl Operand {
     pub fn reg_fixed_use(vreg: VReg, preg: PReg) -> Self {
         Operand::new(
             vreg,
-            OperandPolicy::FixedReg(preg),
+            OperandConstraint::FixedReg(preg),
             OperandKind::Use,
             OperandPos::Before,
         )
@@ -322,7 +322,7 @@ impl Operand {
     pub fn reg_fixed_def(vreg: VReg, preg: PReg) -> Self {
         Operand::new(
             vreg,
-            OperandPolicy::FixedReg(preg),
+            OperandConstraint::FixedReg(preg),
             OperandKind::Def,
             OperandPos::After,
         )
@@ -366,15 +366,15 @@ impl Operand {
     }
 
     #[inline(always)]
-    pub fn policy(self) -> OperandPolicy {
-        let policy_field = (self.bits >> 29) & 7;
+    pub fn constraint(self) -> OperandConstraint {
+        let constraint_field = (self.bits >> 29) & 7;
         let preg_field = ((self.bits >> 20) as usize) & PReg::MAX;
-        match policy_field {
-            0 => OperandPolicy::Any,
-            1 => OperandPolicy::Reg,
-            2 => OperandPolicy::Stack,
-            3 => OperandPolicy::FixedReg(PReg::new(preg_field, self.class())),
-            4 => OperandPolicy::Reuse(preg_field),
+        match constraint_field {
+            0 => OperandConstraint::Any,
+            1 => OperandConstraint::Reg,
+            2 => OperandConstraint::Stack,
+            3 => OperandConstraint::FixedReg(PReg::new(preg_field, self.class())),
+            4 => OperandConstraint::Reuse(preg_field),
             _ => unreachable!(),
         }
     }
@@ -409,13 +409,13 @@ impl std::fmt::Display for Operand {
                 RegClass::Int => "i",
                 RegClass::Float => "f",
             },
-            self.policy()
+            self.constraint()
         )
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum OperandPolicy {
+pub enum OperandConstraint {
     /// Any location is fine (register or stack slot).
     Any,
     /// Operand must be in a register. Register is read-only for Uses.
@@ -428,7 +428,7 @@ pub enum OperandPolicy {
     Reuse(usize),
 }
 
-impl std::fmt::Display for OperandPolicy {
+impl std::fmt::Display for OperandConstraint {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             Self::Any => write!(f, "any"),
@@ -458,7 +458,7 @@ pub enum OperandPos {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Allocation {
     /// Bit-pack in 32 bits. Note that `kind` overlaps with the
-    /// `policy` field in `Operand`, and we are careful to use
+    /// `constraint` field in `Operand`, and we are careful to use
     /// disjoint ranges of values in this field for each type. We also
     /// leave the def-or-use bit (`kind` for `Operand`) unused here so
     /// that we can use it below in `OperandOrAllocation` to record
@@ -570,7 +570,7 @@ impl Allocation {
 }
 
 // N.B.: These values must be *disjoint* with the values used to
-// encode `OperandPolicy`, because they share a 3-bit field.
+// encode `OperandConstraint`, because they share a 3-bit field.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
 pub enum AllocationKind {

@@ -14,12 +14,12 @@
 //! Main allocation loop that processes bundles.
 
 use super::{
-    spill_weight_from_policy, CodeRange, Env, LiveBundleIndex, LiveBundleVec, LiveRangeFlag,
+    spill_weight_from_constraint, CodeRange, Env, LiveBundleIndex, LiveBundleVec, LiveRangeFlag,
     LiveRangeIndex, LiveRangeKey, LiveRangeList, LiveRangeListEntry, PRegIndex, RegTraversalIter,
     Requirement, UseList,
 };
 use crate::{
-    Allocation, Function, Inst, InstPosition, OperandKind, OperandPolicy, PReg, ProgPoint,
+    Allocation, Function, Inst, InstPosition, OperandKind, OperandConstraint, PReg, ProgPoint,
     RegAllocError,
 };
 use fxhash::FxHashSet;
@@ -273,11 +273,11 @@ impl<'a, F: Function> Env<'a, F> {
         } else {
             for u in &first_range_data.uses {
                 log::debug!("  -> use: {:?}", u);
-                if let OperandPolicy::FixedReg(_) = u.operand.policy() {
+                if let OperandConstraint::FixedReg(_) = u.operand.constraint() {
                     log::debug!("  -> fixed use at {:?}: {:?}", u.pos, u.operand);
                     fixed = true;
                 }
-                if let OperandPolicy::Stack = u.operand.policy() {
+                if let OperandConstraint::Stack = u.operand.constraint() {
                     log::debug!("  -> stack use at {:?}: {:?}", u.pos, u.operand);
                     stack = true;
                 }
@@ -886,8 +886,8 @@ impl<'a, F: Function> Env<'a, F> {
 
                         let loop_depth = self.cfginfo.approx_loop_depth
                             [self.cfginfo.insn_block[first_conflict_point.inst().index()].index()];
-                        let move_cost = spill_weight_from_policy(
-                            OperandPolicy::Reg,
+                        let move_cost = spill_weight_from_constraint(
+                            OperandConstraint::Reg,
                             loop_depth as usize,
                             /* is_def = */ true,
                         );
@@ -905,8 +905,8 @@ impl<'a, F: Function> Env<'a, F> {
 
                         let loop_depth = self.cfginfo.approx_loop_depth
                             [self.cfginfo.insn_block[point.inst().index()].index()];
-                        let move_cost = spill_weight_from_policy(
-                            OperandPolicy::Reg,
+                        let move_cost = spill_weight_from_constraint(
+                            OperandConstraint::Reg,
                             loop_depth as usize,
                             /* is_def = */ true,
                         );

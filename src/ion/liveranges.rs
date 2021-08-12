@@ -20,7 +20,7 @@ use super::{
 };
 use crate::bitvec::BitVec;
 use crate::{
-    Allocation, Block, Function, Inst, InstPosition, Operand, OperandKind, OperandPolicy,
+    Allocation, Block, Function, Inst, InstPosition, Operand, OperandKind, OperandConstraint,
     OperandPos, PReg, ProgPoint, RegAllocError, VReg,
 };
 use fxhash::FxHashSet;
@@ -29,19 +29,19 @@ use std::collections::{HashSet, VecDeque};
 use std::convert::TryFrom;
 
 #[inline(always)]
-pub fn spill_weight_from_policy(policy: OperandPolicy, loop_depth: usize, is_def: bool) -> u32 {
+pub fn spill_weight_from_constraint(constraint: OperandConstraint, loop_depth: usize, is_def: bool) -> u32 {
     // A bonus of 1000 for one loop level, 4000 for two loop levels,
     // 16000 for three loop levels, etc. Avoids exponentiation.
     // Bound `loop_depth` at 2 so that `hot_bonus` is at most 16000.
     let loop_depth = std::cmp::min(2, loop_depth);
     let hot_bonus = 1000 * (1 << (2 * loop_depth));
     let def_bonus = if is_def { 2000 } else { 0 };
-    let policy_bonus = match policy {
-        OperandPolicy::Any => 1000,
-        OperandPolicy::Reg | OperandPolicy::FixedReg(_) => 2000,
+    let constraint_bonus = match constraint {
+        OperandConstraint::Any => 1000,
+        OperandConstraint::Reg | OperandConstraint::FixedReg(_) => 2000,
         _ => 0,
     };
-    hot_bonus + def_bonus + policy_bonus
+    hot_bonus + def_bonus + constraint_bonus
 }
 
 impl<'a, F: Function> Env<'a, F> {
@@ -184,11 +184,11 @@ impl<'a, F: Function> Env<'a, F> {
 
     pub fn insert_use_into_liverange(&mut self, into: LiveRangeIndex, mut u: Use) {
         let operand = u.operand;
-        let policy = operand.policy();
+        let constraint = operand.constraint();
         let block = self.cfginfo.insn_block[u.pos.inst().index()];
         let loop_depth = self.cfginfo.approx_loop_depth[block.index()] as usize;
         let weight =
-            spill_weight_from_policy(policy, loop_depth, operand.kind() != OperandKind::Use);
+            spill_weight_from_constraint(constraint, loop_depth, operand.kind() != OperandKind::Use);
         u.weight = u16::try_from(weight).expect("weight too large for u16 field");
 
         log::debug!(
@@ -415,7 +415,7 @@ impl<'a, F: Function> Env<'a, F> {
                 // proper interference wrt other inputs.
                 let mut reused_input = None;
                 for op in self.func.inst_operands(inst) {
-                    if let OperandPolicy::Reuse(i) = op.policy() {
+                    if let OperandConstraint::Reuse(i) = op.constraint() {
                         reused_input = Some(i);
                         break;
                     }
@@ -465,12 +465,12 @@ impl<'a, F: Function> Env<'a, F> {
                                 );
                             }
 
-                            let src_preg = match src.policy() {
-                                OperandPolicy::FixedReg(r) => r,
+                            let src_preg = match src.constraint() {
+                                OperandConstraint::FixedReg(r) => r,
                                 _ => unreachable!(),
                             };
-                            let dst_preg = match dst.policy() {
-                                OperandPolicy::FixedReg(r) => r,
+                            let dst_preg = match dst.constraint() {
+                                OperandConstraint::FixedReg(r) => r,
                                 _ => unreachable!(),
                             };
                             self.insert_move(
@@ -484,7 +484,7 @@ impl<'a, F: Function> Env<'a, F> {
                         // If exactly one of source and dest (but not
                         // both) is a pinned-vreg, convert this into a
                         // ghost use on the other vreg with a FixedReg
-                        // policy.
+                        // constraint.
                         else if self.vregs[src.vreg().vreg()].is_pinned
                             || self.vregs[dst.vreg().vreg()].is_pinned
                         {
@@ -513,20 +513,20 @@ impl<'a, F: Function> Env<'a, F> {
                                         ProgPoint::after(inst),
                                     )
                                 };
-                            let policy = OperandPolicy::FixedReg(preg);
-                            let operand = Operand::new(vreg, policy, kind, pos);
+                            let constraint = OperandConstraint::FixedReg(preg);
+                            let operand = Operand::new(vreg, constraint, kind, pos);
 
                             log::debug!(
                                 concat!(
                                     " -> preg {:?} vreg {:?} kind {:?} ",
-                                    "pos {:?} progpoint {:?} policy {:?} operand {:?}"
+                                    "pos {:?} progpoint {:?} constraint {:?} operand {:?}"
                                 ),
                                 preg,
                                 vreg,
                                 kind,
                                 pos,
                                 progpoint,
-                                policy,
+                                constraint,
                                 operand
                             );
 
@@ -701,23 +701,23 @@ impl<'a, F: Function> Env<'a, F> {
                             // positions of After and Before respectively
                             // (see note below), and to have Any
                             // constraints if they were originally Reg.
-                            let src_policy = match src.policy() {
-                                OperandPolicy::Reg => OperandPolicy::Any,
+                            let src_constraint = match src.constraint() {
+                                OperandConstraint::Reg => OperandConstraint::Any,
                                 x => x,
                             };
-                            let dst_policy = match dst.policy() {
-                                OperandPolicy::Reg => OperandPolicy::Any,
+                            let dst_constraint = match dst.constraint() {
+                                OperandConstraint::Reg => OperandConstraint::Any,
                                 x => x,
                             };
                             let src = Operand::new(
                                 src.vreg(),
-                                src_policy,
+                                src_constraint,
                                 OperandKind::Use,
                                 OperandPos::After,
                             );
                             let dst = Operand::new(
                                 dst.vreg(),
-                                dst_policy,
+                                dst_constraint,
                                 OperandKind::Def,
                                 OperandPos::Before,
                             );
@@ -728,9 +728,9 @@ impl<'a, F: Function> Env<'a, F> {
                                     format!(
                                         " prog-move v{} ({:?}) -> v{} ({:?})",
                                         src.vreg().vreg(),
-                                        src_policy,
+                                        src_constraint,
                                         dst.vreg().vreg(),
-                                        dst_policy,
+                                        dst_constraint,
                                     ),
                                 );
                             }
@@ -1049,7 +1049,7 @@ impl<'a, F: Function> Env<'a, F> {
                     let pos = ProgPoint::before(self.safepoints[safepoint_idx]);
                     let operand = Operand::new(
                         self.vreg_regs[vreg.index()],
-                        OperandPolicy::Stack,
+                        OperandConstraint::Stack,
                         OperandKind::Use,
                         OperandPos::Before,
                     );
@@ -1116,7 +1116,7 @@ impl<'a, F: Function> Env<'a, F> {
                     }
                     last_point = Some(pos);
 
-                    if let OperandPolicy::FixedReg(preg) = op.policy() {
+                    if let OperandConstraint::FixedReg(preg) = op.constraint() {
                         let vreg_idx = VRegIndex::new(op.vreg().vreg());
                         let preg_idx = PRegIndex::new(preg.index());
                         log::debug!(
@@ -1129,11 +1129,11 @@ impl<'a, F: Function> Env<'a, F> {
                         {
                             let orig_preg = first_preg[idx];
                             if orig_preg != preg_idx {
-                                log::debug!(" -> duplicate; switching to policy Reg");
+                                log::debug!(" -> duplicate; switching to constraint Reg");
                                 fixups.push((pos, orig_preg, preg_idx, slot));
                                 *op = Operand::new(
                                     op.vreg(),
-                                    OperandPolicy::Reg,
+                                    OperandConstraint::Reg,
                                     op.kind(),
                                     op.pos(),
                                 );

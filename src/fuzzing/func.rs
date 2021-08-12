@@ -5,7 +5,7 @@
 
 use crate::{
     domtree, postorder, Allocation, Block, Function, Inst, InstRange, MachineEnv, Operand,
-    OperandKind, OperandPolicy, OperandPos, PReg, RegClass, VReg,
+    OperandKind, OperandConstraint, OperandPos, PReg, RegClass, VReg,
 };
 
 use arbitrary::Result as ArbitraryResult;
@@ -230,9 +230,9 @@ impl FuncBuilder {
     }
 }
 
-impl Arbitrary for OperandPolicy {
+impl Arbitrary for OperandConstraint {
     fn arbitrary(u: &mut Unstructured) -> ArbitraryResult<Self> {
-        Ok(*u.choose(&[OperandPolicy::Any, OperandPolicy::Reg])?)
+        Ok(*u.choose(&[OperandConstraint::Any, OperandConstraint::Reg])?)
     }
 }
 
@@ -401,13 +401,13 @@ impl Func {
             let mut avail = block_params[block].clone();
             let mut remaining_nonlocal_uses = u.int_in_range(0..=3)?;
             while let Some(vreg) = vregs_by_block_to_be_defined[block].pop() {
-                let def_policy = OperandPolicy::arbitrary(u)?;
+                let def_constraint = OperandConstraint::arbitrary(u)?;
                 let def_pos = if bool::arbitrary(u)? {
                     OperandPos::Before
                 } else {
                     OperandPos::After
                 };
-                let mut operands = vec![Operand::new(vreg, def_policy, OperandKind::Def, def_pos)];
+                let mut operands = vec![Operand::new(vreg, def_constraint, OperandKind::Def, def_pos)];
                 let mut allocations = vec![Allocation::none()];
                 for _ in 0..u.int_in_range(0..=3)? {
                     let vreg = if avail.len() > 0
@@ -433,10 +433,10 @@ impl Func {
                     } else {
                         break;
                     };
-                    let use_policy = OperandPolicy::arbitrary(u)?;
+                    let use_constraint = OperandConstraint::arbitrary(u)?;
                     operands.push(Operand::new(
                         vreg,
-                        use_policy,
+                        use_constraint,
                         OperandKind::Use,
                         OperandPos::Before,
                     ));
@@ -450,14 +450,14 @@ impl Func {
                     let reused = u.int_in_range(1..=(operands.len() - 1))?;
                     operands[0] = Operand::new(
                         op.vreg(),
-                        OperandPolicy::Reuse(reused),
+                        OperandConstraint::Reuse(reused),
                         op.kind(),
                         OperandPos::After,
                     );
                     // Make sure reused input is a Reg.
                     let op = operands[reused];
                     operands[reused] =
-                        Operand::new(op.vreg(), OperandPolicy::Reg, op.kind(), OperandPos::Before);
+                        Operand::new(op.vreg(), OperandConstraint::Reg, op.kind(), OperandPos::Before);
                 } else if opts.fixed_regs && bool::arbitrary(u)? {
                     let mut fixed = vec![];
                     for _ in 0..u.int_in_range(0..=operands.len() - 1)? {
@@ -471,7 +471,7 @@ impl Func {
                         let op = operands[i];
                         operands[i] = Operand::new(
                             op.vreg(),
-                            OperandPolicy::FixedReg(fixed_reg),
+                            OperandConstraint::FixedReg(fixed_reg),
                             op.kind(),
                             op.pos(),
                         );

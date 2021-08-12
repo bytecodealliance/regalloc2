@@ -20,7 +20,7 @@ use super::{
 
 use crate::moves::ParallelMoves;
 use crate::{
-    Allocation, Block, Edit, Function, Inst, InstPosition, OperandKind, OperandPolicy, OperandPos,
+    Allocation, Block, Edit, Function, Inst, InstPosition, OperandKind, OperandConstraint, OperandPos,
     ProgPoint, RegClass, VReg,
 };
 use log::debug;
@@ -489,7 +489,7 @@ impl<'a, F: Function> Env<'a, F> {
                     if slot != SLOT_NONE {
                         self.set_alloc(inst, slot as usize, alloc);
                     }
-                    if let OperandPolicy::Reuse(_) = operand.policy() {
+                    if let OperandConstraint::Reuse(_) = operand.constraint() {
                         reuse_input_insts.push(inst);
                     }
                 }
@@ -755,7 +755,7 @@ impl<'a, F: Function> Env<'a, F> {
             let mut input_reused: SmallVec<[usize; 4]> = smallvec![];
             for output_idx in 0..self.func.inst_operands(inst).len() {
                 let operand = self.func.inst_operands(inst)[output_idx];
-                if let OperandPolicy::Reuse(input_idx) = operand.policy() {
+                if let OperandConstraint::Reuse(input_idx) = operand.constraint() {
                     debug_assert!(!input_reused.contains(&input_idx));
                     debug_assert_eq!(operand.pos(), OperandPos::After);
                     input_reused.push(input_idx);

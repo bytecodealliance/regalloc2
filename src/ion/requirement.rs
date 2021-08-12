@@ -1,7 +1,7 @@
 //! Requirements computation.
 
 use super::{Env, LiveBundleIndex};
-use crate::{Function, Operand, OperandPolicy, PReg, RegClass};
+use crate::{Function, Operand, OperandConstraint, PReg, RegClass};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Requirement {
@@ -64,10 +64,10 @@ impl Requirement {
     }
     #[inline(always)]
     pub fn from_operand(op: Operand) -> Requirement {
-        match op.policy() {
-            OperandPolicy::FixedReg(preg) => Requirement::Fixed(preg),
-            OperandPolicy::Reg | OperandPolicy::Reuse(_) => Requirement::Register(op.class()),
-            OperandPolicy::Stack => Requirement::Stack(op.class()),
+        match op.constraint() {
+            OperandConstraint::FixedReg(preg) => Requirement::Fixed(preg),
+            OperandConstraint::Reg | OperandConstraint::Reuse(_) => Requirement::Register(op.class()),
+            OperandConstraint::Stack => Requirement::Stack(op.class()),
             _ => Requirement::Any(op.class()),
         }
     }

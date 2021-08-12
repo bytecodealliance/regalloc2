@@ -17,7 +17,7 @@
 //! conceptually generates a symbolic value "Vn" when storing to (or
 //! modifying) a virtual register.
 //!
-//! Operand policies (fixed register, register, any) are also checked
+//! Operand constraints (fixed register, register, any) are also checked
 //! at each operand.
 //!
 //! The dataflow analysis state at each program point is:
@@ -67,7 +67,7 @@
 
 use crate::{
     Allocation, AllocationKind, Block, Edit, Function, Inst, InstPosition, Operand, OperandKind,
-    OperandPolicy, OperandPos, Output, PReg, ProgPoint, SpillSlot, VReg,
+    OperandConstraint, OperandPos, Output, PReg, ProgPoint, SpillSlot, VReg,
 };
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -106,7 +106,7 @@ pub enum CheckerError {
         alloc: Allocation,
         actual: VReg,
     },
-    PolicyViolated {
+    ConstraintViolated {
         inst: Inst,
         op: Operand,
         alloc: Allocation,
@@ -266,7 +266,7 @@ impl CheckerState {
             _ => {}
         }
 
-        self.check_policy(inst, op, alloc, allocs)?;
+        self.check_constraint(inst, op, alloc, allocs)?;
 
         Ok(())
     }
@@ -287,14 +287,14 @@ impl CheckerState {
                 // happens early.
                 let has_reused_input = operands
                     .iter()
-                    .any(|op| matches!(op.policy(), OperandPolicy::Reuse(_)));
+                    .any(|op| matches!(op.constraint(), OperandConstraint::Reuse(_)));
                 if has_reused_input && pos == InstPosition::After {
                     return Ok(());
                 }
 
                 // For each operand, check (i) that the allocation
                 // contains the expected vreg, and (ii) that it meets
-                // the requirements of the OperandPolicy.
+                // the requirements of the OperandConstraint.
                 for (op, alloc) in operands.iter().zip(allocs.iter()) {
                     let is_here = match (op.pos(), pos) {
                         (OperandPos::Before, InstPosition::Before) => true,
@@ -413,31 +413,31 @@ impl CheckerState {
         }
     }
 
-    fn check_policy(
+    fn check_constraint(
         &self,
         inst: Inst,
         op: Operand,
         alloc: Allocation,
         allocs: &[Allocation],
     ) -> Result<(), CheckerError> {
-        match op.policy() {
-            OperandPolicy::Any => {}
-            OperandPolicy::Reg => {
+        match op.constraint() {
+            OperandConstraint::Any => {}
+            OperandConstraint::Reg => {
                 if alloc.kind() != AllocationKind::Reg {
                     return Err(CheckerError::AllocationIsNotReg { inst, op, alloc });
                 }
             }
-            OperandPolicy::Stack => {
+            OperandConstraint::Stack => {
                 if alloc.kind() != AllocationKind::Stack {
                     return Err(CheckerError::AllocationIsNotStack { inst, op, alloc });
                 }
             }
-            OperandPolicy::FixedReg(preg) => {
+            OperandConstraint::FixedReg(preg) => {
                 if alloc != Allocation::reg(preg) {
                     return Err(CheckerError::AllocationIsNotFixedReg { inst, op, alloc });
                 }
             }
-            OperandPolicy::Reuse(idx) => {
+            OperandConstraint::Reuse(idx) => {
                 if alloc.kind() != AllocationKind::Reg {
                     return Err(CheckerError::AllocationIsNotReg { inst, op, alloc });
                 }

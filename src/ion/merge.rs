@@ -17,7 +17,7 @@ use super::{
     Env, LiveBundleIndex, LiveRangeIndex, LiveRangeKey, Requirement, SpillSet, SpillSetIndex,
     SpillSlotIndex, VRegIndex,
 };
-use crate::{Function, Inst, OperandPolicy, PReg};
+use crate::{Function, Inst, OperandConstraint, PReg};
 use smallvec::smallvec;
 
 impl<'a, F: Function> Env<'a, F> {
@@ -269,10 +269,10 @@ impl<'a, F: Function> Env<'a, F> {
             let mut stack = false;
             for entry in &self.bundles[bundle.index()].ranges {
                 for u in &self.ranges[entry.index.index()].uses {
-                    if let OperandPolicy::FixedReg(_) = u.operand.policy() {
+                    if let OperandConstraint::FixedReg(_) = u.operand.constraint() {
                         fixed = true;
                     }
-                    if let OperandPolicy::Stack = u.operand.policy() {
+                    if let OperandConstraint::Stack = u.operand.constraint() {
                         stack = true;
                     }
                     if fixed && stack {
@@ -306,10 +306,10 @@ impl<'a, F: Function> Env<'a, F> {
         for inst in 0..self.func.insts() {
             let inst = Inst::new(inst);
 
-            // Attempt to merge Reuse-policy operand outputs with the
+            // Attempt to merge Reuse-constraint operand outputs with the
             // corresponding inputs.
             for op in self.func.inst_operands(inst) {
-                if let OperandPolicy::Reuse(reuse_idx) = op.policy() {
+                if let OperandConstraint::Reuse(reuse_idx) = op.constraint() {
                     let src_vreg = op.vreg();
                     let dst_vreg = self.func.inst_operands(inst)[reuse_idx].vreg();
                     if self.vregs[src_vreg.vreg()].is_pinned
