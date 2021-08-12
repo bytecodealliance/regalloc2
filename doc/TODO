@@ -9,6 +9,8 @@
     index
   - Update halfmove keys: u128 rather than u64
 
+- Support allocation of register pairs (or overlapping registers generally)
+
 - Rematerialization
 - Stack-location constraints that place operands in user-defined stack
   locations (distinct from SpillSlots) (e.g., stack args)
@@ -18,6 +20,9 @@
 - Investigate better register hinting
 - Investigate more principled cost functions and split locations,
   especially around loop nests
+
+- Investigate ways to improve bundle-merging; e.g., merge moves before
+  other types of connections
 
 # Cleanup
 
