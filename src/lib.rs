@@ -228,7 +228,12 @@ pub struct Operand {
 
 impl Operand {
     #[inline(always)]
-    pub fn new(vreg: VReg, constraint: OperandConstraint, kind: OperandKind, pos: OperandPos) -> Self {
+    pub fn new(
+        vreg: VReg,
+        constraint: OperandConstraint,
+        kind: OperandKind,
+        pos: OperandPos,
+    ) -> Self {
         let (preg_field, constraint_field): (u32, u32) = match constraint {
             OperandConstraint::Any => (0, 0),
             OperandConstraint::Reg => (0, 1),

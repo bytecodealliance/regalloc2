@@ -5,7 +5,7 @@
 
 use crate::{
     domtree, postorder, Allocation, Block, Function, Inst, InstRange, MachineEnv, Operand,
-    OperandKind, OperandConstraint, OperandPos, PReg, RegClass, VReg,
+    OperandConstraint, OperandKind, OperandPos, PReg, RegClass, VReg,
 };
 
 use arbitrary::Result as ArbitraryResult;
@@ -407,7 +407,12 @@ impl Func {
                 } else {
                     OperandPos::After
                 };
-                let mut operands = vec![Operand::new(vreg, def_constraint, OperandKind::Def, def_pos)];
+                let mut operands = vec![Operand::new(
+                    vreg,
+                    def_constraint,
+                    OperandKind::Def,
+                    def_pos,
+                )];
                 let mut allocations = vec![Allocation::none()];
                 for _ in 0..u.int_in_range(0..=3)? {
                     let vreg = if avail.len() > 0
@@ -456,8 +461,12 @@ impl Func {
                     );
                     // Make sure reused input is a Reg.
                     let op = operands[reused];
-                    operands[reused] =
-                        Operand::new(op.vreg(), OperandConstraint::Reg, op.kind(), OperandPos::Before);
+                    operands[reused] = Operand::new(
+                        op.vreg(),
+                        OperandConstraint::Reg,
+                        op.kind(),
+                        OperandPos::Before,
+                    );
                 } else if opts.fixed_regs && bool::arbitrary(u)? {
                     let mut fixed = vec![];
                     for _ in 0..u.int_in_range(0..=operands.len() - 1)? {

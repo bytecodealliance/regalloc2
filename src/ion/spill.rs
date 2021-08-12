@@ -21,7 +21,7 @@ use crate::{Allocation, Function, SpillSlot};
 
 impl<'a, F: Function> Env<'a, F> {
     pub fn try_allocating_regs_for_spilled_bundles(&mut self) {
-        log::debug!("allocating regs for spilled bundles");
+        log::trace!("allocating regs for spilled bundles");
         for i in 0..self.spilled_bundles.len() {
             let bundle = self.spilled_bundles[i]; // don't borrow self
 
@@ -39,7 +39,7 @@ impl<'a, F: Function> Env<'a, F> {
             for preg in
                 RegTraversalIter::new(self.env, class, hint, PReg::invalid(), bundle.index(), None)
             {
-                log::debug!("trying bundle {:?} to preg {:?}", bundle, preg);
+                log::trace!("trying bundle {:?} to preg {:?}", bundle, preg);
                 let preg_idx = PRegIndex::new(preg.index());
                 if let AllocRegResult::Allocated(_) =
                     self.try_to_allocate_bundle_to_reg(bundle, preg_idx, None)
@@ -50,7 +50,7 @@ impl<'a, F: Function> Env<'a, F> {
                 }
             }
             if !success {
-                log::debug!(
+                log::trace!(
                     "spilling bundle {:?}: marking spillset {:?} as required",
                     bundle,
                     self.bundles[bundle.index()].spillset
@@ -88,14 +88,14 @@ impl<'a, F: Function> Env<'a, F> {
         for i in 0..self.spillsets[spillset.index()].vregs.len() {
             // don't borrow self
             let vreg = self.spillsets[spillset.index()].vregs[i];
-            log::debug!(
+            log::trace!(
                 "spillslot {:?} alloc'ed to spillset {:?}: vreg {:?}",
                 spillslot,
                 spillset,
                 vreg,
             );
             for entry in &self.vregs[vreg.index()].ranges {
-                log::debug!(
+                log::trace!(
                     "spillslot {:?} getting range {:?} from LR {:?} from vreg {:?}",
                     spillslot,
                     entry.range,
@@ -112,7 +112,7 @@ impl<'a, F: Function> Env<'a, F> {
 
     pub fn allocate_spillslots(&mut self) {
         for spillset in 0..self.spillsets.len() {
-            log::debug!("allocate spillslot: {}", spillset);
+            log::trace!("allocate spillslot: {}", spillset);
             let spillset = SpillSetIndex::new(spillset);
             if !self.spillsets[spillset.index()].required {
                 continue;
@@ -197,7 +197,7 @@ impl<'a, F: Function> Env<'a, F> {
             self.spillslots[i].alloc = self.allocate_spillslot(self.spillslots[i].class);
         }
 
-        log::debug!("spillslot allocator done");
+        log::trace!("spillslot allocator done");
     }
 
     pub fn allocate_spillslot(&mut self, class: RegClass) -> Allocation {

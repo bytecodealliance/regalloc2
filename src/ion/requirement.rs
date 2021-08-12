@@ -66,7 +66,9 @@ impl Requirement {
     pub fn from_operand(op: Operand) -> Requirement {
         match op.constraint() {
             OperandConstraint::FixedReg(preg) => Requirement::Fixed(preg),
-            OperandConstraint::Reg | OperandConstraint::Reuse(_) => Requirement::Register(op.class()),
+            OperandConstraint::Reg | OperandConstraint::Reuse(_) => {
+                Requirement::Register(op.class())
+            }
             OperandConstraint::Stack => Requirement::Stack(op.class()),
             _ => Requirement::Any(op.class()),
         }
@@ -76,17 +78,17 @@ impl Requirement {
 impl<'a, F: Function> Env<'a, F> {
     pub fn compute_requirement(&self, bundle: LiveBundleIndex) -> Requirement {
         let mut req = Requirement::Unknown;
-        log::debug!("compute_requirement: {:?}", bundle);
+        log::trace!("compute_requirement: {:?}", bundle);
         for entry in &self.bundles[bundle.index()].ranges {
-            log::debug!(" -> LR {:?}", entry.index);
+            log::trace!(" -> LR {:?}", entry.index);
             for u in &self.ranges[entry.index.index()].uses {
-                log::debug!("  -> use {:?}", u);
+                log::trace!("  -> use {:?}", u);
                 let r = Requirement::from_operand(u.operand);
                 req = req.merge(r);
-                log::debug!("     -> req {:?}", req);
+                log::trace!("     -> req {:?}", req);
             }
         }
-        log::debug!(" -> final: {:?}", req);
+        log::trace!(" -> final: {:?}", req);
         req
     }
 }

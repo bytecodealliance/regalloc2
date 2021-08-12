@@ -38,7 +38,7 @@ impl Arbitrary for TestCase {
 fuzz_target!(|testcase: TestCase| {
     let func = testcase.func;
     let _ = env_logger::try_init();
-    log::debug!("func:\n{:?}", func);
+    log::trace!("func:\n{:?}", func);
     let env = regalloc2::fuzzing::func::machine_env();
     let out = regalloc2::fuzzing::ion::run(&func, &env, true).expect("regalloc did not succeed");
 

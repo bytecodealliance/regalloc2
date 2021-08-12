@@ -31,10 +31,10 @@ impl<'a, F: Function> Env<'a, F> {
         // safepoints; and for each safepoint in the current range,
         // emit the allocation into the `safepoint_slots` list.
 
-        log::debug!("safepoints_per_vreg = {:?}", self.safepoints_per_vreg);
+        log::trace!("safepoints_per_vreg = {:?}", self.safepoints_per_vreg);
 
         for vreg in self.func.reftype_vregs() {
-            log::debug!("generating safepoint info for vreg {}", vreg);
+            log::trace!("generating safepoint info for vreg {}", vreg);
             let vreg = VRegIndex::new(vreg.vreg());
             let mut safepoints: Vec<ProgPoint> = self
                 .safepoints_per_vreg
@@ -44,19 +44,19 @@ impl<'a, F: Function> Env<'a, F> {
                 .map(|&inst| ProgPoint::before(inst))
                 .collect();
             safepoints.sort_unstable();
-            log::debug!(" -> live over safepoints: {:?}", safepoints);
+            log::trace!(" -> live over safepoints: {:?}", safepoints);
 
             let mut safepoint_idx = 0;
             for entry in &self.vregs[vreg.index()].ranges {
                 let range = entry.range;
                 let alloc = self.get_alloc_for_range(entry.index);
-                log::debug!(" -> range {:?}: alloc {}", range, alloc);
+                log::trace!(" -> range {:?}: alloc {}", range, alloc);
                 while safepoint_idx < safepoints.len() && safepoints[safepoint_idx] < range.to {
                     if safepoints[safepoint_idx] < range.from {
                         safepoint_idx += 1;
                         continue;
                     }
-                    log::debug!("    -> covers safepoint {:?}", safepoints[safepoint_idx]);
+                    log::trace!("    -> covers safepoint {:?}", safepoints[safepoint_idx]);
 
                     let slot = alloc
                         .as_stack()
@@ -68,6 +68,6 @@ impl<'a, F: Function> Env<'a, F> {
         }
 
         self.safepoint_slots.sort_unstable();
-        log::debug!("final safepoint slots info: {:?}", self.safepoint_slots);
+        log::trace!("final safepoint slots info: {:?}", self.safepoint_slots);
     }
 }
