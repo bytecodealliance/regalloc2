@@ -96,7 +96,7 @@ impl<'a, F: Function> Env<'a, F> {
         self.compute_liveness()?;
         self.merge_vreg_bundles();
         self.queue_bundles();
-        if log::log_enabled!(log::Level::Debug) {
+        if log::log_enabled!(log::Level::Trace) {
             self.dump_state();
         }
         Ok(())

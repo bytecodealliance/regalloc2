@@ -411,9 +411,9 @@ impl<'a, F: Function> Env<'a, F> {
                                     from_block.index(),
                                     alloc,
                                 );
-                                #[cfg(debug)]
+                                #[cfg(debug_assertions)]
                                 {
-                                    if log::log_enabled!(log::Level::Debug) {
+                                    if log::log_enabled!(log::Level::Trace) {
                                         self.annotate(
                                             self.cfginfo.block_entry[block.index()],
                                             format!(
@@ -772,9 +772,9 @@ impl<'a, F: Function> Env<'a, F> {
                         input_alloc
                     );
                     if input_alloc != output_alloc {
-                        #[cfg(debug)]
+                        #[cfg(debug_assertions)]
                         {
-                            if log::log_enabled!(log::Level::Debug) {
+                            if log::log_enabled!(log::Level::Trace) {
                                 self.annotate(
                                     ProgPoint::before(inst),
                                     format!(

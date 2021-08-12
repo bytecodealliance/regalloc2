@@ -265,13 +265,14 @@ pub struct SetBitsIter(u64);
 impl Iterator for SetBitsIter {
     type Item = usize;
     fn next(&mut self) -> Option<usize> {
-        if self.0 == 0 {
-            None
-        } else {
-            let bitidx = self.0.trailing_zeros();
-            self.0 &= !(1 << bitidx);
-            Some(bitidx as usize)
-        }
+        // Build an `Option<NonZeroU64>` so that on the nonzero path,
+        // the compiler can optimize the trailing-zeroes operator
+        // using that knowledge.
+        std::num::NonZeroU64::new(self.0).map(|nz| {
+            let bitidx = nz.trailing_zeros();
+            self.0 &= self.0 - 1; // clear highest set bit
+            bitidx as usize
+        })
     }
 }
 

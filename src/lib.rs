@@ -47,15 +47,16 @@ impl PReg {
 
     /// Create a new PReg. The `hw_enc` range is 6 bits.
     #[inline(always)]
-    pub fn new(hw_enc: usize, class: RegClass) -> Self {
-        assert!(hw_enc <= Self::MAX);
+    pub const fn new(hw_enc: usize, class: RegClass) -> Self {
         PReg(hw_enc as u8, class)
     }
 
     /// The physical register number, as encoded by the ISA for the particular register class.
     #[inline(always)]
     pub fn hw_enc(self) -> usize {
-        self.0 as usize
+        let hw_enc = self.0 as usize;
+        debug_assert!(hw_enc <= Self::MAX);
+        hw_enc
     }
 
     /// The register class.
@@ -121,14 +122,15 @@ impl VReg {
     pub const MAX: usize = (1 << Self::MAX_BITS) - 1;
 
     #[inline(always)]
-    pub fn new(virt_reg: usize, class: RegClass) -> Self {
-        assert!(virt_reg <= Self::MAX);
+    pub const fn new(virt_reg: usize, class: RegClass) -> Self {
         VReg(((virt_reg as u32) << 1) | (class as u8 as u32))
     }
 
     #[inline(always)]
     pub fn vreg(self) -> usize {
-        (self.0 >> 1) as usize
+        let vreg = (self.0 >> 1) as usize;
+        debug_assert!(vreg <= Self::MAX);
+        vreg
     }
 
     #[inline(always)]
