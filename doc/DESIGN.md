@@ -449,6 +449,11 @@ it is where liveranges go when we give up on processing them via the
 normal backtracking loop, and will only process them once more in the
 "second-chance" stage.
 
+This fallback behavior implies that the spill bundle must always be
+able to accept a spillslot allocation, i.e., it cannot require a
+register. This invariant is what allows spill bundles to be processed
+in a different way, after backtracking has completed.
+
 The spill bundle acquires liveranges in two ways. First, as we split
 bundles, we will trim the split pieces in certain ways so that some
 liveranges are immediately placed in the spill bundle. Intuitively,
