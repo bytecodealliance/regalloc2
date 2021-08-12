@@ -219,10 +219,7 @@ impl std::fmt::Display for SpillSlot {
 /// `LAllocation` in Ion).
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Operand {
-    /// Bit-pack into 32 bits. Note that `constraint` overlaps with `kind`
-    /// in `Allocation` and we use mutually disjoint tag-value ranges
-    /// so that clients, if they wish, can track just one `u32` per
-    /// register slot and edit it in-place after allocation.
+    /// Bit-pack into 32 bits.
     ///
     /// constraint:3 kind:2 pos:1 class:1 preg:5 vreg:20
     bits: u32,
@@ -464,13 +461,7 @@ pub enum OperandPos {
 /// Operand.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Allocation {
-    /// Bit-pack in 32 bits. Note that `kind` overlaps with the
-    /// `constraint` field in `Operand`, and we are careful to use
-    /// disjoint ranges of values in this field for each type. We also
-    /// leave the def-or-use bit (`kind` for `Operand`) unused here so
-    /// that we can use it below in `OperandOrAllocation` to record
-    /// whether `Allocation`s are defs or uses (which is often useful
-    /// to know).
+    /// Bit-pack in 32 bits.
     ///
     /// kind:3 unused:1 index:28
     bits: u32,
@@ -519,9 +510,9 @@ impl Allocation {
     #[inline(always)]
     pub fn kind(self) -> AllocationKind {
         match (self.bits >> 29) & 7 {
-            5 => AllocationKind::None,
-            6 => AllocationKind::Reg,
-            7 => AllocationKind::Stack,
+            0 => AllocationKind::None,
+            1 => AllocationKind::Reg,
+            2 => AllocationKind::Stack,
             _ => unreachable!(),
         }
     }
@@ -576,14 +567,12 @@ impl Allocation {
     }
 }
 
-// N.B.: These values must be *disjoint* with the values used to
-// encode `OperandConstraint`, because they share a 3-bit field.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
 pub enum AllocationKind {
-    None = 5,
-    Reg = 6,
-    Stack = 7,
+    None = 0,
+    Reg = 1,
+    Stack = 2,
 }
 
 impl Allocation {
@@ -594,76 +583,6 @@ impl Allocation {
             AllocationKind::Reg => self.as_reg().unwrap().class(),
             AllocationKind::Stack => self.as_stack().unwrap().class(),
         }
-    }
-}
-
-/// A helper that wraps either an `Operand` or an `Allocation` and is
-/// able to tell which it is based on the tag bits.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct OperandOrAllocation {
-    bits: u32,
-}
-
-impl OperandOrAllocation {
-    pub fn from_operand(operand: Operand) -> Self {
-        debug_assert!(operand.bits() >> 29 <= 4);
-        Self {
-            bits: operand.bits(),
-        }
-    }
-    pub fn from_alloc(alloc: Allocation) -> Self {
-        debug_assert!(alloc.bits() >> 29 >= 5);
-        Self { bits: alloc.bits() }
-    }
-    pub fn from_alloc_and_kind(alloc: Allocation, kind: OperandKind) -> Self {
-        debug_assert!(alloc.bits() >> 29 >= 5);
-        let bits = alloc.bits()
-            | match kind {
-                OperandKind::Def => 0,
-                OperandKind::Mod => 1 << 27,
-                OperandKind::Use => 2 << 27,
-            };
-        Self { bits }
-    }
-    pub fn is_operand(&self) -> bool {
-        (self.bits >> 29) <= 4
-    }
-    pub fn is_allocation(&self) -> bool {
-        (self.bits >> 29) >= 5
-    }
-    pub fn as_operand(&self) -> Option<Operand> {
-        if self.is_operand() {
-            Some(Operand::from_bits(self.bits))
-        } else {
-            None
-        }
-    }
-    pub fn as_allocation(&self) -> Option<Allocation> {
-        if self.is_allocation() {
-            // Remove the kind (def/use/mod) bits -- the canonical
-            // `Allocation` does not have this, and we want allocs to
-            // continue to be comparable whether they are used for
-            // reads or writes.
-            Some(Allocation::from_bits(self.bits & !(3 << 27)))
-        } else {
-            None
-        }
-    }
-
-    pub fn kind(&self) -> OperandKind {
-        let kind_field = (self.bits >> 28) & 1;
-        match kind_field {
-            0 => OperandKind::Def,
-            1 => OperandKind::Mod,
-            2 => OperandKind::Use,
-            _ => unreachable!(),
-        }
-    }
-
-    /// Replaces the Operand with an Allocation, keeping the def/use bit.
-    pub fn replace_with_alloc(&mut self, alloc: Allocation) {
-        self.bits &= 1 << 28;
-        self.bits |= alloc.bits;
     }
 }
 
@@ -937,17 +856,24 @@ pub struct MachineEnv {
     pub regs: Vec<PReg>,
     /// Preferred physical registers for each class. These are the
     /// registers that will be allocated first, if free.
-    pub preferred_regs_by_class: Vec<Vec<PReg>>,
+    pub preferred_regs_by_class: [Vec<PReg>; 2],
     /// Non-preferred physical registers for each class. These are the
     /// registers that will be allocated if a preferred register is
     /// not available; using one of these is considered suboptimal,
     /// but still better than spilling.
-    pub non_preferred_regs_by_class: Vec<Vec<PReg>>,
+    pub non_preferred_regs_by_class: [Vec<PReg>; 2],
     /// One scratch register per class. This is needed to perform
     /// moves between registers when cyclic move patterns occur. The
     /// register should not be placed in either the preferred or
     /// non-preferred list (i.e., it is not otherwise allocatable).
-    pub scratch_by_class: Vec<PReg>,
+    ///
+    /// Note that the register allocator will freely use this register
+    /// between instructions, but *within* the machine code generated
+    /// by a single (regalloc-level) instruction, the client is free
+    /// to use the scratch register. E.g., if one "instruction" causes
+    /// the emission of two machine-code instructions, this lowering
+    /// can use the scratch register between them.
+    pub scratch_by_class: [PReg; 2],
 }
 
 /// The output of the register allocator.

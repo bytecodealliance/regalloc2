@@ -248,11 +248,10 @@ fn choose_dominating_block(
         if (allow_self || block != orig_block) && bool::arbitrary(u)? {
             break;
         }
-        if idom[block.index()] == block {
+        if idom[block.index()].is_invalid() {
             break;
         }
         block = idom[block.index()];
-        assert!(block.is_valid());
     }
     let block = if block != orig_block || allow_self {
         block
@@ -591,12 +590,10 @@ impl std::fmt::Debug for Func {
 pub fn machine_env() -> MachineEnv {
     // Reg 31 is the scratch reg.
     let regs: Vec<PReg> = (0..31).map(|i| PReg::new(i, RegClass::Int)).collect();
-    let preferred_regs_by_class: Vec<Vec<PReg>> =
-        vec![regs.iter().cloned().take(24).collect(), vec![]];
-    let non_preferred_regs_by_class: Vec<Vec<PReg>> =
-        vec![regs.iter().cloned().skip(24).collect(), vec![]];
-    let scratch_by_class: Vec<PReg> =
-        vec![PReg::new(31, RegClass::Int), PReg::new(0, RegClass::Float)];
+    let preferred_regs_by_class: [Vec<PReg>; 2] = [regs.iter().cloned().take(24).collect(), vec![]];
+    let non_preferred_regs_by_class: [Vec<PReg>; 2] =
+        [regs.iter().cloned().skip(24).collect(), vec![]];
+    let scratch_by_class: [PReg; 2] = [PReg::new(31, RegClass::Int), PReg::new(0, RegClass::Float)];
     MachineEnv {
         regs,
         preferred_regs_by_class,
