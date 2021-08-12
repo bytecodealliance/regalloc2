@@ -403,11 +403,18 @@ impl std::fmt::Debug for Operand {
 
 impl std::fmt::Display for Operand {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match (self.kind(), self.pos()) {
+            (OperandKind::Def, OperandPos::After)
+            | (OperandKind::Mod | OperandKind::Use, OperandPos::Before) => {
+                write!(f, "{:?}", self.kind())?;
+            }
+            _ => {
+                write!(f, "{:?}@{:?}", self.kind(), self.pos())?;
+            }
+        }
         write!(
             f,
-            "{:?}@{:?}: {}{} {}",
-            self.kind(),
-            self.pos(),
+            ": {}{} {}",
             self.vreg(),
             match self.class() {
                 RegClass::Int => "i",
