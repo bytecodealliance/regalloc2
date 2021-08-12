@@ -15,23 +15,23 @@ The toplevel API to regalloc2 consists of a single entry point `run()`
 that takes a register environment, which specifies all physical
 registers, and the input program. The function returns either an error
 or an `Output` struct that provides allocations for each operand and a
-list of additional instructions (moves, loads, stores) to insert.
+vector of additional instructions (moves, loads, stores) to insert.
 
 ## Register Environment
 
 The allocator takes a `MachineEnv` which specifies, for each of the
-two register classes `Int` and `Float`, a list of `PReg`s by index. A
+two register classes `Int` and `Float`, a vector of `PReg`s by index. A
 `PReg` is nothing more than the class and index within the class; the
 allocator does not need to know anything more.
 
-The `MachineEnv` provides a list of preferred and non-preferred
-physical registers per class. Any register not on either list will not
-be allocated. Usually, registers that do not need to be saved in the
-prologue if used (i.e., caller-save registers) are given in the
-"preferred" list. The environment also provides exactly one scratch
+The `MachineEnv` provides a vector of preferred and non-preferred
+physical registers per class. Any register not in either vector will
+not be allocated. Usually, registers that do not need to be saved in
+the prologue if used (i.e., caller-save registers) are given in the
+"preferred" vector. The environment also provides exactly one scratch
 register per class. This register must not be in the preferred or
-non-preferred lists, and is used whenever a set of moves that need to
-occur logically in parallel have a cycle (for a simple example,
+non-preferred vectors, and is used whenever a set of moves that need
+to occur logically in parallel have a cycle (for a simple example,
 consider a swap `r0, r1 := r1, r0`).
 
 With some more work, we could potentially remove the need for the
@@ -41,17 +41,17 @@ the client ("swap"), but we have not pursued this.
 ## CFG and Instructions
 
 The allocator operates on an input program that is in a standard CFG
-representation: the function body is a list of basic blocks, and each
-block has a list of instructions and zero or more successors. The
-allocator also requires the client to provide predecessors for each
-block, and these must be consistent with the successor
-lists.
+representation: the function body is a sequence of basic blocks, and
+each block has a sequence of instructions and zero or more
+successors. The allocator also requires the client to provide
+predecessors for each block, and these must be consistent with the
+successors.
 
 Instructions are opaque to the allocator except for a few important
 bits: (1) `is_ret` (is a return instruction); (2) `is_branch` (is a
 branch instruction); (3) `is_call` (is a call instruction, for
 heuristic purposes only), (4) `is_move` (is a move between registers),
-and (5) a list of Operands, covered below. Every block must end in a
+and (5) a vector of Operands, covered below. Every block must end in a
 return or branch.
 
 Both instructions and blocks are named by indices in contiguous index
@@ -248,8 +248,8 @@ removed. However, it is very important for performance at the moment.
 ## Output
 
 The allocator produces two main data structures as output: an array of
-`Allocation`s and a list of edits. Some other data, such as stackmap
-slot info, is also provided.
+`Allocation`s and a sequence of edits. Some other data, such as
+stackmap slot info, is also provided.
 
 ### Allocations
 
@@ -266,7 +266,7 @@ In order to implement the necessary movement of data between
 allocations, the allocator needs to insert moves at various program
 points.
 
-The list of inserted moves contains tuples that name a program point
+The vector of inserted moves contains tuples that name a program point
 and an "edit". The edit is either a move, from one `Allocation` to
 another, or else a kind of metadata used by the checker to know which
 VReg is live in a given allocation at any particular time. The latter
@@ -304,44 +304,44 @@ standard backward iterative dataflow analysis and are exact; they do
 not over-approximate (this turns out to be important for performance,
 and is also necessary for correctness in the case of stackmaps).
 
-### Blockparam Lists: Source-Side and Dest-Side
+### Blockparam Vectors: Source-Side and Dest-Side
 
 The initialization stage scans the input program and produces two
-lists that represent blockparam flows from branches to destination
+vectors that represent blockparam flows from branches to destination
 blocks: `blockparam_ins` and `blockparam_outs`.
 
-These two lists are the first instance we will see of a recurring
-pattern: the lists contain tuples that are carefully ordered in a way
-such that their sort-order is meaningful. "Build a list lazily then
-sort" is a common idiom: it batches the O(n log n) cost into one
+These two vectors are the first instance we will see of a recurring
+pattern: the vectors contain tuples that are carefully ordered in a
+way such that their sort-order is meaningful. "Build a vector lazily
+then sort" is a common idiom: it batches the O(n log n) cost into one
 operation that the stdlib has aggressively optimized, it provides
 dense storage, and it allows for a scan in a certain order that often
 lines up with a scan over the program.
 
-In this particular case, we will build lists of (vreg, block) points
+In this particular case, we will build vectors of (vreg, block) points
 that are meaningful either at the start or end of a block, so that
 later, when we scan over a particular vreg's allocations in block
-order, we can generate another list of allocations. One side (the
+order, we can generate another vector of allocations. One side (the
 "outs") also contains enough information that it can line up with the
 other side (the "ins") in a later sort.
 
-To make this work, `blockparam_ins` contains a list of (to-vreg,
+To make this work, `blockparam_ins` contains a vector of (to-vreg,
 to-block, from-block) tuples, and has an entry for every blockparam of
 every block. Note that we can compute this without actually observing
 from-blocks; we only need to iterate over `block_preds` at any given
 block.
 
-Then, `blockparam_outs` contains a list of (from-vreg, from-block,
+Then, `blockparam_outs` contains a vector of (from-vreg, from-block,
 to-block, to-vreg), and has an entry for every parameter on every
 branch that ends a block. There is exactly one "out" tuple for every
 "in" tuple. As mentioned above, we will later scan over both to
 generate moves.
 
-### Program-Move Lists: Source-Side and Dest-Side
+### Program-Move Vectors: Source-Side and Dest-Side
 
 Similar to blockparams, we handle moves specially. In fact, we ingest
-all moves in the input program into a set of lists -- "move sources"
-and "move dests", analogous to the "ins" and "outs" blockparam lists
+all moves in the input program into a set of vectors -- "move sources"
+and "move dests", analogous to the "ins" and "outs" blockparam vectors
 described above -- and then completely ignore the moves in the program
 thereafter. The semantics of the API are such that all program moves
 will be recreated with regalloc-inserted edits, and should not still
@@ -353,7 +353,7 @@ opaque instructions with a source and dest, and we found that there
 were many redundant move-chains (A->B, B->C) that are eliminated when
 everything is handled centrally.
 
-We also construct a `prog_move_merges` list of live-range index pairs
+We also construct a `prog_move_merges` vector of live-range index pairs
 to attempt to merge when we reach that stage of allocation.
 
 ## Core Allocation State: Ranges, Uses, Bundles, VRegs, PRegs
@@ -370,7 +370,7 @@ A live-range is a contiguous range of program points (half-open,
 i.e. including `from` and excluding `to`) for which a particular vreg
 is live with a value.
 
-A live-range contains a list of uses. Each use contains four parts:
+A live-range contains a vector of uses. Each use contains four parts:
 the Operand word (directly copied, so there is no need to dereference
 it); the ProgPoint at which the use occurs; the operand slot on that
 instruction, if any, that the operand comes from, and the use's
@@ -392,14 +392,14 @@ values throughout the allocator. New live-ranges can be created
 state is bulk-freed at the end.
 
 Live-ranges are aggregated into "bundles". A bundle is a collection of
-ranges that does not overlap. Each bundle carries: a list (inline
+ranges that does not overlap. Each bundle carries: a vector (inline
 SmallVec) of (range, live-range index) tuples, an allocation (starts
 as "none"), a "spillset" (more below), and some metadata, including a
 spill weight (sum of ranges' weights), a priority (sum of ranges'
 lengths), and three property flags: "minimal", "contains fixed
 constraints", "contains stack constraints".
 
-VRegs also contain their lists of live-ranges, in the same form as a
+VRegs also contain their vectors of live-ranges, in the same form as a
 bundle does (inline SmallVec that has inline (from, to) range bounds
 and range indices).
 
@@ -407,14 +407,14 @@ There are two important overlap invariants: (i) no liveranges within a
 bundle overlap, and (ii) no liveranges within a vreg overlap. These
 are extremely important and we rely on them implicitly in many places.
 
-The live-range lists in bundles and vregs, and use-lists in ranges,
+The live-range vectors in bundles and vregs, and use-vectors in ranges,
 have various sorting invariants as well. These invariants differ
 according to the phase of the allocator's computation. First, during
 live-range construction, live-ranges are placed into vregs in reverse
 order (because the computation is a reverse scan) and uses into ranges
 in reverse order; these are sorted into forward order at the end of
 live-range computation. When bundles are first constructed, their
-range lists are sorted, and they remain so for the rest of allocation,
+range vectors are sorted, and they remain so for the rest of allocation,
 as we need for interference testing. However, as ranges are created
 and split, sortedness of vreg ranges is *not* maintained; they are
 sorted once more, in bulk, when allocation is done and we start to
@@ -464,7 +464,7 @@ create a second-chance spill bundle just for a liverange with an "Any"
 use; but if it was already forced into existence by splitting and
 trimming, then we might as well use it.
 
-Note that unlike other bundles, a spill bundle's liverange list
+Note that unlike other bundles, a spill bundle's liverange vector
 remains unsorted until we do the second-chance allocation. This allows
 quick appends of more liveranges.
 
@@ -502,8 +502,8 @@ is spilled, and we traverse to the spillset then spillslot.
 
 ## Other: Fixups, Stats, Debug Annotations
 
-There are a few fixup lists that we will cover in more detail
-later. Of particular note is the "multi-fixed-reg fixup list": this
+There are a few fixup vectors that we will cover in more detail
+later. Of particular note is the "multi-fixed-reg fixup vector": this
 handles instructions that constrain the same input vreg to multiple,
 different, fixed registers for different operands at the same program
 point. The only way to satisfy such a set of constraints is to
@@ -550,7 +550,7 @@ For each block, we perform a scan with the following state:
 - A liveness bitvec, initialized at the start from `liveouts`.
 - A vector of live-range indices, with one entry per vreg, initially
   "invalid" (this vector is allocated once and reused at each block).
-- In-progress list of live-range indices per vreg in the vreg state,
+- In-progress vector of live-range indices per vreg in the vreg state,
   in *reverse* order (we will reverse it when we're done).
 
 A vreg is live at the current point in the scan if its bit is set in
@@ -630,7 +630,7 @@ pregs' allocation maps. Finally, we need to handle moves specially.
 
 With the caveat that "this is a massive hack and I am very very
 sorry", here is how it works. A move between two pinned vregs is easy:
-we add that to the inserted-moves list right away because we know the
+we add that to the inserted-moves vector right away because we know the
 Allocation on both sides. A move from a pinned vreg to a normal vreg
 is the first interesting case. In this case, we (i) create a ghost def
 with a fixed-register policy on the normal vreg, doing the other
@@ -693,8 +693,8 @@ sees the corner case where it's necessary!)
 
 ## Bundle Merging
 
-Once we have built the liverange lists for every vreg, we can reverse
-these lists (recall, they were built in strict reverse order) and
+Once we have built the liverange vectors for every vreg, we can reverse
+these vectors (recall, they were built in strict reverse order) and
 initially assign one bundle per (non-pinned) vreg. We then try to
 merge bundles together as long as find pairs of bundles that do not
 overlap and that (heuristically) make sense to merge.
@@ -711,9 +711,9 @@ corresponding output; across program moves; and across blockparam
 assignments.
 
 To merge two bundles, we traverse over both their sorted liverange
-lists at once, checking for overlaps. Note that we can do this without
+vectors at once, checking for overlaps. Note that we can do this without
 pointer-chasing to the liverange data; the (from, to) range is in the
-liverange list itself.
+liverange vector itself.
 
 We also check whether the merged bundle would have conflicting
 requirements (see below for more on requirements). We do a coarse
@@ -724,7 +724,7 @@ on both sides, merging, and checking for Conflict (the lattice bottom
 value). If no conflict, we merge.
 
 A performance note: merging is extremely performance-sensitive, and it
-turns out that a mergesort-like merge of the liverange lists is too
+turns out that a mergesort-like merge of the liverange vectors is too
 expensive, partly because it requires allocating a separate result
 vector (in-place merge in mergesort is infamously complex). Instead,
 we simply append one vector onto the end of the other and invoke
@@ -835,10 +835,10 @@ then we *can* use a register (either `Any`, which accepts a register
 as one of several options, or `Reg`, which must have one, or `Fixed`,
 which must have a particular one).
 
-We determine the list of physical registers whose allocation maps we
-will probe, and in what order. If a particular fixed register is
-required, we probe only that register. Otherwise, we probe all
-registers in the required class.
+We determine which physical registers whose allocation maps we will
+probe, and in what order. If a particular fixed register is required,
+we probe only that register. Otherwise, we probe all registers in the
+required class.
 
 The order in which we probe, if we are not constrained to a single
 register, is carefully chosen. First, if there is a hint register from
@@ -846,13 +846,13 @@ the spillset (this is set by the last allocation into a register of
 any other bundle in this spillset), we probe that. Then, we probe all
 preferred registers; then all non-preferred registers.
 
-For each of the preferred and non-preferred register lists, we probe
-in an *offset* manner: we start at some index partway through the
-list, determined by some heuristic number that is random and
+For each of the preferred and non-preferred register sequences, we
+probe in an *offset* manner: we start at some index partway through
+the sequence, determined by some heuristic number that is random and
 well-dstributed. (In practice, we use the sum of the bundle index and
 the instruction index of the start of the first range in the bundle.)
-We then march through the list and wrap around, stopping before we hit
-our starting point again.
+We then march through the sequence and wrap around, stopping before we
+hit our starting point again.
 
 The purpose of this offset is to distribute the contention and speed
 up the allocation process. In the common case where there are enough
@@ -863,7 +863,7 @@ order. This has a large allocation performance impact in practice.
 
 For each register in probe order, we probe the allocation map, and
 gather, simultaneously, several results: (i) whether the entire range
-is free; (ii) if not, the list of all conflicting bundles, *and* the
+is free; (ii) if not, the vector of all conflicting bundles, *and* the
 highest weight among those bundles; (iii) if not, the *first* conflict
 point.
 
@@ -915,7 +915,7 @@ track the "lowest cost split option", which is the cost (more below),
 the point at which to split, and the register for this option.
 
 For each register we probe, if there is a conflict but none of the
-conflicts are fixed allocations, we receive a list of bundles that
+conflicts are fixed allocations, we receive a vector of bundles that
 conflicted, and also separately, the first conflicting program
 point. We update the lowest-cost eviction option if the cost (max
 weight) of the conflicting bundles is less than the current best. We
@@ -955,14 +955,14 @@ an inner loop).
 
 The actual split procedure is fairly simple. We are given a bundle and
 a split-point. We create a new bundle to take on the second half
-("rest") of the original. We find the point in the liverange list that
-corresponds to the split, and distribute appropriately. If the
+("rest") of the original. We find the point in the liverange vector
+that corresponds to the split, and distribute appropriately. If the
 split-point lands in the middle of a liverange, then we split that
 liverange as well.
 
 In the case that a new liverange is created, we add the liverange to
-the corresponding vreg liverange list as well. Note that, as described
-above, the vreg's liverange list is unsorted while splitting is
+the corresponding vreg liverange vector as well. Note that, as described
+above, the vreg's liverange vector is unsorted while splitting is
 occurring (because we do not need to traverse it or do any lookups
 during this phase); so we just append.
 
@@ -1010,14 +1010,14 @@ second-chance allocation).
 ## Second-Chance Allocation: Spilled Bundles
 
 Once the main allocation loop terminates, when all bundles have either
-been allocated or punted to the "spilled bundles" list, we do
+been allocated or punted to the "spilled bundles" vector, we do
 second-chance allocation. This is a simpler loop that never evicts and
 never splits. Instead, each bundle gets one second chance, in which it
 can probe pregs and attempt to allocate. If it fails, it will actually
 live on the stack.
 
 This is correct because we are careful to only place bundles on the
-spilled-bundles list that are *allowed* to live on the
+spilled-bundles vector that are *allowed* to live on the
 stack. Specifically, only the canonical spill bundles (which will
 contain only empty ranges) and other bundles that have an "any" or
 "unknown" requirement are placed here (but *not* "stack" requirements;
@@ -1107,7 +1107,7 @@ each, and for each move that comes *to* or *from* this liverange,
 generate a "half-move". The key idea is that we generate a record for
 each "side" of the move, and these records are keyed in a way that
 after a sort, the "from" and "to" ends will be consecutive. We can
-sort the list of halfmoves once (this is expensive, but not as
+sort the vector of halfmoves once (this is expensive, but not as
 expensive as many separate pointer-chasing lookups), then scan it
 again to actually generate the move instructions.
 
@@ -1124,7 +1124,7 @@ of every block covered by a liverange, we can generate "dest"
 half-moves for blockparams, and at the end of every block covered by a
 liverange, we can generate "source" half-moves for blockparam args on
 branches. Incidentally, this is the reason that `blockparam_ins` and
-`blockparam_outs` are sorted tuple-lists whose tuples begin with
+`blockparam_outs` are sorted tuple-vectors whose tuples begin with
 (vreg, block, ...): this is the order in which we do the toplevel scan
 over allocations.
 
@@ -1166,9 +1166,9 @@ happen *in parallel*. For example, if multiple vregs change
 allocations between two instructions, all of those moves happen as
 part of one parallel permutation. Similarly, blockparams have
 parallel-assignment semantics. We thus enqueue all the moves that we
-generate at program points and resolve them into lists of sequential
-moves that can actually be lowered to move instructions in the machine
-code.
+generate at program points and resolve them into sequences of
+sequential moves that can actually be lowered to move instructions in
+the machine code.
 
 First, a word on *move priorities*. There are different kinds of moves
 that are generated between instructions, and we have to ensure that
@@ -1198,7 +1198,7 @@ Every move is statically given one of these priorities by the code
 that generates it.
 
 We collect moves with (prog-point, prio) keys, and we short by those
-keys. We then have, for each such key, a list of moves that
+keys. We then have, for each such key, a set of moves that
 semantically happen in parallel.
 
 We then resolve those moves using a parallel-move resolver, as we now
@@ -1212,7 +1212,7 @@ registers that other moves use as sources. We must carefully order
 moves so that this does not clobber values incorrectly.
 
 We first check if such overlap occurs. If it does not (this is
-actually the most common case), the list of parallel moves can be
+actually the most common case), the sequence of parallel moves can be
 emitted as sequential moves directly. Done!
 
 Otherwise, we have to order the moves carefully. Furthermore, if there
@@ -1229,9 +1229,9 @@ move that overwrites its source. (This will be important in a bit!)
 
 Our task is now to find an ordering of moves that respects these
 dependencies. To do so, we perform a depth-first search on the graph
-induced by the dependencies, which will generate a list of sequential
-moves in reverse order. We keep a stack of moves; we start with any
-move that has not been visited yet; in each iteration, if the
+induced by the dependencies, which will generate a sequence of
+sequential moves in reverse order. We keep a stack of moves; we start
+with any move that has not been visited yet; in each iteration, if the
 top-of-stack has no out-edge to another move (does not need to come
 before any others), then push it to a result vector, followed by all
 others on the stack (in popped order). If it does have an out-edge and
@@ -1257,8 +1257,8 @@ nodes (moves) can be part of the SCC, because every node's single
 out-edge is already accounted for. This is what allows us to avoid a
 fully general SCC algorithm.
 
-Once the list of moves in-reverse has been constructed, we reverse it
-and return.
+Once the vector of moves in-reverse has been constructed, we reverse
+it and return.
 
 Note that this "move resolver" is fuzzed separately with a simple
 symbolic move simulator (the `moves` fuzz-target).
@@ -1283,7 +1283,7 @@ extra spillslot.
 
 ## Redundant-Move Elimination
 
-As a final step before returning the list of program edits to the
+As a final step before returning the vector of program edits to the
 client, we perform one optimization: redundant-move elimination.
 
 To understand the need for this, consider what will occur when a vreg
@@ -1450,9 +1450,9 @@ Several notable high-level differences are:
   across blocks by, when reaching one end of a control-flow edge in a
   scan, doing a lookup of the allocation at the other end. This is in
   principle a linear lookup (so quadratic overall). We instead
-  generate a list of "half-moves", keyed on the edge and from/to
+  generate a vector of "half-moves", keyed on the edge and from/to
   vregs, with each holding one of the allocations. By sorting and then
-  scanning this list, we can generate all edge moves in one linear
+  scanning this vector, we can generate all edge moves in one linear
   scan. There are a number of other examples of simplifications: for
   example, we handle multiple conflicting
   physical-register-constrained uses of a vreg in a single instruction
@@ -1513,7 +1513,7 @@ number of general principles:
   cache-efficient. As another example, a side-effect of the precise
   liveness was that we could then process operands within blocks in
   actual instruction order (in reverse), which allowed us to simply
-  append liveranges to in-progress vreg liverange lists and then
+  append liveranges to in-progress vreg liverange vectors and then
   reverse at the end. The expensive part is a single pass; only the
   bitset computation is a fixpoint loop.
   
@@ -1551,11 +1551,11 @@ of the function; two separate chunks will cover that.
 We tried a number of other designs as well. Initially we used a simple
 dense bitvec, but this was prohibitively expensive: O(n^2) space when
 the real need is closer to O(n) (i.e., a classic sparse matrix). We
-also tried a hybrid scheme that kept a list of indices when small and
-used either a bitvec or a hashset when large. This did not perform as
-well because (i) it was less memory-efficient (the chunking helps with
-this) and (ii) insertions are more expensive when they always require
-a full hashset/hashmap insert.
+also tried a hybrid scheme that kept a vector of indices when small
+and used either a bitvec or a hashset when large. This did not perform
+as well because (i) it was less memory-efficient (the chunking helps
+with this) and (ii) insertions are more expensive when they always
+require a full hashset/hashmap insert.
 
 # Appendix: Fuzzing
 
