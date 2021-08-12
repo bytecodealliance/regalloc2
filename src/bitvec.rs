@@ -39,6 +39,9 @@ impl AdaptiveMap {
             values: [0; SMALL_ELEMS],
         }
     }
+
+    /// Expand into `Large` mode if we are at capacity and have no
+    /// zero-value pairs that can be trimmed.
     #[inline(never)]
     fn expand(&mut self) {
         match self {
@@ -76,13 +79,25 @@ impl AdaptiveMap {
     }
     #[inline(always)]
     fn get_or_insert<'a>(&'a mut self, key: u32) -> &'a mut u64 {
-        let needs_expand = match self {
+        // Check whether the key is present and we are in small mode;
+        // if no to both, we need to expand first.
+        let (needs_expand, small_mode_idx) = match self {
             &mut Self::Small { len, ref keys, .. } => {
-                len == SMALL_ELEMS as u32 && !keys.iter().any(|k| *k == key)
+                // Perform this scan but do not return right away;
+                // doing so runs into overlapping-borrow issues
+                // because the current non-lexical lifetimes
+                // implementation is not able to see that the `self`
+                // mutable borrow on return is only on the
+                // early-return path.
+                let small_mode_idx = keys.iter().position(|k| *k == key);
+                let needs_expand = small_mode_idx.is_none() && len == SMALL_ELEMS as u32;
+                (needs_expand, small_mode_idx)
             }
-            _ => false,
+            _ => (false, None),
         };
+
         if needs_expand {
+            assert!(small_mode_idx.is_none());
             self.expand();
         }
 
@@ -92,11 +107,14 @@ impl AdaptiveMap {
                 ref mut keys,
                 ref mut values,
             } => {
-                for i in 0..*len {
-                    if keys[i as usize] == key {
-                        return &mut values[i as usize];
-                    }
+                // If we found the key already while checking whether
+                // we need to expand above, use that index to return
+                // early.
+                if let Some(i) = small_mode_idx {
+                    return &mut values[i];
                 }
+                // Otherwise, the key must not be present; add a new
+                // entry.
                 assert!(*len < SMALL_ELEMS as u32);
                 let idx = *len;
                 *len += 1;
