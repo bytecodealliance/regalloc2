@@ -43,15 +43,33 @@ impl AdaptiveMap {
     fn expand(&mut self) {
         match self {
             &mut Self::Small {
-                len,
-                ref keys,
-                ref values,
+                ref mut len,
+                ref mut keys,
+                ref mut values,
             } => {
-                let mut map = FxHashMap::default();
-                for i in 0..len {
-                    map.insert(keys[i as usize], values[i as usize]);
+                // Note: we *may* remain as `Small` if there are any
+                // zero elements. Try removing them first, before we
+                // commit to a memory allocation.
+                if values.iter().any(|v| *v == 0) {
+                    let mut out = 0;
+                    for i in 0..(*len as usize) {
+                        if values[i] == 0 {
+                            continue;
+                        }
+                        if out < i {
+                            keys[out] = keys[i];
+                            values[out] = values[i];
+                        }
+                        out += 1;
+                    }
+                    *len = out as u32;
+                } else {
+                    let mut map = FxHashMap::default();
+                    for i in 0..(*len as usize) {
+                        map.insert(keys[i], values[i]);
+                    }
+                    *self = Self::Large(map);
                 }
-                *self = Self::Large(map);
             }
             _ => {}
         }
@@ -256,6 +274,15 @@ impl BitVec {
             set_bits(bits).map(move |i| BITS_PER_WORD * word_idx + i)
         })
     }
+
+    /// Is the adaptive data structure in "small" mode? This is meant
+    /// for testing assertions only.
+    pub(crate) fn is_small(&self) -> bool {
+        match &self.elems {
+            &AdaptiveMap::Small { .. } => true,
+            _ => false,
+        }
+    }
 }
 
 fn set_bits(bits: u64) -> impl Iterator<Item = usize> {
@@ -308,5 +335,19 @@ mod test {
         }
 
         assert_eq!(sum, checksum);
+    }
+
+    #[test]
+    fn test_expand_remove_zero_elems() {
+        let mut vec = BitVec::new();
+        // Set 12 different words (this is the max small-mode size).
+        for i in 0..12 {
+            vec.set(64 * i, true);
+        }
+        // Now clear a bit, and set a bit in a different word. We
+        // should still be in small mode.
+        vec.set(64 * 5, false);
+        vec.set(64 * 100, true);
+        assert!(vec.is_small());
     }
 }
