@@ -27,6 +27,8 @@
 - Add limited inter-block redundant-move elimination: propagate across
   splits but not joins.
 
+- Optimize allocations (some reports of 5-7% of time spent in allocator)
+
 # Cleanup
 
 - Remove support for non-SSA code once no longer necessary
