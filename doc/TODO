@@ -24,6 +24,9 @@
 - Investigate ways to improve bundle-merging; e.g., merge moves before
   other types of connections
 
+- Add limited inter-block redundant-move elimination: propagate across
+  splits but not joins.
+
 # Cleanup
 
 - Remove support for non-SSA code once no longer necessary

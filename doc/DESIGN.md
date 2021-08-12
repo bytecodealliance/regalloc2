@@ -805,15 +805,32 @@ them all here.
   different requirements meets to Conflict. Requirements are derived
   from the operand constraints for all uses in all liveranges in a
   bundle, and then merged with the lattice meet-function.
+  
+The lattice is as follows (diagram simplified to remove multiple
+classes and multiple fixed registers which parameterize nodes; any two
+differently-parameterized values are unordered with respect to each
+other):
+
+```plain
+
+        ___Unknown_____
+        |      |      |
+        |      |      |
+        | ____Any(rc) |
+        |/     |      |
+   Stack(rc)  FixedReg(reg)
+         \    /
+        Conflict
+```
 
 Once we have the Requirement for a bundle, we can decide what to do.
 
 ### No-Register-Required Cases
 
 If the requirement indicates that no register is needed (`Unknown` or
-`Any`), *and* if the spill bundle already exists for this bundle's
-spillset, then we move all the liveranges over to the spill bundle, as
-described above.
+`Any`, i.e. a register or stack slot would be OK), *and* if the spill
+bundle already exists for this bundle's spillset, then we move all the
+liveranges over to the spill bundle, as described above.
 
 If the requirement indicates that the stack is needed explicitly
 (e.g., for a safepoint), we set our spillset as "required" (this will
@@ -822,11 +839,11 @@ no other allocation set, it will look to the spillset's spillslot by
 default.
 
 If the requirement indicates a conflict, we immediately split and
-requeue the split pieces. This split is a special one: rather than
-split in a way informed by conflicts (see below), we unconditionally
-split off the first use. This is a heuristic and we could in theory do
-better by finding the source of the conflict; but in practice this
-works well enough. Note that a bundle can reach this stage with a
+requeue the split pieces. This split is performed at the point at
+which the conflict is first introduced, i.e. just before the first use
+whose requirement, when merged into the requirement for all prior uses
+combined, goes to `Conflict`. In this way, we always guarantee forward
+progress. Note also that a bundle can reach this stage with a
 conflicting requirement only if the original liverange had conflicting
 uses (e.g., a liverange from a def in a register to a use on stack, or
 a liverange between two different fixed-reg-constrained operands); our
@@ -854,7 +871,7 @@ preferred registers; then all non-preferred registers.
 For each of the preferred and non-preferred register sequences, we
 probe in an *offset* manner: we start at some index partway through
 the sequence, determined by some heuristic number that is random and
-well-dstributed. (In practice, we use the sum of the bundle index and
+well-distributed. (In practice, we use the sum of the bundle index and
 the instruction index of the start of the first range in the bundle.)
 We then march through the sequence and wrap around, stopping before we
 hit our starting point again.
@@ -1202,7 +1219,7 @@ priorities:
 Every move is statically given one of these priorities by the code
 that generates it.
 
-We collect moves with (prog-point, prio) keys, and we short by those
+We collect moves with (prog-point, prio) keys, and we sort by those
 keys. We then have, for each such key, a set of moves that
 semantically happen in parallel.
 
@@ -1286,10 +1303,10 @@ allocated, move the scratch reg to that, do the above stack-to-scratch
 / scratch-to-stack sequence, then reload the scratch reg from the
 extra spillslot.
 
-## Redundant-Move Elimination
+## Redundant-Spill/Load Elimination
 
 As a final step before returning the vector of program edits to the
-client, we perform one optimization: redundant-move elimination.
+client, we perform one optimization: redundant-spill/load elimination.
 
 To understand the need for this, consider what will occur when a vreg
 is (i) defined once, (ii) used many times, and (iii) spilled multiple
@@ -1318,13 +1335,16 @@ trimmed part of the liverange between uses and put it in the spill
 bundle, and the spill bundle did not get a reg.
 
 In order to resolve this inefficiency, we implement a general
-redundant-move elimination pass. This pass tracks, for every
-allocation (reg or spillslot), whether it is a copy of another
-allocation. This state is invalidated whenever either that allocation
-or the allocation of which it is a copy is overwritten. When we see a
-move instruction, if the destination is already a copy of the source,
-we elide the move. (There are some additional complexities to preserve
-checker metadata which we do not describe here.)
+redundant-spill/load elimination pass (an even more general solution
+would be a full redundant-move elimination pass, but we focus on moves
+that are spills/loads to contain the complexity for now). This pass
+tracks, for every allocation (reg or spillslot), whether it is a copy
+of another allocation. This state is invalidated whenever either that
+allocation or the allocation of which it is a copy is
+overwritten. When we see a move instruction, if the destination is
+already a copy of the source, we elide the move. (There are some
+additional complexities to preserve checker metadata which we do not
+describe here.)
 
 Note that this could, in principle, be done as a fixpoint analysis
 over the CFG; it must be, if we try to preserve state across
