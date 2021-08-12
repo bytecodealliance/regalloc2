@@ -3,7 +3,7 @@
  * exception. See `LICENSE` for details.
  */
 
-//! Fast postorder computation with no allocations (aside from result).
+//! Fast postorder computation.
 
 use crate::Block;
 use smallvec::{smallvec, SmallVec};
