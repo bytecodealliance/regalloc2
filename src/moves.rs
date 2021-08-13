@@ -78,11 +78,11 @@ impl<T: Clone + Copy + Default> ParallelMoves<T> {
         // Sort moves by destination and check that each destination
         // has only one writer.
         self.parallel_moves.sort_by_key(|&(_, dst, _)| dst);
-        if cfg!(debug) {
+        if cfg!(debug_assertions) {
             let mut last_dst = None;
             for &(_, dst, _) in &self.parallel_moves {
                 if last_dst.is_some() {
-                    assert!(last_dst.unwrap() != dst);
+                    debug_assert!(last_dst.unwrap() != dst);
                 }
                 last_dst = Some(dst);
             }

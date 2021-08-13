@@ -48,16 +48,16 @@ impl<'a, F: Function> Env<'a, F> {
             return false;
         }
 
-        #[cfg(debug)]
+        #[cfg(debug_assertions)]
         {
             // Sanity check: both bundles should contain only ranges with appropriate VReg classes.
             for entry in &self.bundles[from.index()].ranges {
                 let vreg = self.ranges[entry.index.index()].vreg;
-                assert_eq!(rc, self.vregs[vreg.index()].reg.class());
+                assert_eq!(from_rc, self.vreg_regs[vreg.index()].class());
             }
             for entry in &self.bundles[to.index()].ranges {
                 let vreg = self.ranges[entry.index.index()].vreg;
-                assert_eq!(rc, self.vregs[vreg.index()].reg.class());
+                assert_eq!(to_rc, self.vreg_regs[vreg.index()].class());
             }
         }
 
