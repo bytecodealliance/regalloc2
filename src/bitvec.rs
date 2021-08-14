@@ -89,7 +89,7 @@ impl AdaptiveMap {
                 // implementation is not able to see that the `self`
                 // mutable borrow on return is only on the
                 // early-return path.
-                let small_mode_idx = keys.iter().position(|k| *k == key);
+                let small_mode_idx = keys.iter().take(len as usize).position(|k| *k == key);
                 let needs_expand = small_mode_idx.is_none() && len == SMALL_ELEMS as u32;
                 (needs_expand, small_mode_idx)
             }
