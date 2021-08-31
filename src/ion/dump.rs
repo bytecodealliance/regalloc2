@@ -61,7 +61,7 @@ impl<'a, F: Function> Env<'a, F> {
 
     pub fn dump_results(&self) {
         log::info!("=== REGALLOC RESULTS ===");
-        for block in 0..self.func.blocks() {
+        for block in 0..self.func.num_blocks() {
             let block = Block::new(block);
             log::info!(
                 "block{}: [succs {:?} preds {:?}]",

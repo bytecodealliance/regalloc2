@@ -38,23 +38,24 @@ pub struct CFGInfo {
 
 impl CFGInfo {
     pub fn new<F: Function>(f: &F) -> Result<CFGInfo, RegAllocError> {
-        let postorder =
-            postorder::calculate(f.blocks(), f.entry_block(), |block| f.block_succs(block));
+        let postorder = postorder::calculate(f.num_blocks(), f.entry_block(), |block| {
+            f.block_succs(block)
+        });
         let domtree = domtree::calculate(
-            f.blocks(),
+            f.num_blocks(),
             |block| f.block_preds(block),
             &postorder[..],
             f.entry_block(),
         );
-        let mut insn_block = vec![Block::invalid(); f.insts()];
+        let mut insn_block = vec![Block::invalid(); f.num_insts()];
         let mut vreg_def_inst = vec![Inst::invalid(); f.num_vregs()];
         let mut vreg_def_blockparam = vec![(Block::invalid(), 0); f.num_vregs()];
-        let mut block_entry = vec![ProgPoint::before(Inst::invalid()); f.blocks()];
-        let mut block_exit = vec![ProgPoint::before(Inst::invalid()); f.blocks()];
-        let mut backedge_in = vec![0; f.blocks()];
-        let mut backedge_out = vec![0; f.blocks()];
+        let mut block_entry = vec![ProgPoint::before(Inst::invalid()); f.num_blocks()];
+        let mut block_exit = vec![ProgPoint::before(Inst::invalid()); f.num_blocks()];
+        let mut backedge_in = vec![0; f.num_blocks()];
+        let mut backedge_out = vec![0; f.num_blocks()];
 
-        for block in 0..f.blocks() {
+        for block in 0..f.num_blocks() {
             let block = Block::new(block);
             for (i, param) in f.block_params(block).iter().enumerate() {
                 vreg_def_blockparam[param.vreg()] = (block, i as u32);
@@ -116,7 +117,7 @@ impl CFGInfo {
         let mut approx_loop_depth = vec![];
         let mut backedge_stack: SmallVec<[usize; 4]> = smallvec![];
         let mut cur_depth = 0;
-        for block in 0..f.blocks() {
+        for block in 0..f.num_blocks() {
             if backedge_in[block] > 0 {
                 cur_depth += 1;
                 backedge_stack.push(backedge_in[block]);

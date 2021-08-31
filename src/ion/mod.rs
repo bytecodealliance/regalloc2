@@ -44,14 +44,14 @@ impl<'a, F: Function> Env<'a, F> {
         cfginfo: CFGInfo,
         annotations_enabled: bool,
     ) -> Self {
-        let n = func.insts();
+        let n = func.num_insts();
         Self {
             func,
             env,
             cfginfo,
 
-            liveins: Vec::with_capacity(func.blocks()),
-            liveouts: Vec::with_capacity(func.blocks()),
+            liveins: Vec::with_capacity(func.num_blocks()),
+            liveouts: Vec::with_capacity(func.num_blocks()),
             blockparam_outs: vec![],
             blockparam_ins: vec![],
             blockparam_allocs: vec![],

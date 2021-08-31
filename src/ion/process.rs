@@ -798,7 +798,7 @@ impl<'a, F: Function> Env<'a, F> {
         loop {
             attempts += 1;
             log::trace!("attempt {}, req {:?}", attempts, req);
-            debug_assert!(attempts < 100 * self.func.insts());
+            debug_assert!(attempts < 100 * self.func.num_insts());
 
             let (class, fixed_preg) = match req {
                 Requirement::Fixed(preg) => (preg.class(), Some(preg)),

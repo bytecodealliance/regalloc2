@@ -166,8 +166,8 @@ impl<'a, F: Function> Env<'a, F> {
             }
         }
 
-        let mut half_moves: Vec<HalfMove> = Vec::with_capacity(6 * self.func.insts());
-        let mut reuse_input_insts = Vec::with_capacity(self.func.insts() / 2);
+        let mut half_moves: Vec<HalfMove> = Vec::with_capacity(6 * self.func.num_insts());
+        let mut reuse_input_insts = Vec::with_capacity(self.func.num_insts() / 2);
 
         let mut blockparam_in_idx = 0;
         let mut blockparam_out_idx = 0;
@@ -290,7 +290,7 @@ impl<'a, F: Function> Env<'a, F> {
                     // same allocation) and if the vreg is live, add a
                     // Source half-move.
                     let mut block = self.cfginfo.insn_block[range.from.inst().index()];
-                    while block.is_valid() && block.index() < self.func.blocks() {
+                    while block.is_valid() && block.index() < self.func.num_blocks() {
                         if range.to < self.cfginfo.block_exit[block.index()].next() {
                             break;
                         }
@@ -376,7 +376,7 @@ impl<'a, F: Function> Env<'a, F> {
                     if self.cfginfo.block_entry[block.index()] < range.from {
                         block = block.next();
                     }
-                    while block.is_valid() && block.index() < self.func.blocks() {
+                    while block.is_valid() && block.index() < self.func.num_blocks() {
                         if self.cfginfo.block_entry[block.index()] >= range.to {
                             break;
                         }
@@ -1114,11 +1114,13 @@ impl<'a, F: Function> Env<'a, F> {
                 .collect::<Vec<_>>();
             assert_eq!(vregs.len(), self.func.block_params(block).len());
             assert_eq!(allocs.len(), self.func.block_params(block).len());
-            self.add_edit(
-                self.cfginfo.block_entry[block.index()],
-                InsertMovePrio::BlockParam,
-                Edit::BlockParams { vregs, allocs },
-            );
+            for (vreg, alloc) in vregs.into_iter().zip(allocs.into_iter()) {
+                self.add_edit(
+                    self.cfginfo.block_entry[block.index()],
+                    InsertMovePrio::BlockParam,
+                    Edit::DefAlloc { alloc, vreg },
+                );
+            }
         }
 
         // Ensure edits are in sorted ProgPoint order. N.B.: this must
@@ -1138,13 +1140,6 @@ impl<'a, F: Function> Env<'a, F> {
                             ProgPoint::from_index(pos),
                             format!("move {} -> {} ({:?})", from, to, to_vreg),
                         );
-                    }
-                    &Edit::BlockParams {
-                        ref vregs,
-                        ref allocs,
-                    } => {
-                        let s = format!("blockparams vregs:{:?} allocs:{:?}", vregs, allocs);
-                        self.annotate(ProgPoint::from_index(pos), s);
                     }
                     &Edit::DefAlloc { alloc, vreg } => {
                         let s = format!("defalloc {:?} := {:?}", alloc, vreg);

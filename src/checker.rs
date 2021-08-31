@@ -389,17 +389,6 @@ impl CheckerState {
                     self.allocations.remove(&Allocation::reg(*clobber));
                 }
             }
-            &CheckerInst::BlockParams {
-                ref vregs,
-                ref allocs,
-                ..
-            } => {
-                for (vreg, alloc) in vregs.iter().zip(allocs.iter()) {
-                    let reftyped = checker.reftyped_vregs.contains(vreg);
-                    self.allocations
-                        .insert(*alloc, CheckerValue::Reg(*vreg, reftyped));
-                }
-            }
             &CheckerInst::DefAlloc { alloc, vreg } => {
                 let reftyped = checker.reftyped_vregs.contains(&vreg);
                 self.allocations
@@ -478,14 +467,6 @@ pub(crate) enum CheckerInst {
         clobbers: Vec<PReg>,
     },
 
-    /// The top of a block with blockparams. We define the given vregs
-    /// into the given allocations.
-    BlockParams {
-        block: Block,
-        vregs: Vec<VReg>,
-        allocs: Vec<Allocation>,
-    },
-
     /// Define an allocation's contents. Like BlockParams but for one
     /// allocation. Used sometimes when moves are elided but ownership
     /// of a value is logically transferred to a new vreg.
@@ -514,7 +495,7 @@ impl<'a, F: Function> Checker<'a, F> {
         let mut bb_insts = HashMap::new();
         let mut reftyped_vregs = HashSet::new();
 
-        for block in 0..f.blocks() {
+        for block in 0..f.num_blocks() {
             let block = Block::new(block);
             bb_in.insert(block, Default::default());
             bb_insts.insert(block, vec![]);
@@ -548,7 +529,7 @@ impl<'a, F: Function> Checker<'a, F> {
         // For each original instruction, create an `Op`.
         let mut last_inst = None;
         let mut insert_idx = 0;
-        for block in 0..self.f.blocks() {
+        for block in 0..self.f.num_blocks() {
             let block = Block::new(block);
             for inst in self.f.block_insns(block).iter() {
                 assert!(last_inst.is_none() || inst > last_inst.unwrap());
@@ -617,17 +598,6 @@ impl<'a, F: Function> Checker<'a, F> {
                         .unwrap()
                         .push(CheckerInst::DefAlloc { alloc, vreg });
                 }
-                &Edit::BlockParams {
-                    ref vregs,
-                    ref allocs,
-                } => {
-                    let inst = CheckerInst::BlockParams {
-                        block,
-                        vregs: vregs.clone(),
-                        allocs: allocs.clone(),
-                    };
-                    self.bb_insts.get_mut(&block).unwrap().push(inst);
-                }
             }
         }
     }
@@ -636,7 +606,7 @@ impl<'a, F: Function> Checker<'a, F> {
     fn analyze(&mut self) {
         let mut queue = VecDeque::new();
         let mut queue_set = HashSet::new();
-        for block in 0..self.f.blocks() {
+        for block in 0..self.f.num_blocks() {
             let block = Block::new(block);
             queue.push_back(block);
             queue_set.insert(block);
@@ -718,7 +688,7 @@ impl<'a, F: Function> Checker<'a, F> {
         for vreg in self.f.reftype_vregs() {
             log::trace!("  REF: {}", vreg);
         }
-        for bb in 0..self.f.blocks() {
+        for bb in 0..self.f.num_blocks() {
             let bb = Block::new(bb);
             log::trace!("block{}:", bb.index());
             let insts = self.bb_insts.get(&bb).unwrap();
@@ -742,17 +712,6 @@ impl<'a, F: Function> Checker<'a, F> {
                     }
                     &CheckerInst::Move { from, into } => {
                         log::trace!("    {} -> {}", from, into);
-                    }
-                    &CheckerInst::BlockParams {
-                        ref vregs,
-                        ref allocs,
-                        ..
-                    } => {
-                        let mut args = vec![];
-                        for (vreg, alloc) in vregs.iter().zip(allocs.iter()) {
-                            args.push(format!("{}:{}", vreg, alloc));
-                        }
-                        log::trace!("    blockparams: {}", args.join(", "));
                     }
                     &CheckerInst::DefAlloc { alloc, vreg } => {
                         log::trace!("    defalloc: {}:{}", vreg, alloc);

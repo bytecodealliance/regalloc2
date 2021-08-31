@@ -82,7 +82,7 @@ impl<'a, F: Function> Env<'a, F> {
             self.vregs[v.vreg()].is_pinned = true;
         }
         // Create allocations too.
-        for inst in 0..self.func.insts() {
+        for inst in 0..self.func.num_insts() {
             let start = self.allocs.len() as u32;
             self.inst_alloc_offsets.push(start);
             for _ in 0..self.func.inst_operands(Inst::new(inst)).len() {
@@ -247,7 +247,7 @@ impl<'a, F: Function> Env<'a, F> {
 
     pub fn compute_liveness(&mut self) -> Result<(), RegAllocError> {
         // Create initial LiveIn and LiveOut bitsets.
-        for _ in 0..self.func.blocks() {
+        for _ in 0..self.func.num_blocks() {
             self.liveins.push(BitVec::new());
             self.liveouts.push(BitVec::new());
         }
@@ -347,7 +347,7 @@ impl<'a, F: Function> Env<'a, F> {
         let mut vreg_ranges: Vec<LiveRangeIndex> =
             vec![LiveRangeIndex::invalid(); self.func.num_vregs()];
 
-        for i in (0..self.func.blocks()).rev() {
+        for i in (0..self.func.num_blocks()).rev() {
             let block = Block::new(i);
 
             self.stats.livein_blocks += 1;

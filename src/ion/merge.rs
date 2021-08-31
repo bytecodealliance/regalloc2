@@ -303,7 +303,7 @@ impl<'a, F: Function> Env<'a, F> {
             self.bundles[bundle.index()].spillset = ssidx;
         }
 
-        for inst in 0..self.func.insts() {
+        for inst in 0..self.func.num_insts() {
             let inst = Inst::new(inst);
 
             // Attempt to merge Reuse-constraint operand outputs with the

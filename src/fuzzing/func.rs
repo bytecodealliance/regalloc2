@@ -75,11 +75,11 @@ pub struct Func {
 }
 
 impl Function for Func {
-    fn insts(&self) -> usize {
+    fn num_insts(&self) -> usize {
         self.insts.len()
     }
 
-    fn blocks(&self) -> usize {
+    fn num_blocks(&self) -> usize {
         self.blocks.len()
     }
 

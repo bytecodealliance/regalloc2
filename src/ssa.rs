@@ -16,7 +16,7 @@ pub fn validate_ssa<F: Function>(f: &F, cfginfo: &CFGInfo) -> Result<(), RegAllo
     // dominates this one. Also check that for every block param and
     // inst def, that this is the only def.
     let mut defined = vec![false; f.num_vregs()];
-    for block in 0..f.blocks() {
+    for block in 0..f.num_blocks() {
         let block = Block::new(block);
         for blockparam in f.block_params(block) {
             if defined[blockparam.vreg()] {
@@ -62,7 +62,7 @@ pub fn validate_ssa<F: Function>(f: &F, cfginfo: &CFGInfo) -> Result<(), RegAllo
     // number of blockparams in their succs, and that the end of every
     // block ends in this branch or in a ret, and that there are no
     // other branches or rets in the middle of the block.
-    for block in 0..f.blocks() {
+    for block in 0..f.num_blocks() {
         let block = Block::new(block);
         let insns = f.block_insns(block);
         for insn in insns.iter() {

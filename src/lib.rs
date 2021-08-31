@@ -37,8 +37,24 @@ pub enum RegClass {
 }
 
 /// A physical register. Contains a physical register number and a class.
+///
+/// The `hw_enc` field contains the physical register number and is in
+/// a logically separate index space per class; in other words, Int
+/// register 0 is different than Float register 0.
+///
+/// Because of bit-packed encodings throughout the implementation,
+/// `hw_enc` must fit in 5 bits, i.e., at most 32 registers per class.
+///
+/// The value returned by `index()`, in contrast, is in a single index
+/// space shared by all classes, in order to enable uniform reasoning
+/// about physical registers. This is done by putting the class bit at
+/// the MSB, or equivalently, declaring that indices 0..31 are the 32
+/// integer registers and indices 32..63 are the 32 float registers.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct PReg(u8, RegClass);
+pub struct PReg {
+    hw_enc: u8,
+    class: RegClass,
+}
 
 impl PReg {
     pub const MAX_BITS: usize = 5;
@@ -48,21 +64,31 @@ impl PReg {
     /// Create a new PReg. The `hw_enc` range is 6 bits.
     #[inline(always)]
     pub const fn new(hw_enc: usize, class: RegClass) -> Self {
-        PReg(hw_enc as u8, class)
+        // We don't have const panics yet (rust-lang/rust#85194) so we
+        // need to use a little indexing trick here. We unfortunately
+        // can't use the `static-assertions` crate because we need
+        // this to work both for const `hw_enc` and for runtime
+        // values.
+        const HW_ENC_MUST_BE_IN_BOUNDS: &[bool; PReg::MAX + 1] = &[true; PReg::MAX + 1];
+        let _ = HW_ENC_MUST_BE_IN_BOUNDS[hw_enc];
+
+        PReg {
+            hw_enc: hw_enc as u8,
+            class,
+        }
     }
 
     /// The physical register number, as encoded by the ISA for the particular register class.
     #[inline(always)]
     pub fn hw_enc(self) -> usize {
-        let hw_enc = self.0 as usize;
-        debug_assert!(hw_enc <= Self::MAX);
+        let hw_enc = self.hw_enc as usize;
         hw_enc
     }
 
     /// The register class.
     #[inline(always)]
     pub fn class(self) -> RegClass {
-        self.1
+        self.class
     }
 
     /// Get an index into the (not necessarily contiguous) index space of
@@ -70,7 +96,7 @@ impl PReg {
     /// all PRegs and index it efficiently.
     #[inline(always)]
     pub fn index(self) -> usize {
-        ((self.1 as u8 as usize) << 5) | (self.0 as usize)
+        ((self.class as u8 as usize) << 5) | (self.hw_enc as usize)
     }
 
     #[inline(always)]
@@ -115,7 +141,9 @@ impl std::fmt::Display for PReg {
 
 /// A virtual register. Contains a virtual register number and a class.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct VReg(u32);
+pub struct VReg {
+    bits: u32,
+}
 
 impl VReg {
     pub const MAX_BITS: usize = 20;
@@ -123,19 +151,25 @@ impl VReg {
 
     #[inline(always)]
     pub const fn new(virt_reg: usize, class: RegClass) -> Self {
-        VReg(((virt_reg as u32) << 1) | (class as u8 as u32))
+        // See comment in `PReg::new()`: we are emulating a const
+        // assert here until const panics are stable.
+        const VIRT_REG_MUST_BE_IN_BOUNDS: &[bool; VReg::MAX + 1] = &[true; VReg::MAX + 1];
+        let _ = VIRT_REG_MUST_BE_IN_BOUNDS[virt_reg];
+
+        VReg {
+            bits: ((virt_reg as u32) << 1) | (class as u8 as u32),
+        }
     }
 
     #[inline(always)]
     pub fn vreg(self) -> usize {
-        let vreg = (self.0 >> 1) as usize;
-        debug_assert!(vreg <= Self::MAX);
+        let vreg = (self.bits >> 1) as usize;
         vreg
     }
 
     #[inline(always)]
     pub fn class(self) -> RegClass {
-        match self.0 & 1 {
+        match self.bits & 1 {
             0 => RegClass::Int,
             1 => RegClass::Float,
             _ => unreachable!(),
@@ -166,21 +200,25 @@ impl std::fmt::Display for VReg {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct SpillSlot(u32);
+pub struct SpillSlot {
+    bits: u32,
+}
 
 impl SpillSlot {
     #[inline(always)]
     pub fn new(slot: usize, class: RegClass) -> Self {
         assert!(slot < (1 << 24));
-        SpillSlot((slot as u32) | (class as u8 as u32) << 24)
+        SpillSlot {
+            bits: (slot as u32) | (class as u8 as u32) << 24,
+        }
     }
     #[inline(always)]
     pub fn index(self) -> usize {
-        (self.0 & 0x00ffffff) as usize
+        (self.bits & 0x00ffffff) as usize
     }
     #[inline(always)]
     pub fn class(self) -> RegClass {
-        match (self.0 >> 24) as u8 {
+        match (self.bits >> 24) as u8 {
             0 => RegClass::Int,
             1 => RegClass::Float,
             _ => unreachable!(),
@@ -193,7 +231,7 @@ impl SpillSlot {
 
     #[inline(always)]
     pub fn invalid() -> Self {
-        SpillSlot(0xffff_ffff)
+        SpillSlot { bits: 0xffff_ffff }
     }
     #[inline(always)]
     pub fn is_invalid(self) -> bool {
@@ -211,17 +249,78 @@ impl std::fmt::Display for SpillSlot {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OperandConstraint {
+    /// Any location is fine (register or stack slot).
+    Any,
+    /// Operand must be in a register. Register is read-only for Uses.
+    Reg,
+    /// Operand must be on the stack.
+    Stack,
+    /// Operand must be in a fixed register.
+    FixedReg(PReg),
+    /// On defs only: reuse a use's register.
+    Reuse(usize),
+}
+
+impl std::fmt::Display for OperandConstraint {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Self::Any => write!(f, "any"),
+            Self::Reg => write!(f, "reg"),
+            Self::Stack => write!(f, "stack"),
+            Self::FixedReg(preg) => write!(f, "fixed({})", preg),
+            Self::Reuse(idx) => write!(f, "reuse({})", idx),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OperandKind {
+    Def = 0,
+    Mod = 1,
+    Use = 2,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OperandPos {
+    Before = 0,
+    After = 1,
+}
+
 /// An `Operand` encodes everything about a mention of a register in
 /// an instruction: virtual register number, and any constraint that
 /// applies to the register at this program point.
 ///
 /// An Operand may be a use or def (this corresponds to `LUse` and
 /// `LAllocation` in Ion).
+///
+/// Generally, regalloc2 considers operands to have their effects at
+/// one of two program points that surround an instruction: "Before"
+/// or "After". All operands at a given program-point are assigned
+/// non-conflicting locations based on their constraints. Each operand
+/// has a "kind", one of use/def/mod, corresponding to
+/// read/write/read-write, respectively.
+///
+/// Usually, an instruction's inputs will be uses-at-Before and
+/// outputs will be defs-at-After, though there are valid use-cases
+/// for other combinations too. For example, a single "instruction"
+/// seen by the regalloc that lowers into multiple machine
+/// instructions and reads some of its inputs after it starts to write
+/// outputs must either make those input(s) uses-at-After or those
+/// output(s) defs-at-Before so that the conflict (overlap) is
+/// properly accounted for. See comments on the constructors below for
+/// more.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Operand {
     /// Bit-pack into 32 bits.
     ///
     /// constraint:3 kind:2 pos:1 class:1 preg:5 vreg:20
+    ///
+    /// where `constraint` is an `OperandConstraint`, `kind` is an
+    /// `OperandKind`, `pos` is an `OperandPos`, `class` is a
+    /// `RegClass`, `preg` is a `PReg` or an index for a reused-input
+    /// constraint, and `vreg` is a vreg index.
     bits: u32,
 }
 
@@ -259,6 +358,9 @@ impl Operand {
         }
     }
 
+    /// Create an `Operand` that designates a use of a VReg that must
+    /// be in a register, and that is used at the "before" point,
+    /// i.e., can be overwritten by a result.
     #[inline(always)]
     pub fn reg_use(vreg: VReg) -> Self {
         Operand::new(
@@ -268,6 +370,10 @@ impl Operand {
             OperandPos::Before,
         )
     }
+
+    /// Create an `Operand` that designates a use of a VReg that must
+    /// be in a register, and that is used up until the "after" point,
+    /// i.e., must not conflict with any results.
     #[inline(always)]
     pub fn reg_use_at_end(vreg: VReg) -> Self {
         Operand::new(
@@ -277,6 +383,11 @@ impl Operand {
             OperandPos::After,
         )
     }
+
+    /// Create an `Operand` that designates a definition of a VReg
+    /// that must be in a register, and that occurs at the "after"
+    /// point, i.e. may reuse a register that carried a use into this
+    /// instruction.
     #[inline(always)]
     pub fn reg_def(vreg: VReg) -> Self {
         Operand::new(
@@ -286,6 +397,11 @@ impl Operand {
             OperandPos::After,
         )
     }
+
+    /// Create an `Operand` that designates a definition of a VReg
+    /// that must be in a register, and that occurs early at the
+    /// "before" point, i.e., must not conflict with any input to the
+    /// instruction.
     #[inline(always)]
     pub fn reg_def_at_start(vreg: VReg) -> Self {
         Operand::new(
@@ -295,8 +411,17 @@ impl Operand {
             OperandPos::Before,
         )
     }
+
+    /// Create an `Operand` that designates a def (and use) of a
+    /// temporary *within* the instruction. This register is assumed
+    /// to be written by the instruction, and will not conflict with
+    /// any input or output, but should not be used after the
+    /// instruction completes.
     #[inline(always)]
     pub fn reg_temp(vreg: VReg) -> Self {
+        // For now a temp is equivalent to a def-at-start operand,
+        // which gives the desired semantics but does not enforce the
+        // "not reused later" constraint.
         Operand::new(
             vreg,
             OperandConstraint::Reg,
@@ -304,6 +429,12 @@ impl Operand {
             OperandPos::Before,
         )
     }
+
+    /// Create an `Operand` that designates a def of a vreg that must
+    /// reuse the register assigned to an input to the
+    /// instruction. The input is identified by `idx` (is the `idx`th
+    /// `Operand` for the instruction) and must be constraint to a
+    /// register, i.e., be the result of `Operand::reg_use(vreg)`.
     #[inline(always)]
     pub fn reg_reuse_def(vreg: VReg, idx: usize) -> Self {
         Operand::new(
@@ -313,6 +444,11 @@ impl Operand {
             OperandPos::After,
         )
     }
+
+    /// Create an `Operand` that designates a use of a vreg and
+    /// ensures that it is placed in the given, fixed PReg at the
+    /// use. It is guaranteed that the `Allocation` resulting for this
+    /// operand will be `preg`.
     #[inline(always)]
     pub fn reg_fixed_use(vreg: VReg, preg: PReg) -> Self {
         Operand::new(
@@ -322,6 +458,11 @@ impl Operand {
             OperandPos::Before,
         )
     }
+
+    /// Create an `Operand` that designates a def of a vreg and
+    /// ensures that it is placed in the given, fixed PReg at the
+    /// def. It is guaranteed that the `Allocation` resulting for this
+    /// operand will be `preg`.
     #[inline(always)]
     pub fn reg_fixed_def(vreg: VReg, preg: PReg) -> Self {
         Operand::new(
@@ -332,12 +473,17 @@ impl Operand {
         )
     }
 
+    /// Get the virtual register designated by an operand. Every
+    /// operand must name some virtual register, even if it constrains
+    /// the operand to a fixed physical register as well; the vregs
+    /// are used to track dataflow.
     #[inline(always)]
     pub fn vreg(self) -> VReg {
         let vreg_idx = ((self.bits as usize) & VReg::MAX) as usize;
         VReg::new(vreg_idx, self.class())
     }
 
+    /// Get the register class used by this operand.
     #[inline(always)]
     pub fn class(self) -> RegClass {
         let class_field = (self.bits >> 25) & 1;
@@ -348,6 +494,8 @@ impl Operand {
         }
     }
 
+    /// Get the "kind" of this operand: a definition (write), a use
+    /// (read), or a "mod" / modify (a read followed by a write).
     #[inline(always)]
     pub fn kind(self) -> OperandKind {
         let kind_field = (self.bits >> 27) & 3;
@@ -359,6 +507,10 @@ impl Operand {
         }
     }
 
+    /// Get the "position" of this operand, i.e., where its read
+    /// and/or write occurs: either before the instruction executes,
+    /// or after it does. Ordinarily, uses occur at "before" and defs
+    /// at "after", though there are cases where this is not true.
     #[inline(always)]
     pub fn pos(self) -> OperandPos {
         let pos_field = (self.bits >> 26) & 1;
@@ -369,6 +521,8 @@ impl Operand {
         }
     }
 
+    /// Get the "constraint" of this operand, i.e., what requirements
+    /// its allocation must fulfill.
     #[inline(always)]
     pub fn constraint(self) -> OperandConstraint {
         let constraint_field = (self.bits >> 29) & 7;
@@ -383,11 +537,14 @@ impl Operand {
         }
     }
 
+    /// Get the raw 32-bit encoding of this operand's fields.
     #[inline(always)]
     pub fn bits(self) -> u32 {
         self.bits
     }
 
+    /// Construct an `Operand` from the raw 32-bit encoding returned
+    /// from `bits()`.
     #[inline(always)]
     pub fn from_bits(bits: u32) -> Self {
         debug_assert!(bits >> 29 <= 4);
@@ -423,45 +580,6 @@ impl std::fmt::Display for Operand {
             self.constraint()
         )
     }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum OperandConstraint {
-    /// Any location is fine (register or stack slot).
-    Any,
-    /// Operand must be in a register. Register is read-only for Uses.
-    Reg,
-    /// Operand must be on the stack.
-    Stack,
-    /// Operand must be in a fixed register.
-    FixedReg(PReg),
-    /// On defs only: reuse a use's register. Which use is given by `preg` field.
-    Reuse(usize),
-}
-
-impl std::fmt::Display for OperandConstraint {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            Self::Any => write!(f, "any"),
-            Self::Reg => write!(f, "reg"),
-            Self::Stack => write!(f, "stack"),
-            Self::FixedReg(preg) => write!(f, "fixed({})", preg),
-            Self::Reuse(idx) => write!(f, "reuse({})", idx),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum OperandKind {
-    Def = 0,
-    Mod = 1,
-    Use = 2,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum OperandPos {
-    Before = 0,
-    After = 1,
 }
 
 /// An Allocation represents the end result of regalloc for an
@@ -511,7 +629,7 @@ impl Allocation {
 
     #[inline(always)]
     pub fn stack(slot: SpillSlot) -> Allocation {
-        Allocation::new(AllocationKind::Stack, slot.0 as usize)
+        Allocation::new(AllocationKind::Stack, slot.bits as usize)
     }
 
     #[inline(always)]
@@ -556,7 +674,9 @@ impl Allocation {
     #[inline(always)]
     pub fn as_stack(self) -> Option<SpillSlot> {
         if self.kind() == AllocationKind::Stack {
-            Some(SpillSlot(self.index() as u32))
+            Some(SpillSlot {
+                bits: self.index() as u32,
+            })
         } else {
             None
         }
@@ -604,10 +724,10 @@ pub trait Function {
     // -------------
 
     /// How many instructions are there?
-    fn insts(&self) -> usize;
+    fn num_insts(&self) -> usize;
 
     /// How many blocks are there?
-    fn blocks(&self) -> usize;
+    fn num_blocks(&self) -> usize;
 
     /// Get the index of the entry block.
     fn entry_block(&self) -> Block;
@@ -649,6 +769,16 @@ pub trait Function {
     fn branch_blockparam_arg_offset(&self, block: Block, insn: Inst) -> usize;
 
     /// Determine whether an instruction is a safepoint and requires a stackmap.
+    ///
+    /// Strictly speaking, these two parts (is a safepoint, requires a
+    /// stackmap) are orthogonal. An instruction could want to see a
+    /// stackmap of refs on the stack (without forcing them), or it
+    /// could want all refs to be on the stack (without knowing where
+    /// they are). Only the latter strictly follows from "is a
+    /// safepoint". But in practice, both are true at the same time,
+    /// so we combine the two notions: for regalloc2, a "safepoint
+    /// instruction" is one that both forces refs onto the stack, and
+    /// provides a stackmap indicating where they are.
     fn is_safepoint(&self, _: Inst) -> bool {
         false
     }
@@ -664,7 +794,16 @@ pub trait Function {
     /// Get the Operands for an instruction.
     fn inst_operands(&self, insn: Inst) -> &[Operand];
 
-    /// Get the clobbers for an instruction.
+    /// Get the clobbers for an instruction; these are the registers
+    /// that the instruction is known to overwrite, separate from its
+    /// outputs described by its `Operand`s. This can be used to, for
+    /// example, describe ABI-specified registers that are not
+    /// preserved by a call instruction, or fixed physical registers
+    /// written by an instruction but not used as a vreg output, or
+    /// fixed physical registers used as temps within an instruction
+    /// out of necessity. Every register written to by an instruction
+    /// must either be described by an Operand of kind `Def` or `Mod`,
+    /// or else must be a "clobber".
     fn inst_clobbers(&self, insn: Inst) -> &[PReg];
 
     /// Get the number of `VReg` in use in this function.
@@ -743,7 +882,15 @@ pub trait Function {
     }
 }
 
-/// A position before or after an instruction.
+/// A position before or after an instruction at which we can make an
+/// edit.
+///
+/// Note that this differs from `OperandPos` in that the former
+/// describes specifically a constraint on an operand, while this
+/// describes a program point. `OperandPos` could grow more options in
+/// the future, for example if we decide that an "early write" or
+/// "late read" phase makes sense, while `InstPosition` will always
+/// describe these two insertion points.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
 pub enum InstPosition {
@@ -839,13 +986,7 @@ pub enum Edit {
         to: Allocation,
         to_vreg: Option<VReg>,
     },
-    /// Define blockparams' locations. Note that this is not typically
-    /// turned into machine code, but can be useful metadata (e.g. for
-    /// the checker).
-    BlockParams {
-        vregs: Vec<VReg>,
-        allocs: Vec<Allocation>,
-    },
+
     /// Define a particular Allocation to contain a particular VReg. Useful
     /// for the checker.
     DefAlloc { alloc: Allocation, vreg: VReg },
@@ -859,16 +1000,20 @@ pub enum Edit {
 pub struct MachineEnv {
     /// Physical registers. Every register that might be mentioned in
     /// any constraint must be listed here, even if it is not
-    /// allocatable under normal conditions.
+    /// allocatable (present in one of
+    /// `{preferred,non_preferred}_regs_by_class`).
     pub regs: Vec<PReg>,
+
     /// Preferred physical registers for each class. These are the
     /// registers that will be allocated first, if free.
     pub preferred_regs_by_class: [Vec<PReg>; 2],
+
     /// Non-preferred physical registers for each class. These are the
     /// registers that will be allocated if a preferred register is
     /// not available; using one of these is considered suboptimal,
     /// but still better than spilling.
     pub non_preferred_regs_by_class: [Vec<PReg>; 2],
+
     /// One scratch register per class. This is needed to perform
     /// moves between registers when cyclic move patterns occur. The
     /// register should not be placed in either the preferred or
@@ -888,12 +1033,15 @@ pub struct MachineEnv {
 pub struct Output {
     /// How many spillslots are needed in the frame?
     pub num_spillslots: usize,
+
     /// Edits (insertions or removals). Guaranteed to be sorted by
     /// program point.
     pub edits: Vec<(ProgPoint, Edit)>,
+
     /// Allocations for each operand. Mapping from instruction to
     /// allocations provided by `inst_alloc_offsets` below.
     pub allocs: Vec<Allocation>,
+
     /// Allocation offset in `allocs` for each instruction.
     pub inst_alloc_offsets: Vec<u32>,
 
