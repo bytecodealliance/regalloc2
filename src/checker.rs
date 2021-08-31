@@ -17,6 +17,16 @@
 //! conceptually generates a symbolic value "Vn" when storing to (or
 //! modifying) a virtual register.
 //!
+//! These symbolic values are precise but partial: in other words, if
+//! a physical register is described as containing a virtual register
+//! at a program point, it must actually contain the value of this
+//! register (modulo any analysis bugs); but it may resolve to
+//! `Conflicts` even in cases where one *could* statically prove that
+//! it contains a certain register, because the analysis is not
+//! perfectly path-sensitive or value-sensitive. However, all
+//! assignments *produced by our register allocator* should be
+//! analyzed fully precisely.
+//!
 //! Operand constraints (fixed register, register, any) are also checked
 //! at each operand.
 //!
@@ -24,7 +34,8 @@
 //!
 //!   - map of: Allocation -> lattice value  (top > Vn symbols (unordered) > bottom)
 //!
-//! And the transfer functions for instructions are:
+//! And the transfer functions for instructions are (where `A` is the
+//! above map from allocated physical registers to symbolic values):
 //!
 //!   - `Edit::Move` inserted by RA:       [ alloc_d := alloc_s ]
 //!
@@ -36,7 +47,7 @@
 //!      machine code, but we include their allocations so that this
 //!      checker can work)
 //!
-//!       A[A_i] := meet(A_j, A_k, ...)
+//!       A[A_i] := meet(A[A_j], A[A_k], ...)
 //!
 //!   - statement in pre-regalloc function [ V_i := op V_j, V_k, ... ]
 //!     with allocated form                [ A_i := op A_j, A_k, ... ]

@@ -4,10 +4,6 @@
  */
 
 //! Index sets: sets of integers that represent indices into a space.
-//!
-//! For historical reasons this is called a `BitVec` but it is no
-//! longer a dense bitvector; the chunked adaptive-sparse data
-//! structure here has better performance.
 
 use fxhash::FxHashMap;
 use std::cell::Cell;
@@ -201,17 +197,17 @@ impl<'a> std::iter::Iterator for AdaptiveMapIter<'a> {
     }
 }
 
-/// A conceptually infinite-length bitvector that allows bitwise operations and
-/// iteration over set bits efficiently.
+/// A conceptually infinite-length set of indices that allows union
+/// and efficient iteration over elements.
 #[derive(Clone)]
-pub struct BitVec {
+pub struct IndexSet {
     elems: AdaptiveMap,
     cache: Cell<(u32, u64)>,
 }
 
 const BITS_PER_WORD: usize = 64;
 
-impl BitVec {
+impl IndexSet {
     pub fn new() -> Self {
         Self {
             elems: AdaptiveMap::new(),
@@ -272,7 +268,7 @@ impl BitVec {
         }
     }
 
-    pub fn or(&mut self, other: &Self) -> bool {
+    pub fn union_with(&mut self, other: &Self) -> bool {
         let mut changed = 0;
         for (word_idx, bits) in other.elems.iter() {
             if bits == 0 {
@@ -324,7 +320,7 @@ impl Iterator for SetBitsIter {
     }
 }
 
-impl std::fmt::Debug for BitVec {
+impl std::fmt::Debug for IndexSet {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         let vals = self.iter().collect::<Vec<_>>();
         write!(f, "{:?}", vals)
@@ -333,11 +329,11 @@ impl std::fmt::Debug for BitVec {
 
 #[cfg(test)]
 mod test {
-    use super::BitVec;
+    use super::IndexSet;
 
     #[test]
     fn test_set_bits_iter() {
-        let mut vec = BitVec::new();
+        let mut vec = IndexSet::new();
         let mut sum = 0;
         for i in 0..1024 {
             if i % 17 == 0 {
@@ -357,7 +353,7 @@ mod test {
 
     #[test]
     fn test_expand_remove_zero_elems() {
-        let mut vec = BitVec::new();
+        let mut vec = IndexSet::new();
         // Set 12 different words (this is the max small-mode size).
         for i in 0..12 {
             vec.set(64 * i, true);

@@ -13,9 +13,9 @@
 
 //! Data structures for backtracking allocator.
 
-use crate::bitvec::BitVec;
 use crate::cfg::CFGInfo;
 use crate::index::ContainerComparator;
+use crate::indexset::IndexSet;
 use crate::{
     define_index, Allocation, Block, Edit, Function, Inst, MachineEnv, Operand, PReg, ProgPoint,
     RegClass, SpillSlot, VReg,
@@ -267,8 +267,8 @@ pub struct Env<'a, F: Function> {
     pub func: &'a F,
     pub env: &'a MachineEnv,
     pub cfginfo: CFGInfo,
-    pub liveins: Vec<BitVec>,
-    pub liveouts: Vec<BitVec>,
+    pub liveins: Vec<IndexSet>,
+    pub liveouts: Vec<IndexSet>,
     /// Blockparam outputs: from-vreg, (end of) from-block, (start of)
     /// to-block, to-vreg. The field order is significant: these are sorted so
     /// that a scan over vregs, then blocks in each range, can scan in

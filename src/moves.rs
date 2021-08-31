@@ -68,12 +68,14 @@ impl<T: Clone + Copy + Default> ParallelMoves<T> {
         // has only one writer (otherwise the effect of the parallel
         // move is undefined), each move can only block one other move
         // (with its one source corresponding to the one writer of
-        // that source). Thus, we *can only have simple cycles*: there
-        // are no SCCs that are more complex than that. We leverage
-        // this fact below to avoid having to do a full Tarjan SCC DFS
-        // (with lowest-index computation, etc.): instead, as soon as
-        // we find a cycle, we know we have the full cycle and we can
-        // do a cyclic move sequence and continue.
+        // that source). Thus, we *can only have simple cycles* (those
+        // that are a ring of nodes, i.e., with only one path from a
+        // node back to itself); there are no SCCs that are more
+        // complex than that. We leverage this fact below to avoid
+        // having to do a full Tarjan SCC DFS (with lowest-index
+        // computation, etc.): instead, as soon as we find a cycle, we
+        // know we have the full cycle and we can do a cyclic move
+        // sequence and continue.
 
         // Sort moves by destination and check that each destination
         // has only one writer.

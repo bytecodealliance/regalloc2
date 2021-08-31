@@ -12,9 +12,9 @@
 
 #![allow(dead_code)]
 
-pub mod bitvec;
 pub(crate) mod cfg;
 pub(crate) mod domtree;
+pub mod indexset;
 pub(crate) mod ion;
 pub(crate) mod moves;
 pub(crate) mod postorder;
@@ -30,6 +30,18 @@ pub mod checker;
 pub mod fuzzing;
 
 /// Register classes.
+///
+/// Every value has a "register class", which is like a type at the
+/// register-allocator level. Every register must belong to only one
+/// class; i.e., they are disjoint.
+///
+/// For tight bit-packing throughout our data structures, we support
+/// only two classes, "int" and "float". This will usually be enough
+/// on modern machines, as they have one class of general-purpose
+/// integer registers of machine width (e.g. 64 bits), and another
+/// class of float/vector registers used both for FP and for vector
+/// operations. If needed, we could adjust bitpacking to allow for
+/// more classes in the future.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum RegClass {
     Int = 0,
@@ -99,6 +111,7 @@ impl PReg {
         ((self.class as u8 as usize) << 5) | (self.hw_enc as usize)
     }
 
+    /// Construct a PReg from the value returned from `.index()`.
     #[inline(always)]
     pub fn from_index(index: usize) -> Self {
         let class = (index >> 5) & 1;
@@ -111,6 +124,8 @@ impl PReg {
         PReg::new(index, class)
     }
 
+    /// Return the "invalid PReg", which can be used to initialize
+    /// data structures.
     #[inline(always)]
     pub fn invalid() -> Self {
         PReg::new(Self::MAX, RegClass::Int)
@@ -139,7 +154,16 @@ impl std::fmt::Display for PReg {
     }
 }
 
-/// A virtual register. Contains a virtual register number and a class.
+/// A virtual register. Contains a virtual register number and a
+/// class.
+///
+/// A virtual register ("vreg") corresponds to an SSA value for SSA
+/// input, or just a register when we allow for non-SSA input. All
+/// dataflow in the input program is specified via flow through a
+/// virtual register; even uses of specially-constrained locations,
+/// such as fixed physical registers, are done by using vregs, because
+/// we need the vreg's live range in order to track the use of that
+/// location.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct VReg {
     bits: u32,
@@ -199,12 +223,19 @@ impl std::fmt::Display for VReg {
     }
 }
 
+/// A spillslot is a space in the stackframe used by the allocator to
+/// temporarily store a value.
+///
+/// The allocator is responsible for allocating indices in this space,
+/// and will specify how many spillslots have been used when the
+/// allocation is completed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SpillSlot {
     bits: u32,
 }
 
 impl SpillSlot {
+    /// Create a new SpillSlot of a given class.
     #[inline(always)]
     pub fn new(slot: usize, class: RegClass) -> Self {
         assert!(slot < (1 << 24));
@@ -212,10 +243,14 @@ impl SpillSlot {
             bits: (slot as u32) | (class as u8 as u32) << 24,
         }
     }
+
+    /// Get the spillslot index for this spillslot.
     #[inline(always)]
     pub fn index(self) -> usize {
         (self.bits & 0x00ffffff) as usize
     }
+
+    /// Get the class for this spillslot.
     #[inline(always)]
     pub fn class(self) -> RegClass {
         match (self.bits >> 24) as u8 {
@@ -224,19 +259,26 @@ impl SpillSlot {
             _ => unreachable!(),
         }
     }
+
+    /// Get the spillslot `offset` slots away.
     #[inline(always)]
     pub fn plus(self, offset: usize) -> Self {
         SpillSlot::new(self.index() + offset, self.class())
     }
 
+    /// Get the invalid spillslot, used for initializing data structures.
     #[inline(always)]
     pub fn invalid() -> Self {
         SpillSlot { bits: 0xffff_ffff }
     }
+
+    /// Is this the invalid spillslot?
     #[inline(always)]
     pub fn is_invalid(self) -> bool {
         self == Self::invalid()
     }
+
+    /// Is this a valid spillslot (not `SpillSlot::invalid()`)?
     #[inline(always)]
     pub fn is_valid(self) -> bool {
         self != Self::invalid()
@@ -249,6 +291,14 @@ impl std::fmt::Display for SpillSlot {
     }
 }
 
+/// An `OperandConstraint` specifies where a vreg's value must be
+/// placed at a particular reference to that vreg via an
+/// `Operand`. The constraint may be loose -- "any register of a given
+/// class", for example -- or very specific, such as "this particular
+/// physical register". The allocator's result will always satisfy all
+/// given constraints; however, if the input has a combination of
+/// constraints that are impossible to satisfy, then allocation may
+/// fail.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OperandConstraint {
     /// Any location is fine (register or stack slot).
@@ -275,6 +325,8 @@ impl std::fmt::Display for OperandConstraint {
     }
 }
 
+/// The "kind" of the operand: whether it reads a vreg (Use), writes a
+/// vreg (Def), or reads and then writes (Mod, for "modify").
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OperandKind {
     Def = 0,
@@ -282,6 +334,23 @@ pub enum OperandKind {
     Use = 2,
 }
 
+/// The "position" of the operand: where it has its read/write
+/// effects. These are positions "in" the instruction, and "before"
+/// and "after" are relative to the instruction's actual semantics. In
+/// other words, the allocator assumes that the instruction (i)
+/// performs all reads of "before" operands, (ii) does its work, and
+/// (iii) performs all writes of its "after" operands.
+///
+/// A "write" (def) at "before" or a "read" (use) at "after" may be
+/// slightly nonsensical, given the above; but, it is consistent with
+/// the notion that the value (even if a result of execution) *could*
+/// have been written to the register at "Before", or the value (even
+/// if depended upon by the execution) *could* have been read from the
+/// regster at "After". In other words, these write-before or
+/// use-after operands ensure that the particular allocations are
+/// valid for longer than usual and that a register is not reused
+/// between the use (normally complete at "Before") and the def
+/// (normally starting at "After"). See `Operand` for more.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OperandPos {
     Before = 0,
@@ -325,6 +394,7 @@ pub struct Operand {
 }
 
 impl Operand {
+    /// Construct a new operand.
     #[inline(always)]
     pub fn new(
         vreg: VReg,
@@ -609,6 +679,7 @@ impl std::fmt::Display for Allocation {
 }
 
 impl Allocation {
+    /// Construct a new Allocation.
     #[inline(always)]
     pub(crate) fn new(kind: AllocationKind, index: usize) -> Self {
         assert!(index < (1 << 28));
@@ -617,21 +688,26 @@ impl Allocation {
         }
     }
 
+    /// Get the "none" allocation, which is distinct from the other
+    /// possibilities and is used to initialize data structures.
     #[inline(always)]
     pub fn none() -> Allocation {
         Allocation::new(AllocationKind::None, 0)
     }
 
+    /// Create an allocation into a register.
     #[inline(always)]
     pub fn reg(preg: PReg) -> Allocation {
         Allocation::new(AllocationKind::Reg, preg.index())
     }
 
+    /// Create an allocation into a spillslot.
     #[inline(always)]
     pub fn stack(slot: SpillSlot) -> Allocation {
         Allocation::new(AllocationKind::Stack, slot.bits as usize)
     }
 
+    /// Get the allocation's "kind": none, register, or stack (spillslot).
     #[inline(always)]
     pub fn kind(self) -> AllocationKind {
         match (self.bits >> 29) & 7 {
@@ -642,26 +718,32 @@ impl Allocation {
         }
     }
 
+    /// Is the allocation "none"?
     #[inline(always)]
     pub fn is_none(self) -> bool {
         self.kind() == AllocationKind::None
     }
 
+    /// Is the allocation a register?
     #[inline(always)]
     pub fn is_reg(self) -> bool {
         self.kind() == AllocationKind::Reg
     }
 
+    /// Is the allocation on the stack (a spillslot)?
     #[inline(always)]
     pub fn is_stack(self) -> bool {
         self.kind() == AllocationKind::Stack
     }
 
+    /// Get the index of the spillslot or register. If register, this
+    /// is an index that can be used by `PReg::from_index()`.
     #[inline(always)]
     pub fn index(self) -> usize {
         (self.bits & ((1 << 28) - 1)) as usize
     }
 
+    /// Get the allocation as a physical register, if any.
     #[inline(always)]
     pub fn as_reg(self) -> Option<PReg> {
         if self.kind() == AllocationKind::Reg {
@@ -671,6 +753,7 @@ impl Allocation {
         }
     }
 
+    /// Get the allocation as a spillslot, if any.
     #[inline(always)]
     pub fn as_stack(self) -> Option<SpillSlot> {
         if self.kind() == AllocationKind::Stack {
@@ -682,11 +765,13 @@ impl Allocation {
         }
     }
 
+    /// Get the raw bits for the packed encoding of this allocation.
     #[inline(always)]
     pub fn bits(self) -> u32 {
         self.bits
     }
 
+    /// Construct an allocation from its packed encoding.
     #[inline(always)]
     pub fn from_bits(bits: u32) -> Self {
         debug_assert!(bits >> 29 >= 5);
@@ -694,6 +779,8 @@ impl Allocation {
     }
 }
 
+/// An allocation is one of two "kinds" (or "none"): register or
+/// spillslot/stack.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
 pub enum AllocationKind {
@@ -703,6 +790,7 @@ pub enum AllocationKind {
 }
 
 impl Allocation {
+    /// Get the register class of an allocation's value.
     #[inline(always)]
     pub fn class(self) -> RegClass {
         match self.kind() {
@@ -919,25 +1007,35 @@ impl std::fmt::Debug for ProgPoint {
 }
 
 impl ProgPoint {
+    /// Create a new ProgPoint before or after the given instruction.
     #[inline(always)]
     pub fn new(inst: Inst, pos: InstPosition) -> Self {
         let bits = ((inst.0 as u32) << 1) | (pos as u8 as u32);
         Self { bits }
     }
+
+    /// Create a new ProgPoint before the given instruction.
     #[inline(always)]
     pub fn before(inst: Inst) -> Self {
         Self::new(inst, InstPosition::Before)
     }
+
+    /// Create a new ProgPoint after the given instruction.
     #[inline(always)]
     pub fn after(inst: Inst) -> Self {
         Self::new(inst, InstPosition::After)
     }
+
+    /// Get the instruction that this ProgPoint is before or after.
     #[inline(always)]
     pub fn inst(self) -> Inst {
         // Cast to i32 to do an arithmetic right-shift, which will
         // preserve an `Inst::invalid()` (which is -1, or all-ones).
         Inst::new(((self.bits as i32) >> 1) as usize)
     }
+
+    /// Get the "position" (Before or After) relative to the
+    /// instruction.
     #[inline(always)]
     pub fn pos(self) -> InstPosition {
         match self.bits & 1 {
@@ -946,22 +1044,33 @@ impl ProgPoint {
             _ => unreachable!(),
         }
     }
+
+    /// Get the "next" program point: for After, this is the Before of
+    /// the next instruction, while for Before, this is After of the
+    /// same instruction.
     #[inline(always)]
     pub fn next(self) -> ProgPoint {
         Self {
             bits: self.bits + 1,
         }
     }
+
+    /// Get the "previous" program point, the inverse of `.next()`
+    /// above.
     #[inline(always)]
     pub fn prev(self) -> ProgPoint {
         Self {
             bits: self.bits - 1,
         }
     }
+
+    /// Convert to a raw encoding in 32 bits.
     #[inline(always)]
     pub fn to_index(self) -> u32 {
         self.bits
     }
+
+    /// Construct from the raw 32-bit encoding.
     #[inline(always)]
     pub fn from_index(index: u32) -> Self {
         Self { bits: index }
@@ -1061,6 +1170,7 @@ pub struct Output {
 }
 
 impl Output {
+    /// Get the allocations assigned to a given instruction.
     pub fn inst_allocs(&self, inst: Inst) -> &[Allocation] {
         let start = self.inst_alloc_offsets[inst.index()] as usize;
         let end = if inst.index() + 1 == self.inst_alloc_offsets.len() {
@@ -1108,6 +1218,7 @@ impl std::fmt::Display for RegAllocError {
 
 impl std::error::Error for RegAllocError {}
 
+/// Run the allocator.
 pub fn run<F: Function>(
     func: &F,
     env: &MachineEnv,

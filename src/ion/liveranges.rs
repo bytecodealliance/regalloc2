@@ -18,7 +18,7 @@ use super::{
     LiveRangeIndex, LiveRangeKey, LiveRangeListEntry, LiveRangeSet, PRegData, PRegIndex, RegClass,
     SpillSetIndex, Use, VRegData, VRegIndex, SLOT_NONE,
 };
-use crate::bitvec::BitVec;
+use crate::indexset::IndexSet;
 use crate::{
     Allocation, Block, Function, Inst, InstPosition, Operand, OperandConstraint, OperandKind,
     OperandPos, PReg, ProgPoint, RegAllocError, VReg,
@@ -248,8 +248,8 @@ impl<'a, F: Function> Env<'a, F> {
     pub fn compute_liveness(&mut self) -> Result<(), RegAllocError> {
         // Create initial LiveIn and LiveOut bitsets.
         for _ in 0..self.func.num_blocks() {
-            self.liveins.push(BitVec::new());
-            self.liveouts.push(BitVec::new());
+            self.liveins.push(IndexSet::new());
+            self.liveouts.push(IndexSet::new());
         }
 
         // Run a worklist algorithm to precisely compute liveins and
@@ -301,7 +301,7 @@ impl<'a, F: Function> Env<'a, F> {
             }
 
             for &pred in self.func.block_preds(block) {
-                if self.liveouts[pred.index()].or(&live) {
+                if self.liveouts[pred.index()].union_with(&live) {
                     if !workqueue_set.contains(&pred) {
                         workqueue_set.insert(pred);
                         workqueue.push_back(pred);
