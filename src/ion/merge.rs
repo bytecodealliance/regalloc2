@@ -41,8 +41,8 @@ impl<'a, F: Function> Env<'a, F> {
         }
 
         // If either bundle is already assigned (due to a pinned vreg), don't merge.
-        if !self.bundles[from.index()].allocation.is_none()
-            || !self.bundles[to.index()].allocation.is_none()
+        if self.bundles[from.index()].allocation.is_some()
+            || self.bundles[to.index()].allocation.is_some()
         {
             log::trace!("one of the bundles is already assigned (pinned)");
             return false;

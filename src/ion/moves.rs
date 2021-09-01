@@ -817,8 +817,8 @@ impl<'a, F: Function> Env<'a, F> {
                 to_alloc,
                 to_vreg.index(),
             );
-            assert!(!from_alloc.is_none());
-            assert!(!to_alloc.is_none());
+            assert!(from_alloc.is_some());
+            assert!(to_alloc.is_some());
             assert_eq!(from_inst, to_inst.prev());
             // N.B.: these moves happen with the *same* priority as
             // LR-to-LR moves, because they work just like them: they

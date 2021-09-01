@@ -298,7 +298,9 @@ impl std::fmt::Display for SpillSlot {
 /// physical register". The allocator's result will always satisfy all
 /// given constraints; however, if the input has a combination of
 /// constraints that are impossible to satisfy, then allocation may
-/// fail.
+/// fail or the allocator may panic (providing impossible constraints
+/// is usually a programming error in the client, rather than a
+/// function of bad input).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OperandConstraint {
     /// Any location is fine (register or stack slot).
@@ -487,6 +489,13 @@ impl Operand {
     /// to be written by the instruction, and will not conflict with
     /// any input or output, but should not be used after the
     /// instruction completes.
+    ///
+    /// Note that within a single instruction, the dedicated scratch
+    /// register (as specified in the `MachineEnv`) is also always
+    /// available for use. The register allocator may use the register
+    /// *between* instructions in order to implement certain sequences
+    /// of moves, but will never hold a value live in the scratch
+    /// register across an instruction.
     #[inline(always)]
     pub fn reg_temp(vreg: VReg) -> Self {
         // For now a temp is equivalent to a def-at-start operand,
@@ -722,6 +731,12 @@ impl Allocation {
     #[inline(always)]
     pub fn is_none(self) -> bool {
         self.kind() == AllocationKind::None
+    }
+
+    /// Is the allocation not "none"?
+    #[inline(always)]
+    pub fn is_some(self) -> bool {
+        self.kind() != AllocationKind::None
     }
 
     /// Is the allocation a register?
