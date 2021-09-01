@@ -26,26 +26,73 @@ use crate::{
 use fxhash::FxHashSet;
 use smallvec::{smallvec, SmallVec};
 use std::collections::{HashSet, VecDeque};
-use std::convert::TryFrom;
+
+/// A spill weight computed for a certain Use.
+#[derive(Clone, Copy, Debug)]
+pub struct SpillWeight(f32);
 
 #[inline(always)]
 pub fn spill_weight_from_constraint(
     constraint: OperandConstraint,
     loop_depth: usize,
     is_def: bool,
-) -> u32 {
+) -> SpillWeight {
     // A bonus of 1000 for one loop level, 4000 for two loop levels,
     // 16000 for three loop levels, etc. Avoids exponentiation.
-    // Bound `loop_depth` at 2 so that `hot_bonus` is at most 16000.
-    let loop_depth = std::cmp::min(2, loop_depth);
-    let hot_bonus = 1000 * (1 << (2 * loop_depth));
-    let def_bonus = if is_def { 2000 } else { 0 };
-    let constraint_bonus = match constraint {
-        OperandConstraint::Any => 1000,
-        OperandConstraint::Reg | OperandConstraint::FixedReg(_) => 2000,
-        _ => 0,
+    let loop_depth = std::cmp::min(10, loop_depth);
+    let hot_bonus: f32 = (0..loop_depth).fold(1000.0, |a, _| a * 4.0);
+    let def_bonus: f32 = if is_def { 2000.0 } else { 0.0 };
+    let constraint_bonus: f32 = match constraint {
+        OperandConstraint::Any => 1000.0,
+        OperandConstraint::Reg | OperandConstraint::FixedReg(_) => 2000.0,
+        _ => 0.0,
     };
-    hot_bonus + def_bonus + constraint_bonus
+    SpillWeight(hot_bonus + def_bonus + constraint_bonus)
+}
+
+impl SpillWeight {
+    /// Convert a floating-point weight to a u16 that can be compactly
+    /// stored in a `Use`. We simply take the top 16 bits of the f32; this
+    /// is equivalent to the bfloat16 format
+    /// (https://en.wikipedia.org/wiki/Bfloat16_floating-point_format).
+    pub fn to_bits(self) -> u16 {
+        (self.0.to_bits() >> 15) as u16
+    }
+
+    /// Convert a value that was returned from
+    /// `SpillWeight::to_bits()` back into a `SpillWeight`. Note that
+    /// some precision may be lost when round-tripping from a spill
+    /// weight to packed bits and back.
+    pub fn from_bits(bits: u16) -> SpillWeight {
+        let x = f32::from_bits((bits as u32) << 15);
+        SpillWeight(x)
+    }
+
+    /// Get a zero spill weight.
+    pub fn zero() -> SpillWeight {
+        SpillWeight(0.0)
+    }
+
+    /// Convert to a raw floating-point value.
+    pub fn to_f32(self) -> f32 {
+        self.0
+    }
+
+    /// Create a `SpillWeight` from a raw floating-point value.
+    pub fn from_f32(x: f32) -> SpillWeight {
+        SpillWeight(x)
+    }
+
+    pub fn to_int(self) -> u32 {
+        self.0 as u32
+    }
+}
+
+impl std::ops::Add<SpillWeight> for SpillWeight {
+    type Output = SpillWeight;
+    fn add(self, other: SpillWeight) -> Self {
+        SpillWeight(self.0 + other.0)
+    }
 }
 
 impl<'a, F: Function> Env<'a, F> {
@@ -196,10 +243,10 @@ impl<'a, F: Function> Env<'a, F> {
             loop_depth,
             operand.kind() != OperandKind::Use,
         );
-        u.weight = u16::try_from(weight).expect("weight too large for u16 field");
+        u.weight = weight.to_bits();
 
         log::trace!(
-            "insert use {:?} into lr {:?} with weight {}",
+            "insert use {:?} into lr {:?} with weight {:?}",
             u,
             into,
             weight,
@@ -212,9 +259,10 @@ impl<'a, F: Function> Env<'a, F> {
         self.ranges[into.index()].uses.push(u);
 
         // Update stats.
-        self.ranges[into.index()].uses_spill_weight_and_flags += weight;
+        let range_weight = self.ranges[into.index()].uses_spill_weight() + weight;
+        self.ranges[into.index()].set_uses_spill_weight(range_weight);
         log::trace!(
-            "  -> now range has weight {}",
+            "  -> now range has weight {:?}",
             self.ranges[into.index()].uses_spill_weight(),
         );
     }
@@ -279,7 +327,7 @@ impl<'a, F: Function> Env<'a, F> {
                     live.set(src.vreg().vreg(), true);
                 }
 
-                for pos in &[OperandPos::After, OperandPos::Before] {
+                for pos in &[OperandPos::Late, OperandPos::Early] {
                     for op in self.func.inst_operands(inst) {
                         if op.pos() == *pos {
                             let was_live = live.get(op.vreg().vreg());
@@ -437,9 +485,9 @@ impl<'a, F: Function> Env<'a, F> {
 
                         assert_eq!(src.class(), dst.class());
                         assert_eq!(src.kind(), OperandKind::Use);
-                        assert_eq!(src.pos(), OperandPos::Before);
+                        assert_eq!(src.pos(), OperandPos::Early);
                         assert_eq!(dst.kind(), OperandKind::Def);
-                        assert_eq!(dst.pos(), OperandPos::After);
+                        assert_eq!(dst.pos(), OperandPos::Late);
 
                         // If both src and dest are pinned, emit the
                         // move right here, right now.
@@ -506,7 +554,7 @@ impl<'a, F: Function> Env<'a, F> {
                                         dst.vreg(),
                                         src.vreg(),
                                         OperandKind::Def,
-                                        OperandPos::After,
+                                        OperandPos::Late,
                                         ProgPoint::after(inst),
                                     )
                                 } else {
@@ -516,7 +564,7 @@ impl<'a, F: Function> Env<'a, F> {
                                         src.vreg(),
                                         dst.vreg(),
                                         OperandKind::Use,
-                                        OperandPos::Before,
+                                        OperandPos::Early,
                                         ProgPoint::after(inst),
                                     )
                                 };
@@ -720,13 +768,13 @@ impl<'a, F: Function> Env<'a, F> {
                                 src.vreg(),
                                 src_constraint,
                                 OperandKind::Use,
-                                OperandPos::After,
+                                OperandPos::Late,
                             );
                             let dst = Operand::new(
                                 dst.vreg(),
                                 dst_constraint,
                                 OperandKind::Def,
-                                OperandPos::Before,
+                                OperandPos::Early,
                             );
 
                             if self.annotations_enabled {
@@ -843,9 +891,9 @@ impl<'a, F: Function> Env<'a, F> {
                         let operand = self.func.inst_operands(inst)[i];
                         let pos = match (operand.kind(), operand.pos()) {
                             (OperandKind::Mod, _) => ProgPoint::before(inst),
-                            (OperandKind::Def, OperandPos::Before) => ProgPoint::before(inst),
-                            (OperandKind::Def, OperandPos::After) => ProgPoint::after(inst),
-                            (OperandKind::Use, OperandPos::After) => ProgPoint::after(inst),
+                            (OperandKind::Def, OperandPos::Early) => ProgPoint::before(inst),
+                            (OperandKind::Def, OperandPos::Late) => ProgPoint::after(inst),
+                            (OperandKind::Use, OperandPos::Late) => ProgPoint::after(inst),
                             // If this is a branch, extend `pos` to
                             // the end of the block. (Branch uses are
                             // blockparams and need to be live at the
@@ -858,12 +906,12 @@ impl<'a, F: Function> Env<'a, F> {
                             // reused input, force `pos` to
                             // `After`. (See note below for why; it's
                             // very subtle!)
-                            (OperandKind::Use, OperandPos::Before)
+                            (OperandKind::Use, OperandPos::Early)
                                 if reused_input.is_some() && reused_input.unwrap() != i =>
                             {
                                 ProgPoint::after(inst)
                             }
-                            (OperandKind::Use, OperandPos::Before) => ProgPoint::before(inst),
+                            (OperandKind::Use, OperandPos::Early) => ProgPoint::before(inst),
                         };
 
                         if pos.pos() != cur_pos {
@@ -1058,7 +1106,7 @@ impl<'a, F: Function> Env<'a, F> {
                         self.vreg_regs[vreg.index()],
                         OperandConstraint::Stack,
                         OperandKind::Use,
-                        OperandPos::Before,
+                        OperandPos::Early,
                     );
 
                     log::trace!(

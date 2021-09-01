@@ -16,7 +16,7 @@
 use super::{
     spill_weight_from_constraint, CodeRange, Env, LiveBundleIndex, LiveBundleVec, LiveRangeFlag,
     LiveRangeIndex, LiveRangeKey, LiveRangeList, LiveRangeListEntry, PRegIndex, RegTraversalIter,
-    Requirement, UseList,
+    Requirement, SpillWeight, UseList,
 };
 use crate::{
     Allocation, Function, Inst, InstPosition, OperandConstraint, OperandKind, PReg, ProgPoint,
@@ -310,23 +310,24 @@ impl<'a, F: Function> Env<'a, F> {
                 1_000_000
             }
         } else {
-            let mut total = 0;
+            let mut total = SpillWeight::zero();
             for entry in &self.bundles[bundle.index()].ranges {
                 let range_data = &self.ranges[entry.index.index()];
                 log::trace!(
-                    "  -> uses spill weight: +{}",
+                    "  -> uses spill weight: +{:?}",
                     range_data.uses_spill_weight()
                 );
-                total += range_data.uses_spill_weight();
+                total = total + range_data.uses_spill_weight();
             }
 
             if self.bundles[bundle.index()].prio > 0 {
+                let final_weight = (total.to_f32() as u32) / self.bundles[bundle.index()].prio;
                 log::trace!(
                     " -> dividing by prio {}; final weight {}",
                     self.bundles[bundle.index()].prio,
-                    total / self.bundles[bundle.index()].prio
+                    final_weight
                 );
-                total / self.bundles[bundle.index()].prio
+                final_weight
             } else {
                 0
             }
@@ -346,9 +347,9 @@ impl<'a, F: Function> Env<'a, F> {
 
     pub fn recompute_range_properties(&mut self, range: LiveRangeIndex) {
         let rangedata = &mut self.ranges[range.index()];
-        let mut w = 0;
+        let mut w = SpillWeight::zero();
         for u in &rangedata.uses {
-            w += u.weight as u32;
+            w = w + SpillWeight::from_bits(u.weight);
             log::trace!("range{}: use {:?}", range.index(), u);
         }
         rangedata.set_uses_spill_weight(w);
@@ -890,7 +891,8 @@ impl<'a, F: Function> Env<'a, F> {
                             OperandConstraint::Reg,
                             loop_depth as usize,
                             /* is_def = */ true,
-                        );
+                        )
+                        .to_int();
                         if lowest_cost_split_conflict_cost.is_none()
                             || (conflict_cost + move_cost)
                                 < lowest_cost_split_conflict_cost.unwrap()
@@ -909,7 +911,8 @@ impl<'a, F: Function> Env<'a, F> {
                             OperandConstraint::Reg,
                             loop_depth as usize,
                             /* is_def = */ true,
-                        );
+                        )
+                        .to_int();
 
                         if lowest_cost_split_conflict_cost.is_none()
                             || (max_cost + move_cost) < lowest_cost_split_conflict_cost.unwrap()

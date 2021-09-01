@@ -759,7 +759,7 @@ impl<'a, F: Function> Env<'a, F> {
                 let operand = self.func.inst_operands(inst)[output_idx];
                 if let OperandConstraint::Reuse(input_idx) = operand.constraint() {
                     debug_assert!(!input_reused.contains(&input_idx));
-                    debug_assert_eq!(operand.pos(), OperandPos::After);
+                    debug_assert_eq!(operand.pos(), OperandPos::Late);
                     input_reused.push(input_idx);
                     let input_alloc = self.get_alloc(inst, input_idx);
                     let output_alloc = self.get_alloc(inst, output_idx);

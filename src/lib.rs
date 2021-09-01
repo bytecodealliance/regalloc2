@@ -335,26 +335,27 @@ pub enum OperandKind {
 }
 
 /// The "position" of the operand: where it has its read/write
-/// effects. These are positions "in" the instruction, and "before"
-/// and "after" are relative to the instruction's actual semantics. In
-/// other words, the allocator assumes that the instruction (i)
-/// performs all reads of "before" operands, (ii) does its work, and
-/// (iii) performs all writes of its "after" operands.
+/// effects. These are positions "in" the instruction, and "early" and
+/// "late" are relative to the instruction's main effect or
+/// computation. In other words, the allocator assumes that the
+/// instruction (i) performs all reads and writes of "early" operands,
+/// (ii) does its work, and (iii) performs all reads and writes of its
+/// "late" operands.
 ///
-/// A "write" (def) at "before" or a "read" (use) at "after" may be
-/// slightly nonsensical, given the above; but, it is consistent with
-/// the notion that the value (even if a result of execution) *could*
-/// have been written to the register at "Before", or the value (even
-/// if depended upon by the execution) *could* have been read from the
-/// regster at "After". In other words, these write-before or
-/// use-after operands ensure that the particular allocations are
-/// valid for longer than usual and that a register is not reused
-/// between the use (normally complete at "Before") and the def
-/// (normally starting at "After"). See `Operand` for more.
+/// A "write" (def) at "early" or a "read" (use) at "late" may be
+/// slightly nonsensical, given the above, if the read is necessary
+/// for the computation or the write is a result of it. A way to think
+/// of it is that the value (even if a result of execution) *could*
+/// have been read or written at the given location without causing
+/// any register-usage conflicts. In other words, these write-early or
+/// use-late operands ensure that the particular allocations are valid
+/// for longer than usual and that a register is not reused between
+/// the use (normally complete at "Early") and the def (normally
+/// starting at "Late"). See `Operand` for more.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OperandPos {
-    Before = 0,
-    After = 1,
+    Early = 0,
+    Late = 1,
 }
 
 /// An `Operand` encodes everything about a mention of a register in
@@ -365,21 +366,20 @@ pub enum OperandPos {
 /// `LAllocation` in Ion).
 ///
 /// Generally, regalloc2 considers operands to have their effects at
-/// one of two program points that surround an instruction: "Before"
-/// or "After". All operands at a given program-point are assigned
+/// one of two points that exist in an instruction: "Early" or
+/// "Late". All operands at a given program-point are assigned
 /// non-conflicting locations based on their constraints. Each operand
 /// has a "kind", one of use/def/mod, corresponding to
 /// read/write/read-write, respectively.
 ///
-/// Usually, an instruction's inputs will be uses-at-Before and
-/// outputs will be defs-at-After, though there are valid use-cases
-/// for other combinations too. For example, a single "instruction"
-/// seen by the regalloc that lowers into multiple machine
-/// instructions and reads some of its inputs after it starts to write
-/// outputs must either make those input(s) uses-at-After or those
-/// output(s) defs-at-Before so that the conflict (overlap) is
-/// properly accounted for. See comments on the constructors below for
-/// more.
+/// Usually, an instruction's inputs will be "early uses" and outputs
+/// will be "late defs", though there are valid use-cases for other
+/// combinations too. For example, a single "instruction" seen by the
+/// regalloc that lowers into multiple machine instructions and reads
+/// some of its inputs after it starts to write outputs must either
+/// make those input(s) "late uses" or those output(s) "early defs" so
+/// that the conflict (overlap) is properly accounted for. See
+/// comments on the constructors below for more.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Operand {
     /// Bit-pack into 32 bits.
@@ -437,7 +437,7 @@ impl Operand {
             vreg,
             OperandConstraint::Reg,
             OperandKind::Use,
-            OperandPos::Before,
+            OperandPos::Early,
         )
     }
 
@@ -450,7 +450,7 @@ impl Operand {
             vreg,
             OperandConstraint::Reg,
             OperandKind::Use,
-            OperandPos::After,
+            OperandPos::Late,
         )
     }
 
@@ -464,7 +464,7 @@ impl Operand {
             vreg,
             OperandConstraint::Reg,
             OperandKind::Def,
-            OperandPos::After,
+            OperandPos::Late,
         )
     }
 
@@ -478,7 +478,7 @@ impl Operand {
             vreg,
             OperandConstraint::Reg,
             OperandKind::Def,
-            OperandPos::Before,
+            OperandPos::Early,
         )
     }
 
@@ -496,7 +496,7 @@ impl Operand {
             vreg,
             OperandConstraint::Reg,
             OperandKind::Def,
-            OperandPos::Before,
+            OperandPos::Early,
         )
     }
 
@@ -511,7 +511,7 @@ impl Operand {
             vreg,
             OperandConstraint::Reuse(idx),
             OperandKind::Def,
-            OperandPos::After,
+            OperandPos::Late,
         )
     }
 
@@ -525,7 +525,7 @@ impl Operand {
             vreg,
             OperandConstraint::FixedReg(preg),
             OperandKind::Use,
-            OperandPos::Before,
+            OperandPos::Early,
         )
     }
 
@@ -539,7 +539,7 @@ impl Operand {
             vreg,
             OperandConstraint::FixedReg(preg),
             OperandKind::Def,
-            OperandPos::After,
+            OperandPos::Late,
         )
     }
 
@@ -585,8 +585,8 @@ impl Operand {
     pub fn pos(self) -> OperandPos {
         let pos_field = (self.bits >> 26) & 1;
         match pos_field {
-            0 => OperandPos::Before,
-            1 => OperandPos::After,
+            0 => OperandPos::Early,
+            1 => OperandPos::Late,
             _ => unreachable!(),
         }
     }
@@ -631,8 +631,8 @@ impl std::fmt::Debug for Operand {
 impl std::fmt::Display for Operand {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match (self.kind(), self.pos()) {
-            (OperandKind::Def, OperandPos::After)
-            | (OperandKind::Mod | OperandKind::Use, OperandPos::Before) => {
+            (OperandKind::Def, OperandPos::Late)
+            | (OperandKind::Mod | OperandKind::Use, OperandPos::Early) => {
                 write!(f, "{:?}", self.kind())?;
             }
             _ => {

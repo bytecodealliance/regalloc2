@@ -402,9 +402,9 @@ impl Func {
             while let Some(vreg) = vregs_by_block_to_be_defined[block].pop() {
                 let def_constraint = OperandConstraint::arbitrary(u)?;
                 let def_pos = if bool::arbitrary(u)? {
-                    OperandPos::Before
+                    OperandPos::Early
                 } else {
-                    OperandPos::After
+                    OperandPos::Late
                 };
                 let mut operands = vec![Operand::new(
                     vreg,
@@ -442,7 +442,7 @@ impl Func {
                         vreg,
                         use_constraint,
                         OperandKind::Use,
-                        OperandPos::Before,
+                        OperandPos::Early,
                     ));
                     allocations.push(Allocation::none());
                 }
@@ -456,7 +456,7 @@ impl Func {
                         op.vreg(),
                         OperandConstraint::Reuse(reused),
                         op.kind(),
-                        OperandPos::After,
+                        OperandPos::Late,
                     );
                     // Make sure reused input is a Reg.
                     let op = operands[reused];
@@ -464,7 +464,7 @@ impl Func {
                         op.vreg(),
                         OperandConstraint::Reg,
                         op.kind(),
-                        OperandPos::Before,
+                        OperandPos::Early,
                     );
                 } else if opts.fixed_regs && bool::arbitrary(u)? {
                     let mut fixed = vec![];

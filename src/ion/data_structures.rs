@@ -13,6 +13,7 @@
 
 //! Data structures for backtracking allocator.
 
+use super::liveranges::SpillWeight;
 use crate::cfg::CFGInfo;
 use crate::index::ContainerComparator;
 use crate::indexset::IndexSet;
@@ -141,14 +142,15 @@ impl LiveRange {
         self.uses_spill_weight_and_flags |= flag_word;
     }
     #[inline(always)]
-    pub fn uses_spill_weight(&self) -> u32 {
-        self.uses_spill_weight_and_flags & 0x1fff_ffff
+    pub fn uses_spill_weight(&self) -> SpillWeight {
+        let bits = (self.uses_spill_weight_and_flags & 0x1fff_ffff) << 2;
+        SpillWeight::from_f32(f32::from_bits(bits))
     }
     #[inline(always)]
-    pub fn set_uses_spill_weight(&mut self, weight: u32) {
-        assert!(weight < (1 << 29));
+    pub fn set_uses_spill_weight(&mut self, weight: SpillWeight) {
+        let weight_bits = (weight.to_f32().to_bits() >> 2) & 0x1fff_ffff;
         self.uses_spill_weight_and_flags =
-            (self.uses_spill_weight_and_flags & 0xe000_0000) | weight;
+            (self.uses_spill_weight_and_flags & 0xe000_0000) | weight_bits;
     }
 }
 

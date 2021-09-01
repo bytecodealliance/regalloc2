@@ -306,8 +306,8 @@ impl CheckerState {
                 // the requirements of the OperandConstraint.
                 for (op, alloc) in operands.iter().zip(allocs.iter()) {
                     let is_here = match (op.pos(), pos) {
-                        (OperandPos::Before, InstPosition::Before) => true,
-                        (OperandPos::After, InstPosition::After) => true,
+                        (OperandPos::Early, InstPosition::Before) => true,
+                        (OperandPos::Late, InstPosition::After) => true,
                         _ => false,
                     };
                     if !is_here {

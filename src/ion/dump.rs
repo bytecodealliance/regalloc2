@@ -37,7 +37,7 @@ impl<'a, F: Function> Env<'a, F> {
         log::trace!("Ranges:");
         for (i, r) in self.ranges.iter().enumerate() {
             log::trace!(
-                "range{}: range={:?} vreg={:?} bundle={:?} weight={}",
+                "range{}: range={:?} vreg={:?} bundle={:?} weight={:?}",
                 i,
                 r.range,
                 r.vreg,
