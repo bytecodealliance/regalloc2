@@ -1,0 +1,24 @@
+[package]
+name = "regalloc2"
+version = "0.0.1"
+authors = ["Chris Fallin <chris@cfallin.org>", "Mozilla SpiderMonkey Developers"]
+edition = "2018"
+license = "Apache-2.0 WITH LLVM-exception AND MPL-2.0"
+description = "Backtracking register allocator inspired from IonMonkey"
+repository = "https://github.com/bytecodealliance/regalloc2"
+
+[dependencies]
+log = { version = "0.4.8", default-features = false }
+smallvec = "1.6.1"
+fxhash = "0.2.1"
+
+# The below are only needed for fuzzing.
+# Keep this in sync with libfuzzer_sys's crate version:
+arbitrary = { version = "^0.4.6", optional = true }
+
+[profile.release]
+debug = true
+
+[features]
+default = []
+fuzzing = ["arbitrary"]
