@@ -1011,7 +1011,7 @@ impl<'a, F: Function> Env<'a, F> {
                     }
                 }
 
-                if self.func.is_safepoint(inst) {
+                if self.func.requires_refs_on_stack(inst) {
                     log::trace!("inst{} is safepoint", inst.index());
                     self.safepoints.push(inst);
                     for vreg in live.iter() {

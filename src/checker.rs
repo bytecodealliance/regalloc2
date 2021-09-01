@@ -550,7 +550,7 @@ impl<'a, F: Function> Checker<'a, F> {
                 self.handle_edits(block, out, &mut insert_idx, ProgPoint::before(inst));
 
                 // If this is a safepoint, then check the spillslots at this point.
-                if self.f.is_safepoint(inst) {
+                if self.f.requires_refs_on_stack(inst) {
                     let slots = safepoint_slots.remove(&inst).unwrap_or_else(|| vec![]);
 
                     let checkinst = CheckerInst::Safepoint { inst, slots };

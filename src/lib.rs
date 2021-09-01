@@ -856,18 +856,17 @@ pub trait Function {
     /// to the sum of blockparam counts for all successor blocks.
     fn branch_blockparam_arg_offset(&self, block: Block, insn: Inst) -> usize;
 
-    /// Determine whether an instruction is a safepoint and requires a stackmap.
+    /// Determine whether an instruction requires all reference-typed
+    /// values to be placed onto the stack. For these instructions,
+    /// stackmaps will be provided.
     ///
-    /// Strictly speaking, these two parts (is a safepoint, requires a
-    /// stackmap) are orthogonal. An instruction could want to see a
-    /// stackmap of refs on the stack (without forcing them), or it
-    /// could want all refs to be on the stack (without knowing where
-    /// they are). Only the latter strictly follows from "is a
-    /// safepoint". But in practice, both are true at the same time,
-    /// so we combine the two notions: for regalloc2, a "safepoint
-    /// instruction" is one that both forces refs onto the stack, and
-    /// provides a stackmap indicating where they are.
-    fn is_safepoint(&self, _: Inst) -> bool {
+    /// This is usually associated with the concept of a "safepoint",
+    /// though strictly speaking, a safepoint could also support
+    /// reference-typed values in registers if there were a way to
+    /// denote their locations and if this were acceptable to the
+    /// client. Usually garbage-collector implementations want to see
+    /// roots on the stack, so we do that for now.
+    fn requires_refs_on_stack(&self, _: Inst) -> bool {
         false
     }
 
@@ -883,15 +882,28 @@ pub trait Function {
     fn inst_operands(&self, insn: Inst) -> &[Operand];
 
     /// Get the clobbers for an instruction; these are the registers
-    /// that the instruction is known to overwrite, separate from its
-    /// outputs described by its `Operand`s. This can be used to, for
-    /// example, describe ABI-specified registers that are not
-    /// preserved by a call instruction, or fixed physical registers
-    /// written by an instruction but not used as a vreg output, or
-    /// fixed physical registers used as temps within an instruction
-    /// out of necessity. Every register written to by an instruction
-    /// must either be described by an Operand of kind `Def` or `Mod`,
-    /// or else must be a "clobber".
+    /// that, after the instruction has executed, hold values that are
+    /// arbitrary, separately from the usual outputs to the
+    /// instruction. It is invalid to read a register that has been
+    /// clobbered; the register allocator is free to assume that
+    /// clobbered registers are filled with garbage and available for
+    /// reuse. It will avoid storing any value in a clobbered register
+    /// that must be live across the instruction.
+    ///
+    /// Another way of seeing this is that a clobber is equivalent to
+    /// an "early def" of a fresh vreg that is not used anywhere else
+    /// in the program, with a fixed-register constraint that places
+    /// it in a given PReg chosen by the client prior to regalloc.
+    ///
+    /// Every register written by an instruction must either
+    /// correspond to (be assigned to) an Operand of kind `Def` or
+    /// `Mod`, or else must be a "clobber".
+    ///
+    /// This can be used to, for example, describe ABI-specified
+    /// registers that are not preserved by a call instruction, or
+    /// fixed physical registers written by an instruction but not
+    /// used as a vreg output, or fixed physical registers used as
+    /// temps within an instruction out of necessity.
     fn inst_clobbers(&self, insn: Inst) -> &[PReg];
 
     /// Get the number of `VReg` in use in this function.

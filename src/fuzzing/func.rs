@@ -122,7 +122,7 @@ impl Function for Func {
         0
     }
 
-    fn is_safepoint(&self, insn: Inst) -> bool {
+    fn requires_refs_on_stack(&self, insn: Inst) -> bool {
         self.insts[insn.index()].is_safepoint
     }
 
@@ -569,7 +569,7 @@ impl std::fmt::Debug for Func {
                 i, params, succs, preds
             )?;
             for inst in blockrange.iter() {
-                if self.is_safepoint(inst) {
+                if self.requires_refs_on_stack(inst) {
                     write!(f, "    -- SAFEPOINT --\n")?;
                 }
                 write!(

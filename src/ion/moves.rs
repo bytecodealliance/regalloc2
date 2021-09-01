@@ -860,7 +860,7 @@ impl<'a, F: Function> Env<'a, F> {
                 return;
             }
             for inst in from.inst().index()..=to.inst().index() {
-                if this.func.is_safepoint(Inst::new(inst)) {
+                if this.func.requires_refs_on_stack(Inst::new(inst)) {
                     redundant_moves.clear();
                     return;
                 }
