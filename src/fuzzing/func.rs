@@ -15,7 +15,6 @@ use arbitrary::{Arbitrary, Unstructured};
 pub enum InstOpcode {
     Phi,
     Op,
-    Call,
     Ret,
     Branch,
 }
@@ -102,10 +101,6 @@ impl Function for Func {
 
     fn block_params(&self, block: Block) -> &[VReg] {
         &self.block_params[block.index()][..]
-    }
-
-    fn is_call(&self, insn: Inst) -> bool {
-        self.insts[insn.index()].op == InstOpcode::Call
     }
 
     fn is_ret(&self, insn: Inst) -> bool {
@@ -500,11 +495,10 @@ impl Func {
                         .all(|op| !builder.f.reftype_vregs.contains(&op.vreg()))
                     && bool::arbitrary(u)?;
 
-                let op = *u.choose(&[InstOpcode::Op, InstOpcode::Call])?;
                 builder.add_inst(
                     Block::new(block),
                     InstData {
-                        op,
+                        op: InstOpcode::Op,
                         operands,
                         clobbers,
                         is_safepoint,

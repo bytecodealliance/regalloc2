@@ -103,8 +103,6 @@ impl<'a, F: Function> Env<'a, F> {
                     .collect::<Vec<_>>();
                 let opname = if self.func.is_branch(inst) {
                     "br"
-                } else if self.func.is_call(inst) {
-                    "call"
                 } else if self.func.is_ret(inst) {
                     "ret"
                 } else {
