@@ -1,63 +1,28 @@
 //! Requirements computation.
 
 use super::{Env, LiveBundleIndex};
-use crate::{Function, Operand, OperandConstraint, PReg, RegClass};
+use crate::{Function, Operand, OperandConstraint, PReg};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Requirement {
     Unknown,
     Fixed(PReg),
-    Register(RegClass),
-    Stack(RegClass),
-    Any(RegClass),
+    Register,
+    Stack,
+    Any,
     Conflict,
 }
 impl Requirement {
-    #[inline(always)]
-    pub fn class(self) -> RegClass {
-        match self {
-            Requirement::Unknown => panic!("No class for unknown Requirement"),
-            Requirement::Fixed(preg) => preg.class(),
-            Requirement::Register(class) | Requirement::Any(class) | Requirement::Stack(class) => {
-                class
-            }
-            Requirement::Conflict => panic!("No class for conflicted Requirement"),
-        }
-    }
     #[inline(always)]
     pub fn merge(self, other: Requirement) -> Requirement {
         match (self, other) {
             (Requirement::Unknown, other) | (other, Requirement::Unknown) => other,
             (Requirement::Conflict, _) | (_, Requirement::Conflict) => Requirement::Conflict,
-            (other, Requirement::Any(rc)) | (Requirement::Any(rc), other) => {
-                if other.class() == rc {
-                    other
-                } else {
-                    Requirement::Conflict
-                }
-            }
-            (Requirement::Stack(rc1), Requirement::Stack(rc2)) => {
-                if rc1 == rc2 {
-                    self
-                } else {
-                    Requirement::Conflict
-                }
-            }
-            (Requirement::Register(rc), Requirement::Fixed(preg))
-            | (Requirement::Fixed(preg), Requirement::Register(rc)) => {
-                if rc == preg.class() {
-                    Requirement::Fixed(preg)
-                } else {
-                    Requirement::Conflict
-                }
-            }
-            (Requirement::Register(rc1), Requirement::Register(rc2)) => {
-                if rc1 == rc2 {
-                    self
-                } else {
-                    Requirement::Conflict
-                }
-            }
+            (other, Requirement::Any) | (Requirement::Any, other) => other,
+            (Requirement::Stack, Requirement::Stack) => self,
+            (Requirement::Register, Requirement::Fixed(preg))
+            | (Requirement::Fixed(preg), Requirement::Register) => Requirement::Fixed(preg),
+            (Requirement::Register, Requirement::Register) => self,
             (Requirement::Fixed(a), Requirement::Fixed(b)) if a == b => self,
             _ => Requirement::Conflict,
         }
@@ -66,11 +31,9 @@ impl Requirement {
     pub fn from_operand(op: Operand) -> Requirement {
         match op.constraint() {
             OperandConstraint::FixedReg(preg) => Requirement::Fixed(preg),
-            OperandConstraint::Reg | OperandConstraint::Reuse(_) => {
-                Requirement::Register(op.class())
-            }
-            OperandConstraint::Stack => Requirement::Stack(op.class()),
-            _ => Requirement::Any(op.class()),
+            OperandConstraint::Reg | OperandConstraint::Reuse(_) => Requirement::Register,
+            OperandConstraint::Stack => Requirement::Stack,
+            _ => Requirement::Any,
         }
     }
 }
