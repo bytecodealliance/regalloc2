@@ -748,6 +748,7 @@ impl<'a, F: Function> Env<'a, F> {
         bundle: LiveBundleIndex,
         reg_hint: PReg,
     ) -> Result<(), RegAllocError> {
+        let class = self.spillsets[self.bundles[bundle.index()].spillset.index()].class;
         let req = self.compute_requirement(bundle);
         // Grab a hint from either the queue or our spillset, if any.
         let hint_reg = if reg_hint != PReg::invalid() {
@@ -778,7 +779,7 @@ impl<'a, F: Function> Env<'a, F> {
         // spill bundle is already present, then move the LRs over to
         // the spill bundle right away.
         match req {
-            Requirement::Unknown | Requirement::Any(_) => {
+            Requirement::Unknown | Requirement::Any => {
                 if let Some(spill) =
                     self.get_or_create_spill_bundle(bundle, /* create_if_absent = */ false)
                 {
@@ -801,17 +802,17 @@ impl<'a, F: Function> Env<'a, F> {
             log::trace!("attempt {}, req {:?}", attempts, req);
             debug_assert!(attempts < 100 * self.func.num_insts());
 
-            let (class, fixed_preg) = match req {
-                Requirement::Fixed(preg) => (preg.class(), Some(preg)),
-                Requirement::Register(class) => (class, None),
-                Requirement::Stack(_) => {
+            let fixed_preg = match req {
+                Requirement::Fixed(preg) => Some(preg),
+                Requirement::Register => None,
+                Requirement::Stack => {
                     // If we must be on the stack, mark our spillset
                     // as required immediately.
                     self.spillsets[self.bundles[bundle.index()].spillset.index()].required = true;
                     return Ok(());
                 }
 
-                Requirement::Any(_) | Requirement::Unknown => {
+                Requirement::Any | Requirement::Unknown => {
                     self.spilled_bundles.push(bundle);
                     return Ok(());
                 }
@@ -966,7 +967,7 @@ impl<'a, F: Function> Env<'a, F> {
                     || lowest_cost_evict_conflict_cost.is_none()
                     || lowest_cost_evict_conflict_cost.unwrap() >= our_spill_weight)
             {
-                if let Requirement::Register(class) = req {
+                if let Requirement::Register = req {
                     // Check if this is a too-many-live-registers situation.
                     let range = self.bundles[bundle.index()].ranges[0].range;
                     log::trace!("checking for too many live regs");
