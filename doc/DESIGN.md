@@ -49,9 +49,8 @@ successors.
 
 Instructions are opaque to the allocator except for a few important
 bits: (1) `is_ret` (is a return instruction); (2) `is_branch` (is a
-branch instruction); (3) `is_call` (is a call instruction, for
-heuristic purposes only), (4) `is_move` (is a move between registers),
-and (5) a vector of Operands, covered below. Every block must end in a
+branch instruction); (3) `is_move` (is a move between registers), and
+(4) a vector of Operands, covered below. Every block must end in a
 return or branch.
 
 Both instructions and blocks are named by indices in contiguous index

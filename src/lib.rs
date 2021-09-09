@@ -847,10 +847,6 @@ pub trait Function {
     /// Get the block parameters for a given block.
     fn block_params(&self, block: Block) -> &[VReg];
 
-    /// Determine whether an instruction is a call instruction. This is used
-    /// only for splitting heuristics.
-    fn is_call(&self, insn: Inst) -> bool;
-
     /// Determine whether an instruction is a return instruction.
     fn is_ret(&self, insn: Inst) -> bool;
 
