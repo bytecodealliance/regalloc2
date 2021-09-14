@@ -60,8 +60,8 @@ pub enum RegClass {
 /// The value returned by `index()`, in contrast, is in a single index
 /// space shared by all classes, in order to enable uniform reasoning
 /// about physical registers. This is done by putting the class bit at
-/// the MSB, or equivalently, declaring that indices 0..63 are the 64
-/// integer registers and indices 64..127 are the 64 float registers.
+/// the MSB, or equivalently, declaring that indices 0..=63 are the 64
+/// integer registers and indices 64..=127 are the 64 float registers.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PReg {
     hw_enc: u8,
@@ -383,7 +383,6 @@ pub enum OperandPos {
 /// that the conflict (overlap) is properly accounted for. See
 /// comments on the constructors below for more.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-//#[repr(packed)]
 pub struct Operand {
     /// Bit-pack into 32 bits.
     ///
@@ -392,6 +391,14 @@ pub struct Operand {
     /// where `constraint` is an `OperandConstraint`, `kind` is an
     /// `OperandKind`, `pos` is an `OperandPos`, `class` is a
     /// `RegClass`, and `vreg` is a vreg index.
+    ///
+    /// The constraints are encoded as follows:
+    /// - 1xxxxxx => FixedReg(preg)
+    /// - 01xxxxx => Reuse(index)
+    /// - 0000000 => Any
+    /// - 0000001 => Reg
+    /// - 0000010 => Stack
+    /// - _ => Unused for now
     bits: u32,
 }
 
