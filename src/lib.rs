@@ -55,13 +55,13 @@ pub enum RegClass {
 /// register 0 is different than Float register 0.
 ///
 /// Because of bit-packed encodings throughout the implementation,
-/// `hw_enc` must fit in 5 bits, i.e., at most 32 registers per class.
+/// `hw_enc` must fit in 6 bits, i.e., at most 64 registers per class.
 ///
 /// The value returned by `index()`, in contrast, is in a single index
 /// space shared by all classes, in order to enable uniform reasoning
 /// about physical registers. This is done by putting the class bit at
-/// the MSB, or equivalently, declaring that indices 0..31 are the 32
-/// integer registers and indices 32..63 are the 32 float registers.
+/// the MSB, or equivalently, declaring that indices 0..=63 are the 64
+/// integer registers and indices 64..=127 are the 64 float registers.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PReg {
     hw_enc: u8,
@@ -69,7 +69,7 @@ pub struct PReg {
 }
 
 impl PReg {
-    pub const MAX_BITS: usize = 5;
+    pub const MAX_BITS: usize = 6;
     pub const MAX: usize = (1 << Self::MAX_BITS) - 1;
     pub const MAX_INDEX: usize = 1 << (Self::MAX_BITS + 1); // including RegClass bit
 
@@ -170,7 +170,7 @@ pub struct VReg {
 }
 
 impl VReg {
-    pub const MAX_BITS: usize = 20;
+    pub const MAX_BITS: usize = 21;
     pub const MAX: usize = (1 << Self::MAX_BITS) - 1;
 
     #[inline(always)]
@@ -386,12 +386,19 @@ pub enum OperandPos {
 pub struct Operand {
     /// Bit-pack into 32 bits.
     ///
-    /// constraint:3 kind:2 pos:1 class:1 preg:5 vreg:20
+    /// constraint:7 kind:2 pos:1 class:1 vreg:21
     ///
     /// where `constraint` is an `OperandConstraint`, `kind` is an
     /// `OperandKind`, `pos` is an `OperandPos`, `class` is a
-    /// `RegClass`, `preg` is a `PReg` or an index for a reused-input
-    /// constraint, and `vreg` is a vreg index.
+    /// `RegClass`, and `vreg` is a vreg index.
+    ///
+    /// The constraints are encoded as follows:
+    /// - 1xxxxxx => FixedReg(preg)
+    /// - 01xxxxx => Reuse(index)
+    /// - 0000000 => Any
+    /// - 0000001 => Reg
+    /// - 0000010 => Stack
+    /// - _ => Unused for now
     bits: u32,
 }
 
@@ -404,17 +411,17 @@ impl Operand {
         kind: OperandKind,
         pos: OperandPos,
     ) -> Self {
-        let (preg_field, constraint_field): (u32, u32) = match constraint {
-            OperandConstraint::Any => (0, 0),
-            OperandConstraint::Reg => (0, 1),
-            OperandConstraint::Stack => (0, 2),
+        let constraint_field = match constraint {
+            OperandConstraint::Any => 0,
+            OperandConstraint::Reg => 1,
+            OperandConstraint::Stack => 2,
             OperandConstraint::FixedReg(preg) => {
                 assert_eq!(preg.class(), vreg.class());
-                (preg.hw_enc() as u32, 3)
+                0b1000000 | preg.hw_enc() as u32
             }
             OperandConstraint::Reuse(which) => {
-                assert!(which <= PReg::MAX);
-                (which as u32, 4)
+                assert!(which <= 31);
+                0b0100000 | which as u32
             }
         };
         let class_field = vreg.class() as u8 as u32;
@@ -422,11 +429,10 @@ impl Operand {
         let kind_field = kind as u8 as u32;
         Operand {
             bits: vreg.vreg() as u32
-                | (preg_field << 20)
-                | (class_field << 25)
-                | (pos_field << 26)
-                | (kind_field << 27)
-                | (constraint_field << 29),
+                | (class_field << 21)
+                | (pos_field << 22)
+                | (kind_field << 23)
+                | (constraint_field << 25),
         }
     }
 
@@ -565,7 +571,7 @@ impl Operand {
     /// Get the register class used by this operand.
     #[inline(always)]
     pub fn class(self) -> RegClass {
-        let class_field = (self.bits >> 25) & 1;
+        let class_field = (self.bits >> 21) & 1;
         match class_field {
             0 => RegClass::Int,
             1 => RegClass::Float,
@@ -577,7 +583,7 @@ impl Operand {
     /// (read), or a "mod" / modify (a read followed by a write).
     #[inline(always)]
     pub fn kind(self) -> OperandKind {
-        let kind_field = (self.bits >> 27) & 3;
+        let kind_field = (self.bits >> 23) & 3;
         match kind_field {
             0 => OperandKind::Def,
             1 => OperandKind::Mod,
@@ -592,7 +598,7 @@ impl Operand {
     /// at "after", though there are cases where this is not true.
     #[inline(always)]
     pub fn pos(self) -> OperandPos {
-        let pos_field = (self.bits >> 26) & 1;
+        let pos_field = (self.bits >> 22) & 1;
         match pos_field {
             0 => OperandPos::Early,
             1 => OperandPos::Late,
@@ -604,15 +610,18 @@ impl Operand {
     /// its allocation must fulfill.
     #[inline(always)]
     pub fn constraint(self) -> OperandConstraint {
-        let constraint_field = (self.bits >> 29) & 7;
-        let preg_field = ((self.bits >> 20) as usize) & PReg::MAX;
-        match constraint_field {
-            0 => OperandConstraint::Any,
-            1 => OperandConstraint::Reg,
-            2 => OperandConstraint::Stack,
-            3 => OperandConstraint::FixedReg(PReg::new(preg_field, self.class())),
-            4 => OperandConstraint::Reuse(preg_field),
-            _ => unreachable!(),
+        let constraint_field = ((self.bits >> 25) as usize) & 127;
+        if constraint_field & 0b1000000 != 0 {
+            OperandConstraint::FixedReg(PReg::new(constraint_field & 0b0111111, self.class()))
+        } else if constraint_field & 0b0100000 != 0 {
+            OperandConstraint::Reuse(constraint_field & 0b0011111)
+        } else {
+            match constraint_field {
+                0 => OperandConstraint::Any,
+                1 => OperandConstraint::Reg,
+                2 => OperandConstraint::Stack,
+                _ => unreachable!(),
+            }
         }
     }
 

@@ -116,8 +116,8 @@ however.
 Implementation note: both vregs and operands are bit-packed into
 u32s. This is essential for memory-efficiency. As a result of the
 operand bit-packing in particular (including the policy constraints!),
-the allocator supports up to 2^20 (1M) vregs per function, and 2^5
-(32) physical registers per class. Later we will also see a limit of
+the allocator supports up to 2^21 (2M) vregs per function, and 2^6
+(64) physical registers per class. Later we will also see a limit of
 2^20 (1M) instructions per function. These limits are considered
 sufficient for the anticipated use-cases (e.g., compiling Wasm, which
 also has function-size implementation limits); for larger functions,
