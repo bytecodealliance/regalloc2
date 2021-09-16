@@ -589,7 +589,6 @@ pub fn machine_env() -> MachineEnv {
         [regs.iter().cloned().skip(24).collect(), vec![]];
     let scratch_by_class: [PReg; 2] = [PReg::new(31, RegClass::Int), PReg::new(0, RegClass::Float)];
     MachineEnv {
-        regs,
         preferred_regs_by_class,
         non_preferred_regs_by_class,
         scratch_by_class,

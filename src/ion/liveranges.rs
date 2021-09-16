@@ -105,8 +105,11 @@ impl<'a, F: Function> Env<'a, F> {
                 allocations: LiveRangeSet::new(),
             },
         );
-        for &preg in &self.env.regs {
-            self.pregs[preg.index()].reg = preg;
+        for i in 0..=PReg::MAX {
+            let preg_int = PReg::new(i, RegClass::Int);
+            self.pregs[preg_int.index()].reg = preg_int;
+            let preg_float = PReg::new(i, RegClass::Float);
+            self.pregs[preg_float.index()].reg = preg_float;
         }
         // Create VRegs from the vreg count.
         for idx in 0..self.func.num_vregs() {

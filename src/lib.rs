@@ -1139,12 +1139,6 @@ pub enum Edit {
 /// as well.
 #[derive(Clone, Debug)]
 pub struct MachineEnv {
-    /// Physical registers. Every register that might be mentioned in
-    /// any constraint must be listed here, even if it is not
-    /// allocatable (present in one of
-    /// `{preferred,non_preferred}_regs_by_class`).
-    pub regs: Vec<PReg>,
-
     /// Preferred physical registers for each class. These are the
     /// registers that will be allocated first, if free.
     pub preferred_regs_by_class: [Vec<PReg>; 2],
