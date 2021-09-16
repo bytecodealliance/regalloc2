@@ -1180,8 +1180,11 @@ pub struct Output {
     /// Allocation offset in `allocs` for each instruction.
     pub inst_alloc_offsets: Vec<u32>,
 
-    /// Safepoint records: at a given program point, a reference-typed value lives in the given SpillSlot.
-    pub safepoint_slots: Vec<(ProgPoint, SpillSlot)>,
+    /// Safepoint records: at a given program point, a reference-typed value
+    /// lives in the given Allocation. Currently these are guaranteed to be
+    /// stack slots, but in the future an option may be added to allow
+    /// reftype value to be kept in registers at safepoints.
+    pub safepoint_slots: Vec<(ProgPoint, Allocation)>,
 
     /// Debug info: a labeled value (as applied to vregs by
     /// `Function::debug_value_labels()` on the input side) is located

@@ -19,7 +19,7 @@ use crate::index::ContainerComparator;
 use crate::indexset::IndexSet;
 use crate::{
     define_index, Allocation, Block, Edit, Function, Inst, MachineEnv, Operand, PReg, ProgPoint,
-    RegClass, SpillSlot, VReg,
+    RegClass, VReg,
 };
 use smallvec::SmallVec;
 use std::cmp::Ordering;
@@ -336,7 +336,7 @@ pub struct Env<'a, F: Function> {
     pub allocs: Vec<Allocation>,
     pub inst_alloc_offsets: Vec<u32>,
     pub num_spillslots: u32,
-    pub safepoint_slots: Vec<(ProgPoint, SpillSlot)>,
+    pub safepoint_slots: Vec<(ProgPoint, Allocation)>,
 
     pub allocated_bundle_count: usize,
 
