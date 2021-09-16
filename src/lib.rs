@@ -108,13 +108,13 @@ impl PReg {
     /// all PRegs and index it efficiently.
     #[inline(always)]
     pub fn index(self) -> usize {
-        ((self.class as u8 as usize) << 5) | (self.hw_enc as usize)
+        ((self.class as u8 as usize) << Self::MAX_BITS) | (self.hw_enc as usize)
     }
 
     /// Construct a PReg from the value returned from `.index()`.
     #[inline(always)]
     pub fn from_index(index: usize) -> Self {
-        let class = (index >> 5) & 1;
+        let class = (index >> Self::MAX_BITS) & 1;
         let class = match class {
             0 => RegClass::Int,
             1 => RegClass::Float,
