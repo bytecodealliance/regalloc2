@@ -62,7 +62,6 @@ impl<'a, F: Function> Env<'a, F> {
             vreg_regs: Vec::with_capacity(n),
             pregs: vec![],
             allocation_queue: PrioQueue::new(),
-            clobbers: vec![],
             safepoints: vec![],
             safepoints_per_vreg: HashMap::new(),
             spilled_bundles: vec![],

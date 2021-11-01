@@ -293,7 +293,6 @@ pub struct Env<'a, F: Function> {
     pub vreg_regs: Vec<VReg>,
     pub pregs: Vec<PRegData>,
     pub allocation_queue: PrioQueue,
-    pub clobbers: Vec<Inst>,   // Sorted list of insts with clobbers.
     pub safepoints: Vec<Inst>, // Sorted list of safepoint insts.
     pub safepoints_per_vreg: HashMap<usize, HashSet<Inst>>,
 

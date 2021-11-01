@@ -448,10 +448,6 @@ impl<'a, F: Function> Env<'a, F> {
             // For each instruction, in reverse order, process
             // operands and clobbers.
             for inst in insns.rev().iter() {
-                if self.func.inst_clobbers(inst).len() > 0 {
-                    self.clobbers.push(inst);
-                }
-
                 // Mark clobbers with CodeRanges on PRegs.
                 for i in 0..self.func.inst_clobbers(inst).len() {
                     // don't borrow `self`
@@ -1234,7 +1230,6 @@ impl<'a, F: Function> Env<'a, F> {
             }
         }
 
-        self.clobbers.sort_unstable();
         self.blockparam_ins.sort_unstable();
         self.blockparam_outs.sort_unstable();
         self.prog_move_srcs.sort_unstable_by_key(|(pos, _)| *pos);
