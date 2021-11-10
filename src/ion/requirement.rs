@@ -1,3 +1,15 @@
+/*
+ * This file was initially derived from the files
+ * `js/src/jit/BacktrackingAllocator.h` and
+ * `js/src/jit/BacktrackingAllocator.cpp` in Mozilla Firefox, and was
+ * originally licensed under the Mozilla Public License 2.0. We
+ * subsequently relicensed it to Apache-2.0 WITH LLVM-exception (see
+ * https://github.com/bytecodealliance/regalloc2/issues/7).
+ *
+ * Since the initial port, the design has been substantially evolved
+ * and optimized.
+ */
+
 //! Requirements computation.
 
 use super::{Env, LiveBundleIndex};
