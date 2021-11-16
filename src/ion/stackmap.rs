@@ -58,10 +58,8 @@ impl<'a, F: Function> Env<'a, F> {
                     }
                     log::trace!("    -> covers safepoint {:?}", safepoints[safepoint_idx]);
 
-                    let slot = alloc
-                        .as_stack()
-                        .expect("Reference-typed value not in spillslot at safepoint");
-                    self.safepoint_slots.push((safepoints[safepoint_idx], slot));
+                    self.safepoint_slots
+                        .push((safepoints[safepoint_idx], alloc));
                     safepoint_idx += 1;
                 }
             }

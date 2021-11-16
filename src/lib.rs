@@ -108,13 +108,13 @@ impl PReg {
     /// all PRegs and index it efficiently.
     #[inline(always)]
     pub fn index(self) -> usize {
-        ((self.class as u8 as usize) << 5) | (self.hw_enc as usize)
+        ((self.class as u8 as usize) << Self::MAX_BITS) | (self.hw_enc as usize)
     }
 
     /// Construct a PReg from the value returned from `.index()`.
     #[inline(always)]
     pub fn from_index(index: usize) -> Self {
-        let class = (index >> 5) & 1;
+        let class = (index >> Self::MAX_BITS) & 1;
         let class = match class {
             0 => RegClass::Int,
             1 => RegClass::Float,
@@ -1139,12 +1139,6 @@ pub enum Edit {
 /// as well.
 #[derive(Clone, Debug)]
 pub struct MachineEnv {
-    /// Physical registers. Every register that might be mentioned in
-    /// any constraint must be listed here, even if it is not
-    /// allocatable (present in one of
-    /// `{preferred,non_preferred}_regs_by_class`).
-    pub regs: Vec<PReg>,
-
     /// Preferred physical registers for each class. These are the
     /// registers that will be allocated first, if free.
     pub preferred_regs_by_class: [Vec<PReg>; 2],
@@ -1186,8 +1180,11 @@ pub struct Output {
     /// Allocation offset in `allocs` for each instruction.
     pub inst_alloc_offsets: Vec<u32>,
 
-    /// Safepoint records: at a given program point, a reference-typed value lives in the given SpillSlot.
-    pub safepoint_slots: Vec<(ProgPoint, SpillSlot)>,
+    /// Safepoint records: at a given program point, a reference-typed value
+    /// lives in the given Allocation. Currently these are guaranteed to be
+    /// stack slots, but in the future an option may be added to allow
+    /// reftype value to be kept in registers at safepoints.
+    pub safepoint_slots: Vec<(ProgPoint, Allocation)>,
 
     /// Debug info: a labeled value (as applied to vregs by
     /// `Function::debug_value_labels()` on the input side) is located

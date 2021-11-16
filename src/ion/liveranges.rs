@@ -105,8 +105,11 @@ impl<'a, F: Function> Env<'a, F> {
                 allocations: LiveRangeSet::new(),
             },
         );
-        for &preg in &self.env.regs {
-            self.pregs[preg.index()].reg = preg;
+        for i in 0..=PReg::MAX {
+            let preg_int = PReg::new(i, RegClass::Int);
+            self.pregs[preg_int.index()].reg = preg_int;
+            let preg_float = PReg::new(i, RegClass::Float);
+            self.pregs[preg_float.index()].reg = preg_float;
         }
         // Create VRegs from the vreg count.
         for idx in 0..self.func.num_vregs() {
@@ -445,10 +448,6 @@ impl<'a, F: Function> Env<'a, F> {
             // For each instruction, in reverse order, process
             // operands and clobbers.
             for inst in insns.rev().iter() {
-                if self.func.inst_clobbers(inst).len() > 0 {
-                    self.clobbers.push(inst);
-                }
-
                 // Mark clobbers with CodeRanges on PRegs.
                 for i in 0..self.func.inst_clobbers(inst).len() {
                     // don't borrow `self`
@@ -1231,7 +1230,6 @@ impl<'a, F: Function> Env<'a, F> {
             }
         }
 
-        self.clobbers.sort_unstable();
         self.blockparam_ins.sort_unstable();
         self.blockparam_outs.sort_unstable();
         self.prog_move_srcs.sort_unstable_by_key(|(pos, _)| *pos);
