@@ -1,11 +1,10 @@
 /*
- * The following license applies to this file, which was initially
- * derived from the files `js/src/jit/BacktrackingAllocator.h` and
- * `js/src/jit/BacktrackingAllocator.cpp` in Mozilla Firefox:
- *
- * This Source Code Form is subject to the terms of the Mozilla Public
- * License, v. 2.0. If a copy of the MPL was not distributed with this
- * file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ * This file was initially derived from the files
+ * `js/src/jit/BacktrackingAllocator.h` and
+ * `js/src/jit/BacktrackingAllocator.cpp` in Mozilla Firefox, and was
+ * originally licensed under the Mozilla Public License 2.0. We
+ * subsequently relicensed it to Apache-2.0 WITH LLVM-exception (see
+ * https://github.com/bytecodealliance/regalloc2/issues/7).
  *
  * Since the initial port, the design has been substantially evolved
  * and optimized.

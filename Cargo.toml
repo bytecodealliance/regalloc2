@@ -3,7 +3,7 @@ name = "regalloc2"
 version = "0.0.1"
 authors = ["Chris Fallin <chris@cfallin.org>", "Mozilla SpiderMonkey Developers"]
 edition = "2018"
-license = "Apache-2.0 WITH LLVM-exception AND MPL-2.0"
+license = "Apache-2.0 WITH LLVM-exception"
 description = "Backtracking register allocator inspired from IonMonkey"
 repository = "https://github.com/bytecodealliance/regalloc2"
 
