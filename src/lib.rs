@@ -65,14 +65,13 @@ pub enum RegClass {
 /// integer registers and indices 64..=127 are the 64 float registers.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PReg {
-    hw_enc: u8,
-    class: RegClass,
+    bits: u8,
 }
 
 impl PReg {
     pub const MAX_BITS: usize = 6;
     pub const MAX: usize = (1 << Self::MAX_BITS) - 1;
-    pub const MAX_INDEX: usize = 1 << (Self::MAX_BITS + 1); // including RegClass bit
+    pub const NUM_INDEX: usize = 1 << (Self::MAX_BITS + 1); // including RegClass bit
 
     /// Create a new PReg. The `hw_enc` range is 6 bits.
     #[inline(always)]
@@ -86,22 +85,24 @@ impl PReg {
         let _ = HW_ENC_MUST_BE_IN_BOUNDS[hw_enc];
 
         PReg {
-            hw_enc: hw_enc as u8,
-            class,
+            bits: ((class as u8) << Self::MAX_BITS) | (hw_enc as u8),
         }
     }
 
     /// The physical register number, as encoded by the ISA for the particular register class.
     #[inline(always)]
     pub fn hw_enc(self) -> usize {
-        let hw_enc = self.hw_enc as usize;
-        hw_enc
+        self.bits as usize & Self::MAX
     }
 
     /// The register class.
     #[inline(always)]
     pub fn class(self) -> RegClass {
-        self.class
+        if self.bits & (1 << Self::MAX_BITS) == 0 {
+            RegClass::Int
+        } else {
+            RegClass::Float
+        }
     }
 
     /// Get an index into the (not necessarily contiguous) index space of
@@ -109,20 +110,15 @@ impl PReg {
     /// all PRegs and index it efficiently.
     #[inline(always)]
     pub fn index(self) -> usize {
-        ((self.class as u8 as usize) << Self::MAX_BITS) | (self.hw_enc as usize)
+        self.bits as usize
     }
 
     /// Construct a PReg from the value returned from `.index()`.
     #[inline(always)]
     pub fn from_index(index: usize) -> Self {
-        let class = (index >> Self::MAX_BITS) & 1;
-        let class = match class {
-            0 => RegClass::Int,
-            1 => RegClass::Float,
-            _ => unreachable!(),
-        };
-        let index = index & Self::MAX;
-        PReg::new(index, class)
+        PReg {
+            bits: (index & (Self::NUM_INDEX - 1)) as u8,
+        }
     }
 
     /// Return the "invalid PReg", which can be used to initialize

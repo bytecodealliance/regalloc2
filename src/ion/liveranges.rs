@@ -99,7 +99,7 @@ impl<'a, F: Function> Env<'a, F> {
     pub fn create_pregs_and_vregs(&mut self) {
         // Create PRegs from the env.
         self.pregs.resize(
-            PReg::MAX_INDEX,
+            PReg::NUM_INDEX,
             PRegData {
                 reg: PReg::invalid(),
                 allocations: LiveRangeSet::new(),
