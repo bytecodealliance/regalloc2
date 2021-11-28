@@ -392,6 +392,10 @@ impl<'a, F: Function> Env<'a, F> {
             return Err(RegAllocError::EntryLivein);
         }
 
+        Ok(())
+    }
+
+    pub fn build_liveranges(&mut self) {
         for &vreg in self.func.reftype_vregs() {
             self.safepoints_per_vreg.insert(vreg.vreg(), HashSet::new());
         }
@@ -1142,6 +1146,20 @@ impl<'a, F: Function> Env<'a, F> {
             }
         }
 
+        self.blockparam_ins.sort_unstable();
+        self.blockparam_outs.sort_unstable();
+        self.prog_move_srcs.sort_unstable_by_key(|(pos, _)| *pos);
+        self.prog_move_dsts.sort_unstable_by_key(|(pos, _)| *pos);
+
+        log::trace!("prog_move_srcs = {:?}", self.prog_move_srcs);
+        log::trace!("prog_move_dsts = {:?}", self.prog_move_dsts);
+
+        self.stats.initial_liverange_count = self.ranges.len();
+        self.stats.blockparam_ins_count = self.blockparam_ins.len();
+        self.stats.blockparam_outs_count = self.blockparam_outs.len();
+    }
+
+    pub fn fixup_multi_fixed_vregs(&mut self) {
         // Do a fixed-reg cleanup pass: if there are any LiveRanges with
         // multiple uses (or defs) at the same ProgPoint and there is
         // more than one FixedReg constraint at that ProgPoint, we
@@ -1239,19 +1257,5 @@ impl<'a, F: Function> Env<'a, F> {
                 seen_fixed_for_vreg.clear();
             }
         }
-
-        self.blockparam_ins.sort_unstable();
-        self.blockparam_outs.sort_unstable();
-        self.prog_move_srcs.sort_unstable_by_key(|(pos, _)| *pos);
-        self.prog_move_dsts.sort_unstable_by_key(|(pos, _)| *pos);
-
-        log::trace!("prog_move_srcs = {:?}", self.prog_move_srcs);
-        log::trace!("prog_move_dsts = {:?}", self.prog_move_dsts);
-
-        self.stats.initial_liverange_count = self.ranges.len();
-        self.stats.blockparam_ins_count = self.blockparam_ins.len();
-        self.stats.blockparam_outs_count = self.blockparam_outs.len();
-
-        Ok(())
     }
 }
