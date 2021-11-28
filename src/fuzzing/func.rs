@@ -465,7 +465,7 @@ impl Func {
                     let mut fixed = vec![];
                     for _ in 0..u.int_in_range(0..=operands.len() - 1)? {
                         // Pick an operand and make it a fixed reg.
-                        let fixed_reg = PReg::new(u.int_in_range(0..=30)?, RegClass::Int);
+                        let fixed_reg = PReg::new(u.int_in_range(0..=62)?, RegClass::Int);
                         if fixed.contains(&fixed_reg) {
                             break;
                         }
@@ -602,15 +602,18 @@ impl std::fmt::Debug for Func {
 }
 
 pub fn machine_env() -> MachineEnv {
-    // Reg 31 is the scratch reg.
-    let regs: Vec<PReg> = (0..31).map(|i| PReg::new(i, RegClass::Int)).collect();
-    let preferred_regs_by_class: [Vec<PReg>; 2] = [regs.iter().cloned().take(24).collect(), vec![]];
-    let non_preferred_regs_by_class: [Vec<PReg>; 2] =
-        [regs.iter().cloned().skip(24).collect(), vec![]];
-    let scratch_by_class: [PReg; 2] = [PReg::new(31, RegClass::Int), PReg::new(0, RegClass::Float)];
+    // Reg 63 is the scratch reg.
+    fn regs(r: std::ops::Range<usize>) -> Vec<PReg> {
+        r.map(|i| PReg::new(i, RegClass::Int)).collect()
+    }
+    let preferred_regs_by_class: [Vec<PReg>; 2] = [regs(0..24), vec![]];
+    let non_preferred_regs_by_class: [Vec<PReg>; 2] = [regs(24..32), vec![]];
+    let scratch_by_class: [PReg; 2] = [PReg::new(63, RegClass::Int), PReg::new(0, RegClass::Float)];
+    let fixed_stack_slots = regs(32..63);
     MachineEnv {
         preferred_regs_by_class,
         non_preferred_regs_by_class,
         scratch_by_class,
+        fixed_stack_slots,
     }
 }
