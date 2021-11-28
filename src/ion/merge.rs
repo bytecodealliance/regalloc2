@@ -99,9 +99,10 @@ impl<'a, F: Function> Env<'a, F> {
             || self.bundles[to.index()].cached_stack()
             || self.bundles[to.index()].cached_fixed()
         {
-            let req_from = self.compute_requirement(from);
-            let req_to = self.compute_requirement(to);
-            let req = self.merge_requirement(req_from, req_to);
+            let req = self
+                .compute_requirement(from)
+                .0
+                .merge(self.compute_requirement(to).0);
             if req == Requirement::Conflict {
                 log::trace!(" -> conflicting requirements; aborting merge");
                 return false;

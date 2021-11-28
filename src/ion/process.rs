@@ -367,29 +367,6 @@ impl<'a, F: Function> Env<'a, F> {
         }
     }
 
-    pub fn find_conflict_split_point(&self, bundle: LiveBundleIndex) -> ProgPoint {
-        // Find the first use whose requirement causes the merge up to
-        // this point to go to Conflict.
-        let mut req = Requirement::Unknown;
-        for entry in &self.bundles[bundle.index()].ranges {
-            for u in &self.ranges[entry.index.index()].uses {
-                let this_req = Requirement::from_operand(u.operand);
-                req = self.merge_requirement(req, this_req);
-                if req == Requirement::Conflict {
-                    return u.pos;
-                }
-            }
-        }
-
-        // Fallback: start of bundle.
-        self.bundles[bundle.index()]
-            .ranges
-            .first()
-            .unwrap()
-            .range
-            .from
-    }
-
     pub fn get_or_create_spill_bundle(
         &mut self,
         bundle: LiveBundleIndex,
@@ -752,7 +729,7 @@ impl<'a, F: Function> Env<'a, F> {
         reg_hint: PReg,
     ) -> Result<(), RegAllocError> {
         let class = self.spillsets[self.bundles[bundle.index()].spillset.index()].class;
-        let req = self.compute_requirement(bundle);
+        let (req, split_point) = self.compute_requirement(bundle);
         // Grab a hint from either the queue or our spillset, if any.
         let mut hint_reg = if reg_hint != PReg::invalid() {
             reg_hint
@@ -772,7 +749,6 @@ impl<'a, F: Function> Env<'a, F> {
                 !self.minimal_bundle(bundle),
                 "Minimal bundle with conflict!"
             );
-            let split_point = self.find_conflict_split_point(bundle);
             self.split_and_requeue_bundle(
                 bundle,
                 /* split_at_point = */ split_point,
@@ -809,7 +785,7 @@ impl<'a, F: Function> Env<'a, F> {
             debug_assert!(attempts < 100 * self.func.num_insts());
 
             let fixed_preg = match req {
-                Requirement::Fixed(preg) => Some(preg),
+                Requirement::FixedReg(preg) | Requirement::FixedStack(preg) => Some(preg),
                 Requirement::Register => None,
                 Requirement::Stack => {
                     // If we must be on the stack, mark our spillset
