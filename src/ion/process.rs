@@ -374,7 +374,7 @@ impl<'a, F: Function> Env<'a, F> {
         for entry in &self.bundles[bundle.index()].ranges {
             for u in &self.ranges[entry.index.index()].uses {
                 let this_req = Requirement::from_operand(u.operand);
-                req = req.merge(this_req);
+                req = self.merge_requirement(req, this_req);
                 if req == Requirement::Conflict {
                     return u.pos;
                 }
@@ -754,11 +754,14 @@ impl<'a, F: Function> Env<'a, F> {
         let class = self.spillsets[self.bundles[bundle.index()].spillset.index()].class;
         let req = self.compute_requirement(bundle);
         // Grab a hint from either the queue or our spillset, if any.
-        let hint_reg = if reg_hint != PReg::invalid() {
+        let mut hint_reg = if reg_hint != PReg::invalid() {
             reg_hint
         } else {
             self.spillsets[self.bundles[bundle.index()].spillset.index()].reg_hint
         };
+        if self.pregs[hint_reg.index()].is_stack {
+            hint_reg = PReg::invalid();
+        }
         log::trace!("process_bundle: bundle {:?} hint {:?}", bundle, hint_reg,);
 
         if let Requirement::Conflict = req {

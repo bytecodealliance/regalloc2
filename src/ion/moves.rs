@@ -35,6 +35,16 @@ impl<'a, F: Function> Env<'a, F> {
         pos == self.cfginfo.block_exit[block.index()]
     }
 
+    fn allocation_is_stack(&self, alloc: Allocation) -> bool {
+        if alloc.is_stack() {
+            true
+        } else if let Some(preg) = alloc.as_reg() {
+            self.pregs[preg.index()].is_stack
+        } else {
+            false
+        }
+    }
+
     pub fn insert_move(
         &mut self,
         pos: ProgPoint,
@@ -968,9 +978,9 @@ impl<'a, F: Function> Env<'a, F> {
                 let scratch_used = resolved.iter().any(|&(src, dst, _)| {
                     src == Allocation::reg(scratch) || dst == Allocation::reg(scratch)
                 });
-                let stack_stack_move = resolved
-                    .iter()
-                    .any(|&(src, dst, _)| src.is_stack() && dst.is_stack());
+                let stack_stack_move = resolved.iter().any(|&(src, dst, _)| {
+                    self.allocation_is_stack(src) && self.allocation_is_stack(dst)
+                });
                 let extra_slot = if scratch_used && stack_stack_move {
                     if self.extra_spillslot[regclass as u8 as usize].is_none() {
                         let slot = self.allocate_spillslot(regclass);
@@ -989,7 +999,7 @@ impl<'a, F: Function> Env<'a, F> {
                         if dst == Allocation::reg(scratch) {
                             scratch_used_yet = true;
                         }
-                        if src.is_stack() && dst.is_stack() {
+                        if self.allocation_is_stack(src) && self.allocation_is_stack(dst) {
                             if !scratch_used_yet {
                                 self.add_edit(
                                     pos,

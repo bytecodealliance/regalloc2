@@ -266,6 +266,7 @@ pub struct VRegData {
 pub struct PRegData {
     pub reg: PReg,
     pub allocations: LiveRangeSet,
+    pub is_stack: bool,
 }
 
 #[derive(Clone, Debug)]

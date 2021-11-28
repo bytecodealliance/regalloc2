@@ -1154,6 +1154,14 @@ pub struct MachineEnv {
     /// the emission of two machine-code instructions, this lowering
     /// can use the scratch register between them.
     pub scratch_by_class: [PReg; 2],
+
+    /// Some `PReg`s can be designated as locations on the stack rather than
+    /// actual registers. These can be used to tell the register allocator about
+    /// pre-defined stack slots used for function arguments and return values.
+    ///
+    /// `PReg`s in this list cannot be used as a scratch register or as an
+    /// allocatable regsiter.
+    pub fixed_stack_slots: Vec<PReg>,
 }
 
 /// The output of the register allocator.

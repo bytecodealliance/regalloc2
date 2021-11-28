@@ -78,7 +78,7 @@
 
 use crate::{
     Allocation, AllocationKind, Block, Edit, Function, Inst, InstPosition, Operand,
-    OperandConstraint, OperandKind, OperandPos, Output, PReg, ProgPoint, VReg,
+    OperandConstraint, OperandKind, OperandPos, Output, PReg, ProgPoint, RegClass, VReg,
 };
 
 use std::collections::{HashMap, HashSet, VecDeque};
