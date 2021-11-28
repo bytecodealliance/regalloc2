@@ -695,26 +695,28 @@ impl<'a, F: Function> Env<'a, F> {
         }
 
         // Handle multi-fixed-reg constraints by copying.
-        for (progpoint, from_preg, to_preg, to_vreg, slot) in
+        for (progpoint, from_slot, to_preg, to_vreg, to_slot) in
             std::mem::replace(&mut self.multi_fixed_reg_fixups, vec![])
         {
+            let from_alloc = self.get_alloc(progpoint.inst(), from_slot as usize);
+            let to_alloc = Allocation::reg(self.pregs[to_preg.index()].reg);
             log::trace!(
-                "multi-fixed-move constraint at {:?} from p{} to p{} for v{}",
+                "multi-fixed-move constraint at {:?} from {} to {} for v{}",
                 progpoint,
-                from_preg.index(),
-                to_preg.index(),
+                from_alloc,
+                to_alloc,
                 to_vreg.index(),
             );
             self.insert_move(
                 progpoint,
                 InsertMovePrio::MultiFixedReg,
-                Allocation::reg(self.pregs[from_preg.index()].reg),
-                Allocation::reg(self.pregs[to_preg.index()].reg),
+                from_alloc,
+                to_alloc,
                 Some(self.vreg_regs[to_vreg.index()]),
             );
             self.set_alloc(
                 progpoint.inst(),
-                slot,
+                to_slot as usize,
                 Allocation::reg(self.pregs[to_preg.index()].reg),
             );
         }

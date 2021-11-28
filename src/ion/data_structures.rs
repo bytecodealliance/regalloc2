@@ -331,8 +331,8 @@ pub struct Env<'a, F: Function> {
     // will insert a copy from wherever the VReg's primary allocation
     // was to the approprate PReg.
     //
-    // (progpoint, copy-from-preg, copy-to-preg, to-slot)
-    pub multi_fixed_reg_fixups: Vec<(ProgPoint, PRegIndex, PRegIndex, VRegIndex, usize)>,
+    // (progpoint, from-slot, copy-to-preg, vreg, to-slot)
+    pub multi_fixed_reg_fixups: Vec<(ProgPoint, u8, PRegIndex, VRegIndex, u8)>,
 
     pub inserted_moves: Vec<InsertedMove>,
 
