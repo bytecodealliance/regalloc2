@@ -431,15 +431,16 @@ impl<'a, F: Function> Env<'a, F> {
             // If the last instruction is a branch (rather than
             // return), create blockparam_out entries.
             if self.func.is_branch(insns.last()) {
-                let operands = self.func.inst_operands(insns.last());
-                let mut i = self.func.branch_blockparam_arg_offset(block, insns.last());
-                for &succ in self.func.block_succs(block) {
-                    for &blockparam in self.func.block_params(succ) {
-                        let from_vreg = VRegIndex::new(operands[i].vreg().vreg());
-                        let blockparam_vreg = VRegIndex::new(blockparam.vreg());
+                for (i, &succ) in self.func.block_succs(block).iter().enumerate() {
+                    let blockparams_in = self.func.block_params(succ);
+                    let blockparams_out = self.func.branch_blockparams(block, insns.last(), i);
+                    for (&blockparam_in, &blockparam_out) in
+                        blockparams_in.iter().zip(blockparams_out)
+                    {
+                        let blockparam_out = VRegIndex::new(blockparam_out.vreg());
+                        let blockparam_in = VRegIndex::new(blockparam_in.vreg());
                         self.blockparam_outs
-                            .push((from_vreg, block, succ, blockparam_vreg));
-                        i += 1;
+                            .push((blockparam_out, block, succ, blockparam_in));
                     }
                 }
             }

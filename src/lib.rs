@@ -860,21 +860,14 @@ pub trait Function {
     fn is_ret(&self, insn: Inst) -> bool;
 
     /// Determine whether an instruction is the end-of-block
-    /// branch. If so, its operands at the indices given by
-    /// `branch_blockparam_arg_offset()` below *must* be the block
-    /// parameters for each of its block's `block_succs` successor
-    /// blocks, in order.
+    /// branch.
     fn is_branch(&self, insn: Inst) -> bool;
 
     /// If `insn` is a branch at the end of `block`, returns the
-    /// operand index at which outgoing blockparam arguments are
-    /// found. Starting at this index, blockparam arguments for each
-    /// successor block's blockparams, in order, must be found.
-    ///
-    /// It is an error if `self.inst_operands(insn).len() -
-    /// self.branch_blockparam_arg_offset(insn)` is not exactly equal
-    /// to the sum of blockparam counts for all successor blocks.
-    fn branch_blockparam_arg_offset(&self, block: Block, insn: Inst) -> usize;
+    /// outgoing blockparam arguments for the given successor. The
+    /// number of arguments must match the number incoming blockparams
+    /// for each respective successor block.
+    fn branch_blockparams(&self, block: Block, insn: Inst, succ_idx: usize) -> &[VReg];
 
     /// Determine whether an instruction requires all reference-typed
     /// values to be placed onto the stack. For these instructions,
