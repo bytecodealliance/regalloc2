@@ -185,6 +185,11 @@ pub struct LiveBundle {
     pub spill_weight_and_props: u32,
 }
 
+pub const BUNDLE_MAX_SPILL_WEIGHT: u32 = (1 << 29) - 1;
+pub const MINIMAL_FIXED_BUNDLE_SPILL_WEIGHT: u32 = BUNDLE_MAX_SPILL_WEIGHT;
+pub const MINIMAL_BUNDLE_SPILL_WEIGHT: u32 = BUNDLE_MAX_SPILL_WEIGHT - 1;
+pub const BUNDLE_MAX_NORMAL_SPILL_WEIGHT: u32 = BUNDLE_MAX_SPILL_WEIGHT - 2;
+
 impl LiveBundle {
     #[inline(always)]
     pub fn set_cached_spill_weight_and_props(
@@ -194,7 +199,7 @@ impl LiveBundle {
         fixed: bool,
         stack: bool,
     ) {
-        debug_assert!(spill_weight < ((1 << 29) - 1));
+        debug_assert!(spill_weight <= BUNDLE_MAX_SPILL_WEIGHT);
         self.spill_weight_and_props = spill_weight
             | (if minimal { 1 << 31 } else { 0 })
             | (if fixed { 1 << 30 } else { 0 })

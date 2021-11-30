@@ -13,11 +13,15 @@
 //! Main allocation loop that processes bundles.
 
 use super::{
-    spill_weight_from_constraint, CodeRange, Env, LiveBundleIndex, LiveBundleVec, LiveRangeFlag,
+    spill_weight_from_constraint, Env, LiveBundleIndex, LiveBundleVec, LiveRangeFlag,
     LiveRangeIndex, LiveRangeKey, LiveRangeList, LiveRangeListEntry, PRegIndex, RegTraversalIter,
     Requirement, SpillWeight, UseList,
 };
 use crate::{
+    ion::data_structures::{
+        CodeRange, BUNDLE_MAX_NORMAL_SPILL_WEIGHT, MINIMAL_BUNDLE_SPILL_WEIGHT,
+        MINIMAL_FIXED_BUNDLE_SPILL_WEIGHT,
+    },
     Allocation, Function, Inst, InstPosition, OperandConstraint, OperandKind, PReg, ProgPoint,
     RegAllocError,
 };
@@ -302,11 +306,11 @@ impl<'a, F: Function> Env<'a, F> {
 
         let spill_weight = if minimal {
             if fixed {
-                log::trace!("  -> fixed and minimal: spill weight 2000000");
-                2_000_000
+                log::trace!("  -> fixed and minimal");
+                MINIMAL_FIXED_BUNDLE_SPILL_WEIGHT
             } else {
-                log::trace!("  -> non-fixed and minimal: spill weight 1000000");
-                1_000_000
+                log::trace!("  -> non-fixed and minimal");
+                MINIMAL_BUNDLE_SPILL_WEIGHT
             }
         } else {
             let mut total = SpillWeight::zero();
@@ -326,7 +330,7 @@ impl<'a, F: Function> Env<'a, F> {
                     self.bundles[bundle.index()].prio,
                     final_weight
                 );
-                final_weight
+                std::cmp::min(BUNDLE_MAX_NORMAL_SPILL_WEIGHT, final_weight)
             } else {
                 0
             }
