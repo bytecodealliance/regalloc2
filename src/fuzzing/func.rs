@@ -13,7 +13,6 @@ use arbitrary::{Arbitrary, Unstructured};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InstOpcode {
-    Phi,
     Op,
     Ret,
     Branch,
@@ -40,14 +39,10 @@ impl InstData {
             is_safepoint: false,
         }
     }
-    pub fn branch(uses: &[usize]) -> InstData {
-        let mut operands = vec![];
-        for &u in uses {
-            operands.push(Operand::reg_use(VReg::new(u, RegClass::Int)));
-        }
+    pub fn branch() -> InstData {
         InstData {
             op: InstOpcode::Branch,
-            operands,
+            operands: vec![],
             clobbers: vec![],
             is_safepoint: false,
         }
@@ -68,7 +63,8 @@ pub struct Func {
     blocks: Vec<InstRange>,
     block_preds: Vec<Vec<Block>>,
     block_succs: Vec<Vec<Block>>,
-    block_params: Vec<Vec<VReg>>,
+    block_params_in: Vec<Vec<VReg>>,
+    block_params_out: Vec<Vec<Vec<VReg>>>,
     num_vregs: usize,
     reftype_vregs: Vec<VReg>,
 }
@@ -100,7 +96,7 @@ impl Function for Func {
     }
 
     fn block_params(&self, block: Block) -> &[VReg] {
-        &self.block_params[block.index()][..]
+        &self.block_params_in[block.index()][..]
     }
 
     fn is_ret(&self, insn: Inst) -> bool {
@@ -111,10 +107,8 @@ impl Function for Func {
         self.insts[insn.index()].op == InstOpcode::Branch
     }
 
-    fn branch_blockparam_arg_offset(&self, _: Block, _: Inst) -> usize {
-        // Branch blockparam args always start at zero for this
-        // Function implementation.
-        0
+    fn branch_blockparams(&self, block: Block, _: Inst, succ: usize) -> &[VReg] {
+        &self.block_params_out[block.index()][succ][..]
     }
 
     fn requires_refs_on_stack(&self, insn: Inst) -> bool {
@@ -164,7 +158,8 @@ impl FuncBuilder {
             f: Func {
                 block_preds: vec![],
                 block_succs: vec![],
-                block_params: vec![],
+                block_params_in: vec![],
+                block_params_out: vec![],
                 insts: vec![],
                 blocks: vec![],
                 num_vregs: 0,
@@ -181,7 +176,8 @@ impl FuncBuilder {
             .push(InstRange::forward(Inst::new(0), Inst::new(0)));
         self.f.block_preds.push(vec![]);
         self.f.block_succs.push(vec![]);
-        self.f.block_params.push(vec![]);
+        self.f.block_params_in.push(vec![]);
+        self.f.block_params_out.push(vec![]);
         self.insts_per_block.push(vec![]);
         b
     }
@@ -195,8 +191,12 @@ impl FuncBuilder {
         self.f.block_preds[to.index()].push(from);
     }
 
-    pub fn set_block_params(&mut self, block: Block, params: &[VReg]) {
-        self.f.block_params[block.index()] = params.iter().cloned().collect();
+    pub fn set_block_params_in(&mut self, block: Block, params: &[VReg]) {
+        self.f.block_params_in[block.index()] = params.iter().cloned().collect();
+    }
+
+    pub fn set_block_params_out(&mut self, block: Block, params: Vec<Vec<VReg>>) {
+        self.f.block_params_out[block.index()] = params;
     }
 
     fn compute_doms(&mut self) {
@@ -388,7 +388,7 @@ impl Func {
                 }
             }
             vregs_by_block_to_be_defined.last_mut().unwrap().reverse();
-            builder.set_block_params(Block::new(block), &block_params[block][..]);
+            builder.set_block_params_in(Block::new(block), &block_params[block][..]);
         }
 
         for block in 0..num_blocks {
@@ -510,9 +510,10 @@ impl Func {
             // Define the branch with blockparam args that must end
             // the block.
             if builder.f.block_succs[block].len() > 0 {
-                let mut args = vec![];
+                let mut params = vec![];
                 for &succ in &builder.f.block_succs[block] {
-                    for _ in 0..builder.f.block_params[succ.index()].len() {
+                    let mut args = vec![];
+                    for _ in 0..builder.f.block_params_in[succ.index()].len() {
                         let dom_block = choose_dominating_block(
                             &builder.idom[..],
                             Block::new(block),
@@ -524,10 +525,12 @@ impl Func {
                         } else {
                             u.choose(&avail[..])?
                         };
-                        args.push(vreg.vreg());
+                        args.push(*vreg);
                     }
+                    params.push(args);
                 }
-                builder.add_inst(Block::new(block), InstData::branch(&args[..]));
+                builder.set_block_params_out(Block::new(block), params);
+                builder.add_inst(Block::new(block), InstData::branch());
             } else {
                 builder.add_inst(Block::new(block), InstData::ret());
             }
@@ -552,15 +555,29 @@ impl std::fmt::Debug for Func {
                 .iter()
                 .map(|b| b.index())
                 .collect::<Vec<_>>();
-            let params = self.block_params[i]
+            let params_in = self.block_params_in[i]
                 .iter()
                 .map(|v| format!("v{}", v.vreg()))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let params_out = self.block_params_out[i]
+                .iter()
+                .enumerate()
+                .map(|(succ_idx, vec)| {
+                    let succ = self.block_succs[i][succ_idx];
+                    let params = vec
+                        .iter()
+                        .map(|v| format!("v{}", v.vreg()))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!("block{}({})", succ.index(), params)
+                })
                 .collect::<Vec<_>>()
                 .join(", ");
             write!(
                 f,
                 "  block{}({}): # succs:{:?} preds:{:?}\n",
-                i, params, succs, preds
+                i, params_in, succs, preds
             )?;
             for inst in blockrange.iter() {
                 if self.requires_refs_on_stack(inst) {
@@ -574,6 +591,9 @@ impl std::fmt::Debug for Func {
                     self.insts[inst.index()].operands,
                     self.insts[inst.index()].clobbers
                 )?;
+                if let InstOpcode::Branch = self.insts[inst.index()].op {
+                    write!(f, "    params: {}\n", params_out)?;
+                }
             }
         }
         write!(f, "}}\n")?;

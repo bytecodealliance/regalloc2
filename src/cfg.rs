@@ -101,7 +101,7 @@ impl CFGInfo {
             }
             if require_no_branch_args {
                 let last = f.block_insns(block).last();
-                if f.branch_blockparam_arg_offset(block, last) > 0 {
+                if !f.inst_operands(last).is_empty() {
                     return Err(RegAllocError::DisallowedBranchArg(last));
                 }
             }

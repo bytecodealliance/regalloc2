@@ -315,6 +315,7 @@ impl<'a, F: Function> Env<'a, F> {
         while !workqueue.is_empty() {
             let block = workqueue.pop_front().unwrap();
             workqueue_set.remove(&block);
+            let insns = self.func.block_insns(block);
 
             log::trace!("computing liveins for block{}", block.index());
 
@@ -323,7 +324,16 @@ impl<'a, F: Function> Env<'a, F> {
             let mut live = self.liveouts[block.index()].clone();
             log::trace!(" -> initial liveout set: {:?}", live);
 
-            for inst in self.func.block_insns(block).rev().iter() {
+            // Include outgoing blockparams in the initial live set.
+            if self.func.is_branch(insns.last()) {
+                for i in 0..self.func.block_succs(block).len() {
+                    for param in self.func.branch_blockparams(block, insns.last(), i) {
+                        live.set(param.vreg(), true);
+                    }
+                }
+            }
+
+            for inst in insns.rev().iter() {
                 if let Some((src, dst)) = self.func.is_move(inst) {
                     live.set(dst.vreg().vreg(), false);
                     live.set(src.vreg().vreg(), true);
@@ -399,11 +409,32 @@ impl<'a, F: Function> Env<'a, F> {
 
         for i in (0..self.func.num_blocks()).rev() {
             let block = Block::new(i);
+            let insns = self.func.block_insns(block);
 
             self.stats.livein_blocks += 1;
 
             // Init our local live-in set.
             let mut live = self.liveouts[block.index()].clone();
+
+            // If the last instruction is a branch (rather than
+            // return), create blockparam_out entries.
+            if self.func.is_branch(insns.last()) {
+                for (i, &succ) in self.func.block_succs(block).iter().enumerate() {
+                    let blockparams_in = self.func.block_params(succ);
+                    let blockparams_out = self.func.branch_blockparams(block, insns.last(), i);
+                    for (&blockparam_in, &blockparam_out) in
+                        blockparams_in.iter().zip(blockparams_out)
+                    {
+                        let blockparam_out = VRegIndex::new(blockparam_out.vreg());
+                        let blockparam_in = VRegIndex::new(blockparam_in.vreg());
+                        self.blockparam_outs
+                            .push((blockparam_out, block, succ, blockparam_in));
+
+                        // Include outgoing blockparams in the initial live set.
+                        live.set(blockparam_out.index(), true);
+                    }
+                }
+            }
 
             // Initially, registers are assumed live for the whole block.
             for vreg in live.iter() {
@@ -424,24 +455,6 @@ impl<'a, F: Function> Env<'a, F> {
             for param in self.func.block_params(block) {
                 self.vreg_regs[param.vreg()] = *param;
                 self.vregs[param.vreg()].blockparam = block;
-            }
-
-            let insns = self.func.block_insns(block);
-
-            // If the last instruction is a branch (rather than
-            // return), create blockparam_out entries.
-            if self.func.is_branch(insns.last()) {
-                let operands = self.func.inst_operands(insns.last());
-                let mut i = self.func.branch_blockparam_arg_offset(block, insns.last());
-                for &succ in self.func.block_succs(block) {
-                    for &blockparam in self.func.block_params(succ) {
-                        let from_vreg = VRegIndex::new(operands[i].vreg().vreg());
-                        let blockparam_vreg = VRegIndex::new(blockparam.vreg());
-                        self.blockparam_outs
-                            .push((from_vreg, block, succ, blockparam_vreg));
-                        i += 1;
-                    }
-                }
             }
 
             // For each instruction, in reverse order, process
@@ -892,13 +905,6 @@ impl<'a, F: Function> Env<'a, F> {
                             (OperandKind::Def, OperandPos::Early) => ProgPoint::before(inst),
                             (OperandKind::Def, OperandPos::Late) => ProgPoint::after(inst),
                             (OperandKind::Use, OperandPos::Late) => ProgPoint::after(inst),
-                            // If this is a branch, extend `pos` to
-                            // the end of the block. (Branch uses are
-                            // blockparams and need to be live at the
-                            // end of the block.)
-                            (OperandKind::Use, _) if self.func.is_branch(inst) => {
-                                self.cfginfo.block_exit[block.index()]
-                            }
                             // If there are any reused inputs in this
                             // instruction, and this is *not* the
                             // reused input, force `pos` to

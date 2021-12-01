@@ -71,13 +71,12 @@ pub fn validate_ssa<F: Function>(f: &F, cfginfo: &CFGInfo) -> Result<(), RegAllo
                     return Err(RegAllocError::BB(block));
                 }
                 if f.is_branch(insn) {
-                    let expected = f
-                        .block_succs(block)
-                        .iter()
-                        .map(|&succ| f.block_params(succ).len())
-                        .sum();
-                    if f.inst_operands(insn).len() != expected {
-                        return Err(RegAllocError::Branch(insn));
+                    for (i, &succ) in f.block_succs(block).iter().enumerate() {
+                        let blockparams_in = f.block_params(succ);
+                        let blockparams_out = f.branch_blockparams(block, insn, i);
+                        if blockparams_in.len() != blockparams_out.len() {
+                            return Err(RegAllocError::Branch(insn));
+                        }
                     }
                 }
             } else {
