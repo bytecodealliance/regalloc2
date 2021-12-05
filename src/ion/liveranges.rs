@@ -1167,6 +1167,7 @@ impl<'a, F: Function> Env<'a, F> {
                     ProgPoint,
                     PRegIndex,
                     PRegIndex,
+                    VRegIndex,
                     usize,
                 )>| {
                     if last_point.is_some() && Some(pos) != last_point {
@@ -1189,7 +1190,7 @@ impl<'a, F: Function> Env<'a, F> {
                             let orig_preg = first_preg[idx];
                             if orig_preg != preg_idx {
                                 log::trace!(" -> duplicate; switching to constraint Reg");
-                                fixups.push((pos, orig_preg, preg_idx, slot));
+                                fixups.push((pos, orig_preg, preg_idx, vreg_idx, slot));
                                 *op = Operand::new(
                                     op.vreg(),
                                     OperandConstraint::Reg,
