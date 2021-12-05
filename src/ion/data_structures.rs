@@ -331,7 +331,7 @@ pub struct Env<'a, F: Function> {
     // was to the approprate PReg.
     //
     // (progpoint, copy-from-preg, copy-to-preg, to-slot)
-    pub multi_fixed_reg_fixups: Vec<(ProgPoint, PRegIndex, PRegIndex, usize)>,
+    pub multi_fixed_reg_fixups: Vec<(ProgPoint, PRegIndex, PRegIndex, VRegIndex, usize)>,
 
     pub inserted_moves: Vec<InsertedMove>,
 
