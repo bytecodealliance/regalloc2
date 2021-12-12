@@ -19,7 +19,6 @@ pub(crate) mod ion;
 pub(crate) mod moves;
 pub(crate) mod postorder;
 pub(crate) mod ssa;
-pub(crate) mod util;
 
 #[macro_use]
 mod index;

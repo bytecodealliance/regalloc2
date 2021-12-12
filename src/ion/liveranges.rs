@@ -18,12 +18,13 @@ use super::{
     SpillSetIndex, Use, VRegData, VRegIndex, SLOT_NONE,
 };
 use crate::indexset::IndexSet;
-use crate::util::SliceGroupBy;
+use crate::ion::data_structures::MultiFixedRegFixup;
 use crate::{
     Allocation, Block, Function, Inst, InstPosition, Operand, OperandConstraint, OperandKind,
     OperandPos, PReg, ProgPoint, RegAllocError, VReg,
 };
 use fxhash::FxHashSet;
+use slice_group_by::GroupByMut;
 use smallvec::{smallvec, SmallVec};
 use std::collections::{HashSet, VecDeque};
 
@@ -1184,7 +1185,7 @@ impl<'a, F: Function> Env<'a, F> {
                 // Find groups of uses that occur in at the same program point.
                 for uses in self.ranges[range.index()]
                     .uses
-                    .group_by_mut_(|a, b| a.pos == b.pos)
+                    .linear_group_by_key_mut(|u| u.pos)
                 {
                     if uses.len() < 2 {
                         continue;
@@ -1254,21 +1255,23 @@ impl<'a, F: Function> Env<'a, F> {
                             // FixedStack is incompatible if there are any
                             // Reg/FixedReg constraints. FixedReg is
                             // incompatible if there already is a different
-                            // FixedReg constraint.
+                            // FixedReg constraint. If either condition is true,
+                            // we edit the constraint below; otherwise, we can
+                            // skip this edit.
                             if !(requires_reg && self.pregs[preg.index()].is_stack)
                                 && *first_preg.get_or_insert(preg) == preg
                             {
                                 continue;
                             }
 
-                            log::trace!(" -> duplicate; switching to constraint Reg");
-                            self.multi_fixed_reg_fixups.push((
-                                u.pos,
-                                source_slot,
-                                preg_idx,
-                                vreg_idx,
-                                u.slot,
-                            ));
+                            log::trace!(" -> duplicate; switching to constraint Any");
+                            self.multi_fixed_reg_fixups.push(MultiFixedRegFixup {
+                                pos: u.pos,
+                                from_slot: source_slot,
+                                to_slot: u.slot,
+                                to_preg: preg_idx,
+                                vreg: vreg_idx,
+                            });
                             u.operand = Operand::new(
                                 u.operand.vreg(),
                                 OperandConstraint::Any,

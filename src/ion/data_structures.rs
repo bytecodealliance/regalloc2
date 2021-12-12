@@ -270,6 +270,15 @@ pub struct PRegData {
 }
 
 #[derive(Clone, Debug)]
+pub struct MultiFixedRegFixup {
+    pub pos: ProgPoint,
+    pub from_slot: u8,
+    pub to_slot: u8,
+    pub to_preg: PRegIndex,
+    pub vreg: VRegIndex,
+}
+
+#[derive(Clone, Debug)]
 pub struct Env<'a, F: Function> {
     pub func: &'a F,
     pub env: &'a MachineEnv,
@@ -330,9 +339,7 @@ pub struct Env<'a, F: Function> {
     // the register available. When we produce the final edit-list, we
     // will insert a copy from wherever the VReg's primary allocation
     // was to the approprate PReg.
-    //
-    // (progpoint, from-slot, copy-to-preg, vreg, to-slot)
-    pub multi_fixed_reg_fixups: Vec<(ProgPoint, u8, PRegIndex, VRegIndex, u8)>,
+    pub multi_fixed_reg_fixups: Vec<MultiFixedRegFixup>,
 
     pub inserted_moves: Vec<InsertedMove>,
 
