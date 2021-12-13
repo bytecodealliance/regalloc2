@@ -13,8 +13,8 @@
 //! Bundle merging.
 
 use super::{
-    Env, LiveBundleIndex, LiveRangeIndex, LiveRangeKey, Requirement, SpillSet, SpillSetIndex,
-    SpillSlotIndex, VRegIndex,
+    Env, LiveBundleIndex, LiveRangeIndex, LiveRangeKey, SpillSet, SpillSetIndex, SpillSlotIndex,
+    VRegIndex,
 };
 use crate::{Function, Inst, OperandConstraint, PReg};
 use smallvec::smallvec;
@@ -99,10 +99,7 @@ impl<'a, F: Function> Env<'a, F> {
             || self.bundles[to.index()].cached_stack()
             || self.bundles[to.index()].cached_fixed()
         {
-            let req = self
-                .compute_requirement(from)
-                .merge(self.compute_requirement(to));
-            if req == Requirement::Conflict {
+            if self.merge_bundle_requirements(from, to).is_err() {
                 log::trace!(" -> conflicting requirements; aborting merge");
                 return false;
             }

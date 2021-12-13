@@ -18,11 +18,13 @@ use super::{
     SpillSetIndex, Use, VRegData, VRegIndex, SLOT_NONE,
 };
 use crate::indexset::IndexSet;
+use crate::ion::data_structures::MultiFixedRegFixup;
 use crate::{
     Allocation, Block, Function, Inst, InstPosition, Operand, OperandConstraint, OperandKind,
     OperandPos, PReg, ProgPoint, RegAllocError, VReg,
 };
 use fxhash::FxHashSet;
+use slice_group_by::GroupByMut;
 use smallvec::{smallvec, SmallVec};
 use std::collections::{HashSet, VecDeque};
 
@@ -98,10 +100,11 @@ impl<'a, F: Function> Env<'a, F> {
     pub fn create_pregs_and_vregs(&mut self) {
         // Create PRegs from the env.
         self.pregs.resize(
-            PReg::MAX_INDEX,
+            PReg::NUM_INDEX,
             PRegData {
                 reg: PReg::invalid(),
                 allocations: LiveRangeSet::new(),
+                is_stack: false,
             },
         );
         for i in 0..=PReg::MAX {
@@ -109,6 +112,9 @@ impl<'a, F: Function> Env<'a, F> {
             self.pregs[preg_int.index()].reg = preg_int;
             let preg_float = PReg::new(i, RegClass::Float);
             self.pregs[preg_float.index()].reg = preg_float;
+        }
+        for &preg in &self.env.fixed_stack_slots {
+            self.pregs[preg.index()].is_stack = true;
         }
         // Create VRegs from the vreg count.
         for idx in 0..self.func.num_vregs() {
@@ -388,6 +394,10 @@ impl<'a, F: Function> Env<'a, F> {
             return Err(RegAllocError::EntryLivein);
         }
 
+        Ok(())
+    }
+
+    pub fn build_liveranges(&mut self) {
         for &vreg in self.func.reftype_vregs() {
             self.safepoints_per_vreg.insert(vreg.vreg(), HashSet::new());
         }
@@ -1138,104 +1148,6 @@ impl<'a, F: Function> Env<'a, F> {
             }
         }
 
-        // Do a fixed-reg cleanup pass: if there are any LiveRanges with
-        // multiple uses (or defs) at the same ProgPoint and there is
-        // more than one FixedReg constraint at that ProgPoint, we
-        // need to record all but one of them in a special fixup list
-        // and handle them later; otherwise, bundle-splitting to
-        // create minimal bundles becomes much more complex (we would
-        // have to split the multiple uses at the same progpoint into
-        // different bundles, which breaks invariants related to
-        // disjoint ranges and bundles).
-        let mut seen_fixed_for_vreg: SmallVec<[VReg; 16]> = smallvec![];
-        let mut first_preg: SmallVec<[PRegIndex; 16]> = smallvec![];
-        let mut extra_clobbers: SmallVec<[(PReg, Inst); 8]> = smallvec![];
-        for vreg in 0..self.vregs.len() {
-            for range_idx in 0..self.vregs[vreg].ranges.len() {
-                let entry = self.vregs[vreg].ranges[range_idx];
-                let range = entry.index;
-                log::trace!(
-                    "multi-fixed-reg cleanup: vreg {:?} range {:?}",
-                    VRegIndex::new(vreg),
-                    range,
-                );
-                let mut last_point = None;
-                let mut fixup_multi_fixed_vregs = |pos: ProgPoint,
-                                                   slot: usize,
-                                                   op: &mut Operand,
-                                                   fixups: &mut Vec<(
-                    ProgPoint,
-                    PRegIndex,
-                    PRegIndex,
-                    VRegIndex,
-                    usize,
-                )>| {
-                    if last_point.is_some() && Some(pos) != last_point {
-                        seen_fixed_for_vreg.clear();
-                        first_preg.clear();
-                    }
-                    last_point = Some(pos);
-
-                    if let OperandConstraint::FixedReg(preg) = op.constraint() {
-                        let vreg_idx = VRegIndex::new(op.vreg().vreg());
-                        let preg_idx = PRegIndex::new(preg.index());
-                        log::trace!(
-                            "at pos {:?}, vreg {:?} has fixed constraint to preg {:?}",
-                            pos,
-                            vreg_idx,
-                            preg_idx
-                        );
-                        if let Some(idx) = seen_fixed_for_vreg.iter().position(|r| *r == op.vreg())
-                        {
-                            let orig_preg = first_preg[idx];
-                            if orig_preg != preg_idx {
-                                log::trace!(" -> duplicate; switching to constraint Reg");
-                                fixups.push((pos, orig_preg, preg_idx, vreg_idx, slot));
-                                *op = Operand::new(
-                                    op.vreg(),
-                                    OperandConstraint::Reg,
-                                    op.kind(),
-                                    op.pos(),
-                                );
-                                log::trace!(
-                                    " -> extra clobber {} at inst{}",
-                                    preg,
-                                    pos.inst().index()
-                                );
-                                extra_clobbers.push((preg, pos.inst()));
-                            }
-                        } else {
-                            seen_fixed_for_vreg.push(op.vreg());
-                            first_preg.push(preg_idx);
-                        }
-                    }
-                };
-
-                for u in &mut self.ranges[range.index()].uses {
-                    let pos = u.pos;
-                    let slot = u.slot as usize;
-                    fixup_multi_fixed_vregs(
-                        pos,
-                        slot,
-                        &mut u.operand,
-                        &mut self.multi_fixed_reg_fixups,
-                    );
-                }
-
-                for &(clobber, inst) in &extra_clobbers {
-                    let range = CodeRange {
-                        from: ProgPoint::before(inst),
-                        to: ProgPoint::before(inst.next()),
-                    };
-                    self.add_liverange_to_preg(range, clobber);
-                }
-
-                extra_clobbers.clear();
-                first_preg.clear();
-                seen_fixed_for_vreg.clear();
-            }
-        }
-
         self.blockparam_ins.sort_unstable();
         self.blockparam_outs.sort_unstable();
         self.prog_move_srcs.sort_unstable_by_key(|(pos, _)| *pos);
@@ -1247,7 +1159,145 @@ impl<'a, F: Function> Env<'a, F> {
         self.stats.initial_liverange_count = self.ranges.len();
         self.stats.blockparam_ins_count = self.blockparam_ins.len();
         self.stats.blockparam_outs_count = self.blockparam_outs.len();
+    }
 
-        Ok(())
+    pub fn fixup_multi_fixed_vregs(&mut self) {
+        // Do a fixed-reg cleanup pass: if there are any LiveRanges with
+        // multiple uses (or defs) at the same ProgPoint and there is
+        // more than one FixedReg constraint at that ProgPoint, we
+        // need to record all but one of them in a special fixup list
+        // and handle them later; otherwise, bundle-splitting to
+        // create minimal bundles becomes much more complex (we would
+        // have to split the multiple uses at the same progpoint into
+        // different bundles, which breaks invariants related to
+        // disjoint ranges and bundles).
+        let mut extra_clobbers: SmallVec<[(PReg, Inst); 8]> = smallvec![];
+        for vreg in 0..self.vregs.len() {
+            for range_idx in 0..self.vregs[vreg].ranges.len() {
+                let entry = self.vregs[vreg].ranges[range_idx];
+                let range = entry.index;
+                log::trace!(
+                    "multi-fixed-reg cleanup: vreg {:?} range {:?}",
+                    VRegIndex::new(vreg),
+                    range,
+                );
+
+                // Find groups of uses that occur in at the same program point.
+                for uses in self.ranges[range.index()]
+                    .uses
+                    .linear_group_by_key_mut(|u| u.pos)
+                {
+                    if uses.len() < 2 {
+                        continue;
+                    }
+
+                    // Search for conflicting constraints in the uses.
+                    let mut requires_reg = false;
+                    let mut num_fixed_reg = 0;
+                    let mut num_fixed_stack = 0;
+                    let mut first_reg_slot = None;
+                    let mut first_stack_slot = None;
+                    for u in uses.iter() {
+                        match u.operand.constraint() {
+                            OperandConstraint::Any => {
+                                first_reg_slot.get_or_insert(u.slot);
+                                first_stack_slot.get_or_insert(u.slot);
+                            }
+                            OperandConstraint::Reg | OperandConstraint::Reuse(_) => {
+                                first_reg_slot.get_or_insert(u.slot);
+                                requires_reg = true;
+                            }
+                            OperandConstraint::FixedReg(preg) => {
+                                if self.pregs[preg.index()].is_stack {
+                                    num_fixed_stack += 1;
+                                    first_stack_slot.get_or_insert(u.slot);
+                                } else {
+                                    requires_reg = true;
+                                    num_fixed_reg += 1;
+                                    first_reg_slot.get_or_insert(u.slot);
+                                }
+                            }
+                            // Maybe this could be supported in this future...
+                            OperandConstraint::Stack => panic!(
+                                "multiple uses of vreg with a Stack constraint are not supported"
+                            ),
+                        }
+                    }
+
+                    // Fast path if there are no conflicts.
+                    if num_fixed_reg + num_fixed_stack <= 1
+                        && !(requires_reg && num_fixed_stack != 0)
+                    {
+                        continue;
+                    }
+
+                    // We pick one constraint (in order: FixedReg, Reg, FixedStack)
+                    // and then rewrite any incompatible constraints to Any.
+                    // This allows register allocation to succeed and we will
+                    // later insert moves to satisfy the rewritten constraints.
+                    let source_slot = if requires_reg {
+                        first_reg_slot.unwrap()
+                    } else {
+                        first_stack_slot.unwrap()
+                    };
+                    let mut first_preg = None;
+                    for u in uses.iter_mut() {
+                        if let OperandConstraint::FixedReg(preg) = u.operand.constraint() {
+                            let vreg_idx = VRegIndex::new(u.operand.vreg().vreg());
+                            let preg_idx = PRegIndex::new(preg.index());
+                            log::trace!(
+                                "at pos {:?}, vreg {:?} has fixed constraint to preg {:?}",
+                                u.pos,
+                                vreg_idx,
+                                preg_idx
+                            );
+
+                            // FixedStack is incompatible if there are any
+                            // Reg/FixedReg constraints. FixedReg is
+                            // incompatible if there already is a different
+                            // FixedReg constraint. If either condition is true,
+                            // we edit the constraint below; otherwise, we can
+                            // skip this edit.
+                            if !(requires_reg && self.pregs[preg.index()].is_stack)
+                                && *first_preg.get_or_insert(preg) == preg
+                            {
+                                continue;
+                            }
+
+                            log::trace!(" -> duplicate; switching to constraint Any");
+                            self.multi_fixed_reg_fixups.push(MultiFixedRegFixup {
+                                pos: u.pos,
+                                from_slot: source_slot,
+                                to_slot: u.slot,
+                                to_preg: preg_idx,
+                                vreg: vreg_idx,
+                            });
+                            u.operand = Operand::new(
+                                u.operand.vreg(),
+                                OperandConstraint::Any,
+                                u.operand.kind(),
+                                u.operand.pos(),
+                            );
+                            log::trace!(
+                                " -> extra clobber {} at inst{}",
+                                preg,
+                                u.pos.inst().index()
+                            );
+                            extra_clobbers.push((preg, u.pos.inst()));
+                        }
+                    }
+                }
+
+                for &(clobber, inst) in &extra_clobbers {
+                    let range = CodeRange {
+                        from: ProgPoint::before(inst),
+                        to: ProgPoint::before(inst.next()),
+                    };
+                    self.add_liverange_to_preg(range, clobber);
+                }
+
+                extra_clobbers.clear();
+            }
+        }
     }
 }

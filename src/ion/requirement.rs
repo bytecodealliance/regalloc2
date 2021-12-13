@@ -13,57 +13,93 @@
 //! Requirements computation.
 
 use super::{Env, LiveBundleIndex};
-use crate::{Function, Operand, OperandConstraint, PReg};
+use crate::{Function, Operand, OperandConstraint, PReg, ProgPoint};
+
+pub struct RequirementConflict;
+
+pub struct RequirementConflictAt(pub ProgPoint);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Requirement {
-    Unknown,
-    Fixed(PReg),
+    FixedReg(PReg),
+    FixedStack(PReg),
     Register,
     Stack,
     Any,
-    Conflict,
 }
 impl Requirement {
     #[inline(always)]
-    pub fn merge(self, other: Requirement) -> Requirement {
+    pub fn merge(self, other: Requirement) -> Result<Requirement, RequirementConflict> {
         match (self, other) {
-            (Requirement::Unknown, other) | (other, Requirement::Unknown) => other,
-            (Requirement::Conflict, _) | (_, Requirement::Conflict) => Requirement::Conflict,
-            (other, Requirement::Any) | (Requirement::Any, other) => other,
-            (Requirement::Stack, Requirement::Stack) => self,
-            (Requirement::Register, Requirement::Fixed(preg))
-            | (Requirement::Fixed(preg), Requirement::Register) => Requirement::Fixed(preg),
-            (Requirement::Register, Requirement::Register) => self,
-            (Requirement::Fixed(a), Requirement::Fixed(b)) if a == b => self,
-            _ => Requirement::Conflict,
-        }
-    }
-    #[inline(always)]
-    pub fn from_operand(op: Operand) -> Requirement {
-        match op.constraint() {
-            OperandConstraint::FixedReg(preg) => Requirement::Fixed(preg),
-            OperandConstraint::Reg | OperandConstraint::Reuse(_) => Requirement::Register,
-            OperandConstraint::Stack => Requirement::Stack,
-            _ => Requirement::Any,
+            (other, Requirement::Any) | (Requirement::Any, other) => Ok(other),
+            (Requirement::Register, Requirement::Register) => Ok(self),
+            (Requirement::Stack, Requirement::Stack) => Ok(self),
+            (Requirement::Register, Requirement::FixedReg(preg))
+            | (Requirement::FixedReg(preg), Requirement::Register) => {
+                Ok(Requirement::FixedReg(preg))
+            }
+            (Requirement::Stack, Requirement::FixedStack(preg))
+            | (Requirement::FixedStack(preg), Requirement::Stack) => {
+                Ok(Requirement::FixedStack(preg))
+            }
+            (Requirement::FixedReg(a), Requirement::FixedReg(b)) if a == b => Ok(self),
+            (Requirement::FixedStack(a), Requirement::FixedStack(b)) if a == b => Ok(self),
+            _ => Err(RequirementConflict),
         }
     }
 }
 
 impl<'a, F: Function> Env<'a, F> {
-    pub fn compute_requirement(&self, bundle: LiveBundleIndex) -> Requirement {
-        let mut req = Requirement::Unknown;
+    #[inline(always)]
+    pub fn requirement_from_operand(&self, op: Operand) -> Requirement {
+        match op.constraint() {
+            OperandConstraint::FixedReg(preg) => {
+                if self.pregs[preg.index()].is_stack {
+                    Requirement::FixedStack(preg)
+                } else {
+                    Requirement::FixedReg(preg)
+                }
+            }
+            OperandConstraint::Reg | OperandConstraint::Reuse(_) => Requirement::Register,
+            OperandConstraint::Stack => Requirement::Stack,
+            OperandConstraint::Any => Requirement::Any,
+        }
+    }
+
+    pub fn compute_requirement(
+        &self,
+        bundle: LiveBundleIndex,
+    ) -> Result<Requirement, RequirementConflictAt> {
+        let mut req = Requirement::Any;
         log::trace!("compute_requirement: {:?}", bundle);
-        for entry in &self.bundles[bundle.index()].ranges {
+        let ranges = &self.bundles[bundle.index()].ranges;
+        for entry in ranges {
             log::trace!(" -> LR {:?}", entry.index);
             for u in &self.ranges[entry.index.index()].uses {
                 log::trace!("  -> use {:?}", u);
-                let r = Requirement::from_operand(u.operand);
-                req = req.merge(r);
+                let r = self.requirement_from_operand(u.operand);
+                req = req.merge(r).map_err(|_| {
+                    log::trace!("     -> conflict");
+                    RequirementConflictAt(u.pos)
+                })?;
                 log::trace!("     -> req {:?}", req);
             }
         }
         log::trace!(" -> final: {:?}", req);
-        req
+        Ok(req)
+    }
+
+    pub fn merge_bundle_requirements(
+        &self,
+        a: LiveBundleIndex,
+        b: LiveBundleIndex,
+    ) -> Result<Requirement, RequirementConflict> {
+        let req_a = self
+            .compute_requirement(a)
+            .map_err(|_| RequirementConflict)?;
+        let req_b = self
+            .compute_requirement(b)
+            .map_err(|_| RequirementConflict)?;
+        req_a.merge(req_b)
     }
 }

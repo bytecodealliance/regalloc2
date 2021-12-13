@@ -35,6 +35,16 @@ impl<'a, F: Function> Env<'a, F> {
         pos == self.cfginfo.block_exit[block.index()]
     }
 
+    fn allocation_is_stack(&self, alloc: Allocation) -> bool {
+        if alloc.is_stack() {
+            true
+        } else if let Some(preg) = alloc.as_reg() {
+            self.pregs[preg.index()].is_stack
+        } else {
+            false
+        }
+    }
+
     pub fn insert_move(
         &mut self,
         pos: ProgPoint,
@@ -685,27 +695,27 @@ impl<'a, F: Function> Env<'a, F> {
         }
 
         // Handle multi-fixed-reg constraints by copying.
-        for (progpoint, from_preg, to_preg, to_vreg, slot) in
-            std::mem::replace(&mut self.multi_fixed_reg_fixups, vec![])
-        {
+        for fixup in std::mem::replace(&mut self.multi_fixed_reg_fixups, vec![]) {
+            let from_alloc = self.get_alloc(fixup.pos.inst(), fixup.from_slot as usize);
+            let to_alloc = Allocation::reg(self.pregs[fixup.to_preg.index()].reg);
             log::trace!(
-                "multi-fixed-move constraint at {:?} from p{} to p{} for v{}",
-                progpoint,
-                from_preg.index(),
-                to_preg.index(),
-                to_vreg.index(),
+                "multi-fixed-move constraint at {:?} from {} to {} for v{}",
+                fixup.pos,
+                from_alloc,
+                to_alloc,
+                fixup.vreg.index(),
             );
             self.insert_move(
-                progpoint,
+                fixup.pos,
                 InsertMovePrio::MultiFixedReg,
-                Allocation::reg(self.pregs[from_preg.index()].reg),
-                Allocation::reg(self.pregs[to_preg.index()].reg),
-                Some(self.vreg_regs[to_vreg.index()]),
+                from_alloc,
+                to_alloc,
+                Some(self.vreg_regs[fixup.vreg.index()]),
             );
             self.set_alloc(
-                progpoint.inst(),
-                slot,
-                Allocation::reg(self.pregs[to_preg.index()].reg),
+                fixup.pos.inst(),
+                fixup.to_slot as usize,
+                Allocation::reg(self.pregs[fixup.to_preg.index()].reg),
             );
         }
 
@@ -968,9 +978,9 @@ impl<'a, F: Function> Env<'a, F> {
                 let scratch_used = resolved.iter().any(|&(src, dst, _)| {
                     src == Allocation::reg(scratch) || dst == Allocation::reg(scratch)
                 });
-                let stack_stack_move = resolved
-                    .iter()
-                    .any(|&(src, dst, _)| src.is_stack() && dst.is_stack());
+                let stack_stack_move = resolved.iter().any(|&(src, dst, _)| {
+                    self.allocation_is_stack(src) && self.allocation_is_stack(dst)
+                });
                 let extra_slot = if scratch_used && stack_stack_move {
                     if self.extra_spillslot[regclass as u8 as usize].is_none() {
                         let slot = self.allocate_spillslot(regclass);
@@ -989,7 +999,7 @@ impl<'a, F: Function> Env<'a, F> {
                         if dst == Allocation::reg(scratch) {
                             scratch_used_yet = true;
                         }
-                        if src.is_stack() && dst.is_stack() {
+                        if self.allocation_is_stack(src) && self.allocation_is_stack(dst) {
                             if !scratch_used_yet {
                                 self.add_edit(
                                     pos,

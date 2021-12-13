@@ -18,9 +18,12 @@ use super::{
     Requirement, SpillWeight, UseList,
 };
 use crate::{
-    ion::data_structures::{
-        CodeRange, BUNDLE_MAX_NORMAL_SPILL_WEIGHT, MINIMAL_BUNDLE_SPILL_WEIGHT,
-        MINIMAL_FIXED_BUNDLE_SPILL_WEIGHT,
+    ion::{
+        data_structures::{
+            CodeRange, BUNDLE_MAX_NORMAL_SPILL_WEIGHT, MINIMAL_BUNDLE_SPILL_WEIGHT,
+            MINIMAL_FIXED_BUNDLE_SPILL_WEIGHT,
+        },
+        requirement::RequirementConflictAt,
     },
     Allocation, Function, Inst, InstPosition, OperandConstraint, OperandKind, PReg, ProgPoint,
     RegAllocError,
@@ -365,29 +368,6 @@ impl<'a, F: Function> Env<'a, F> {
             // cleared.
             rangedata.set_flag(LiveRangeFlag::StartsAtDef);
         }
-    }
-
-    pub fn find_conflict_split_point(&self, bundle: LiveBundleIndex) -> ProgPoint {
-        // Find the first use whose requirement causes the merge up to
-        // this point to go to Conflict.
-        let mut req = Requirement::Unknown;
-        for entry in &self.bundles[bundle.index()].ranges {
-            for u in &self.ranges[entry.index.index()].uses {
-                let this_req = Requirement::from_operand(u.operand);
-                req = req.merge(this_req);
-                if req == Requirement::Conflict {
-                    return u.pos;
-                }
-            }
-        }
-
-        // Fallback: start of bundle.
-        self.bundles[bundle.index()]
-            .ranges
-            .first()
-            .unwrap()
-            .range
-            .from
     }
 
     pub fn get_or_create_spill_bundle(
@@ -752,37 +732,41 @@ impl<'a, F: Function> Env<'a, F> {
         reg_hint: PReg,
     ) -> Result<(), RegAllocError> {
         let class = self.spillsets[self.bundles[bundle.index()].spillset.index()].class;
-        let req = self.compute_requirement(bundle);
         // Grab a hint from either the queue or our spillset, if any.
-        let hint_reg = if reg_hint != PReg::invalid() {
+        let mut hint_reg = if reg_hint != PReg::invalid() {
             reg_hint
         } else {
             self.spillsets[self.bundles[bundle.index()].spillset.index()].reg_hint
         };
+        if self.pregs[hint_reg.index()].is_stack {
+            hint_reg = PReg::invalid();
+        }
         log::trace!("process_bundle: bundle {:?} hint {:?}", bundle, hint_reg,);
 
-        if let Requirement::Conflict = req {
-            // We have to split right away. We'll find a point to
-            // split that would allow at least the first half of the
-            // split to be conflict-free.
-            assert!(
-                !self.minimal_bundle(bundle),
-                "Minimal bundle with conflict!"
-            );
-            let split_point = self.find_conflict_split_point(bundle);
-            self.split_and_requeue_bundle(
-                bundle,
-                /* split_at_point = */ split_point,
-                reg_hint,
-            );
-            return Ok(());
-        }
+        let req = match self.compute_requirement(bundle) {
+            Ok(req) => req,
+            Err(RequirementConflictAt(split_point)) => {
+                // We have to split right away. We'll find a point to
+                // split that would allow at least the first half of the
+                // split to be conflict-free.
+                assert!(
+                    !self.minimal_bundle(bundle),
+                    "Minimal bundle with conflict!"
+                );
+                self.split_and_requeue_bundle(
+                    bundle,
+                    /* split_at_point = */ split_point,
+                    reg_hint,
+                );
+                return Ok(());
+            }
+        };
 
         // If no requirement at all (because no uses), and *if* a
         // spill bundle is already present, then move the LRs over to
         // the spill bundle right away.
         match req {
-            Requirement::Unknown | Requirement::Any => {
+            Requirement::Any => {
                 if let Some(spill) =
                     self.get_or_create_spill_bundle(bundle, /* create_if_absent = */ false)
                 {
@@ -806,7 +790,7 @@ impl<'a, F: Function> Env<'a, F> {
             debug_assert!(attempts < 100 * self.func.num_insts());
 
             let fixed_preg = match req {
-                Requirement::Fixed(preg) => Some(preg),
+                Requirement::FixedReg(preg) | Requirement::FixedStack(preg) => Some(preg),
                 Requirement::Register => None,
                 Requirement::Stack => {
                     // If we must be on the stack, mark our spillset
@@ -815,13 +799,9 @@ impl<'a, F: Function> Env<'a, F> {
                     return Ok(());
                 }
 
-                Requirement::Any | Requirement::Unknown => {
+                Requirement::Any => {
                     self.spilled_bundles.push(bundle);
                     return Ok(());
-                }
-
-                Requirement::Conflict => {
-                    unreachable!()
                 }
             };
             // Scan all pregs, or the one fixed preg, and attempt to allocate.
