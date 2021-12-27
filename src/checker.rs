@@ -77,8 +77,8 @@
 #![allow(dead_code)]
 
 use crate::{
-    Allocation, AllocationKind, Block, Edit, Function, Inst, InstPosition, Operand,
-    OperandConstraint, OperandKind, OperandPos, Output, PReg, ProgPoint, RegClass, VReg,
+    Allocation, AllocationKind, Block, Edit, Function, Inst, InstOrEdit, InstPosition, Operand,
+    OperandConstraint, OperandKind, OperandPos, Output, PReg, RegClass, VReg,
 };
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -544,78 +544,78 @@ impl<'a, F: Function> Checker<'a, F> {
                 .push(slot);
         }
 
-        // For each original instruction, create an `Op`.
         let mut last_inst = None;
-        let mut insert_idx = 0;
         for block in 0..self.f.num_blocks() {
             let block = Block::new(block);
-            for inst in self.f.block_insns(block).iter() {
-                assert!(last_inst.is_none() || inst > last_inst.unwrap());
-                last_inst = Some(inst);
-
-                // Any inserted edits before instruction.
-                self.handle_edits(block, out, &mut insert_idx, ProgPoint::before(inst));
-
-                // If this is a safepoint, then check the spillslots at this point.
-                if self.f.requires_refs_on_stack(inst) {
-                    let allocs = safepoint_slots.remove(&inst).unwrap_or_else(|| vec![]);
-
-                    let checkinst = CheckerInst::Safepoint { inst, allocs };
-                    self.bb_insts.get_mut(&block).unwrap().push(checkinst);
+            for inst_or_edit in out.block_insts_and_edits(self.f, block) {
+                match inst_or_edit {
+                    InstOrEdit::Inst(inst) => {
+                        assert!(last_inst.is_none() || inst > last_inst.unwrap());
+                        last_inst = Some(inst);
+                        self.handle_inst(block, inst, &mut safepoint_slots, out);
+                    }
+                    InstOrEdit::Edit(edit) => self.handle_edit(block, edit),
                 }
-
-                // Skip if this is a branch: the blockparams do not
-                // exist in post-regalloc code, and the edge-moves
-                // have to be inserted before the branch rather than
-                // after.
-                if !self.f.is_branch(inst) {
-                    // Instruction itself.
-                    let operands: Vec<_> = self.f.inst_operands(inst).iter().cloned().collect();
-                    let allocs: Vec<_> = out.inst_allocs(inst).iter().cloned().collect();
-                    let clobbers: Vec<_> = self.f.inst_clobbers(inst).iter().cloned().collect();
-                    let checkinst = CheckerInst::Op {
-                        inst,
-                        operands,
-                        allocs,
-                        clobbers,
-                    };
-                    log::trace!("checker: adding inst {:?}", checkinst);
-                    self.bb_insts.get_mut(&block).unwrap().push(checkinst);
-                }
-
-                // Any inserted edits after instruction.
-                self.handle_edits(block, out, &mut insert_idx, ProgPoint::after(inst));
             }
         }
     }
 
-    fn handle_edits(&mut self, block: Block, out: &Output, idx: &mut usize, pos: ProgPoint) {
-        while *idx < out.edits.len() && out.edits[*idx].0 <= pos {
-            let &(edit_pos, ref edit) = &out.edits[*idx];
-            *idx += 1;
-            if edit_pos < pos {
-                continue;
+    /// For each original instruction, create an `Op`.
+    fn handle_inst(
+        &mut self,
+        block: Block,
+        inst: Inst,
+        safepoint_slots: &mut HashMap<Inst, Vec<Allocation>>,
+        out: &Output,
+    ) {
+        // If this is a safepoint, then check the spillslots at this point.
+        if self.f.requires_refs_on_stack(inst) {
+            let allocs = safepoint_slots.remove(&inst).unwrap_or_else(|| vec![]);
+
+            let checkinst = CheckerInst::Safepoint { inst, allocs };
+            self.bb_insts.get_mut(&block).unwrap().push(checkinst);
+        }
+
+        // Skip if this is a branch: the blockparams do not
+        // exist in post-regalloc code, and the edge-moves
+        // have to be inserted before the branch rather than
+        // after.
+        if !self.f.is_branch(inst) {
+            // Instruction itself.
+            let operands: Vec<_> = self.f.inst_operands(inst).iter().cloned().collect();
+            let allocs: Vec<_> = out.inst_allocs(inst).iter().cloned().collect();
+            let clobbers: Vec<_> = self.f.inst_clobbers(inst).iter().cloned().collect();
+            let checkinst = CheckerInst::Op {
+                inst,
+                operands,
+                allocs,
+                clobbers,
+            };
+            log::trace!("checker: adding inst {:?}", checkinst);
+            self.bb_insts.get_mut(&block).unwrap().push(checkinst);
+        }
+    }
+
+    fn handle_edit(&mut self, block: Block, edit: &Edit) {
+        log::trace!("checker: adding edit {:?}", edit);
+        match edit {
+            &Edit::Move { from, to, to_vreg } => {
+                self.bb_insts
+                    .get_mut(&block)
+                    .unwrap()
+                    .push(CheckerInst::Move { into: to, from });
+                if let Some(vreg) = to_vreg {
+                    self.bb_insts
+                        .get_mut(&block)
+                        .unwrap()
+                        .push(CheckerInst::DefAlloc { alloc: to, vreg });
+                }
             }
-            log::trace!("checker: adding edit {:?} at pos {:?}", edit, pos);
-            match edit {
-                &Edit::Move { from, to, to_vreg } => {
-                    self.bb_insts
-                        .get_mut(&block)
-                        .unwrap()
-                        .push(CheckerInst::Move { into: to, from });
-                    if let Some(vreg) = to_vreg {
-                        self.bb_insts
-                            .get_mut(&block)
-                            .unwrap()
-                            .push(CheckerInst::DefAlloc { alloc: to, vreg });
-                    }
-                }
-                &Edit::DefAlloc { alloc, vreg } => {
-                    self.bb_insts
-                        .get_mut(&block)
-                        .unwrap()
-                        .push(CheckerInst::DefAlloc { alloc, vreg });
-                }
+            &Edit::DefAlloc { alloc, vreg } => {
+                self.bb_insts
+                    .get_mut(&block)
+                    .unwrap()
+                    .push(CheckerInst::DefAlloc { alloc, vreg });
             }
         }
     }
