@@ -1122,6 +1122,46 @@ pub enum Edit {
     DefAlloc { alloc: Allocation, vreg: VReg },
 }
 
+/// Wrapper around either an original instruction or an inserted edit.
+#[derive(Clone, Debug)]
+pub enum InstOrEdit<'a> {
+    Inst(Inst),
+    Edit(&'a Edit),
+}
+
+/// Iterator over the instructions and edits in a block.
+pub struct OutputIter<'a> {
+    /// List of edits starting at the first for the current block.
+    edits: &'a [(ProgPoint, Edit)],
+
+    /// Remaining instructions in the current block.
+    inst_range: InstRange,
+}
+
+impl<'a> Iterator for OutputIter<'a> {
+    type Item = InstOrEdit<'a>;
+
+    fn next(&mut self) -> Option<InstOrEdit<'a>> {
+        // There can't be any edits after the last instruction in a block, so
+        // we don't need to worry about that case.
+        if self.inst_range.len() == 0 {
+            return None;
+        }
+
+        // Return any edits that happen before the next instruction first.
+        let next_inst = self.inst_range.first();
+        if let Some((edit, remaining_edits)) = self.edits.split_first() {
+            if edit.0 <= ProgPoint::before(next_inst) {
+                self.edits = remaining_edits;
+                return Some(InstOrEdit::Edit(&edit.1));
+            }
+        }
+
+        self.inst_range = self.inst_range.rest();
+        Some(InstOrEdit::Inst(next_inst))
+    }
+}
+
 /// A machine envrionment tells the register allocator which registers
 /// are available to allocate and what register may be used as a
 /// scratch register for each class, and some other miscellaneous info
@@ -1205,6 +1245,30 @@ impl Output {
             self.inst_alloc_offsets[inst.index() + 1] as usize
         };
         &self.allocs[start..end]
+    }
+
+    /// Returns an iterator over the instructions and edits in a block, in
+    /// order.
+    pub fn block_insts_and_edits(&self, func: &impl Function, block: Block) -> OutputIter<'_> {
+        let inst_range = func.block_insns(block);
+
+        let edit_idx = self
+            .edits
+            .binary_search_by(|&(pos, _)| {
+                // This predicate effectively searches for a point *just* before
+                // the first ProgPoint. This never returns Ordering::Equal, but
+                // binary_search_by returns the index of where it would have
+                // been inserted in Err.
+                if pos < ProgPoint::before(inst_range.first()) {
+                    std::cmp::Ordering::Less
+                } else {
+                    std::cmp::Ordering::Greater
+                }
+            })
+            .unwrap_err();
+
+        let edits = &self.edits[edit_idx..];
+        OutputIter { inst_range, edits }
     }
 }
 
