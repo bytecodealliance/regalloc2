@@ -13,7 +13,7 @@
 //! Stackmap computation.
 
 use super::{Env, ProgPoint, VRegIndex};
-use crate::Function;
+use crate::{ion::data_structures::u64_key, Function};
 
 impl<'a, F: Function> Env<'a, F> {
     pub fn compute_stackmaps(&mut self) {
@@ -30,10 +30,10 @@ impl<'a, F: Function> Env<'a, F> {
         // safepoints; and for each safepoint in the current range,
         // emit the allocation into the `safepoint_slots` list.
 
-        log::trace!("safepoints_per_vreg = {:?}", self.safepoints_per_vreg);
+        trace!("safepoints_per_vreg = {:?}", self.safepoints_per_vreg);
 
         for vreg in self.func.reftype_vregs() {
-            log::trace!("generating safepoint info for vreg {}", vreg);
+            trace!("generating safepoint info for vreg {}", vreg);
             let vreg = VRegIndex::new(vreg.vreg());
             let mut safepoints: Vec<ProgPoint> = self
                 .safepoints_per_vreg
@@ -43,19 +43,19 @@ impl<'a, F: Function> Env<'a, F> {
                 .map(|&inst| ProgPoint::before(inst))
                 .collect();
             safepoints.sort_unstable();
-            log::trace!(" -> live over safepoints: {:?}", safepoints);
+            trace!(" -> live over safepoints: {:?}", safepoints);
 
             let mut safepoint_idx = 0;
             for entry in &self.vregs[vreg.index()].ranges {
                 let range = entry.range;
                 let alloc = self.get_alloc_for_range(entry.index);
-                log::trace!(" -> range {:?}: alloc {}", range, alloc);
+                trace!(" -> range {:?}: alloc {}", range, alloc);
                 while safepoint_idx < safepoints.len() && safepoints[safepoint_idx] < range.to {
                     if safepoints[safepoint_idx] < range.from {
                         safepoint_idx += 1;
                         continue;
                     }
-                    log::trace!("    -> covers safepoint {:?}", safepoints[safepoint_idx]);
+                    trace!("    -> covers safepoint {:?}", safepoints[safepoint_idx]);
 
                     self.safepoint_slots
                         .push((safepoints[safepoint_idx], alloc));
@@ -64,7 +64,8 @@ impl<'a, F: Function> Env<'a, F> {
             }
         }
 
-        self.safepoint_slots.sort_unstable();
-        log::trace!("final safepoint slots info: {:?}", self.safepoint_slots);
+        self.safepoint_slots
+            .sort_unstable_by_key(|(progpoint, slot)| u64_key(progpoint.to_index(), slot.bits()));
+        trace!("final safepoint slots info: {:?}", self.safepoint_slots);
     }
 }

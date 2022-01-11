@@ -18,6 +18,7 @@ pub struct RedundantMoveEliminator {
 #[derive(Copy, Clone, Debug)]
 pub struct RedundantMoveAction {
     pub elide: bool,
+    #[cfg(feature = "checker")]
     pub def_alloc: Option<(Allocation, VReg)>,
 }
 
@@ -40,13 +41,13 @@ impl RedundantMoveEliminator {
             .map(|&p| p)
             .unwrap_or(RedundantMoveState::None);
 
-        log::trace!(
+        trace!(
             "     -> redundant move tracker: from {} to {} to_vreg {:?}",
             from,
             to,
             to_vreg
         );
-        log::trace!(
+        trace!(
             "       -> from_state {:?} to_state {:?}",
             from_state,
             to_state
@@ -58,6 +59,7 @@ impl RedundantMoveEliminator {
                 .insert(to, RedundantMoveState::Orig(to_vreg.unwrap()));
             return RedundantMoveAction {
                 elide: true,
+                #[cfg(feature = "checker")]
                 def_alloc: Some((to, to_vreg.unwrap())),
             };
         }
@@ -67,29 +69,29 @@ impl RedundantMoveEliminator {
             RedundantMoveState::Orig(r) => Some(r),
             _ => None,
         };
-        log::trace!("      -> src_vreg {:?}", src_vreg);
+        trace!("      -> src_vreg {:?}", src_vreg);
         let dst_vreg = to_vreg.or(src_vreg);
-        log::trace!("      -> dst_vreg {:?}", dst_vreg);
+        trace!("      -> dst_vreg {:?}", dst_vreg);
         let existing_dst_vreg = match to_state {
             RedundantMoveState::Copy(_, opt_r) => opt_r,
             RedundantMoveState::Orig(r) => Some(r),
             _ => None,
         };
-        log::trace!("      -> existing_dst_vreg {:?}", existing_dst_vreg);
+        trace!("      -> existing_dst_vreg {:?}", existing_dst_vreg);
 
         let elide = match (from_state, to_state) {
             (_, RedundantMoveState::Copy(orig_alloc, _)) if orig_alloc == from => true,
             (RedundantMoveState::Copy(new_alloc, _), _) if new_alloc == to => true,
             _ => false,
         };
-        log::trace!("      -> elide {}", elide);
+        trace!("      -> elide {}", elide);
 
         let def_alloc = if dst_vreg != existing_dst_vreg && dst_vreg.is_some() {
             Some((to, dst_vreg.unwrap()))
         } else {
             None
         };
-        log::trace!("      -> def_alloc {:?}", def_alloc);
+        trace!("      -> def_alloc {:?}", def_alloc);
 
         // Invalidate all existing copies of `to` if `to` actually changed value.
         if !elide {
@@ -100,7 +102,7 @@ impl RedundantMoveEliminator {
         if from.is_reg() || to.is_reg() {
             self.allocs
                 .insert(to, RedundantMoveState::Copy(from, dst_vreg));
-            log::trace!(
+            trace!(
                 "     -> create mapping {} -> {:?}",
                 to,
                 RedundantMoveState::Copy(from, dst_vreg)
@@ -111,20 +113,24 @@ impl RedundantMoveEliminator {
                 .push(to);
         }
 
-        RedundantMoveAction { elide, def_alloc }
+        RedundantMoveAction {
+            elide,
+            #[cfg(feature = "checker")]
+            def_alloc,
+        }
     }
 
     pub fn clear(&mut self) {
-        log::trace!("   redundant move eliminator cleared");
+        trace!("   redundant move eliminator cleared");
         self.allocs.clear();
         self.reverse_allocs.clear();
     }
 
     pub fn clear_alloc(&mut self, alloc: Allocation) {
-        log::trace!("   redundant move eliminator: clear {:?}", alloc);
+        trace!("   redundant move eliminator: clear {:?}", alloc);
         if let Some(ref mut existing_copies) = self.reverse_allocs.get_mut(&alloc) {
             for to_inval in existing_copies.iter() {
-                log::trace!("     -> clear existing copy: {:?}", to_inval);
+                trace!("     -> clear existing copy: {:?}", to_inval);
                 if let Some(val) = self.allocs.get_mut(to_inval) {
                     match val {
                         RedundantMoveState::Copy(_, Some(vreg)) => {

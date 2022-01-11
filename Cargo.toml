@@ -1,7 +1,10 @@
 [package]
 name = "regalloc2"
 version = "0.0.1"
-authors = ["Chris Fallin <chris@cfallin.org>", "Mozilla SpiderMonkey Developers"]
+authors = [
+    "Chris Fallin <chris@cfallin.org>",
+    "Mozilla SpiderMonkey Developers",
+]
 edition = "2018"
 license = "Apache-2.0 WITH LLVM-exception"
 description = "Backtracking register allocator inspired from IonMonkey"
@@ -17,9 +20,20 @@ slice-group-by = "0.3.0"
 # Keep this in sync with libfuzzer_sys's crate version:
 arbitrary = { version = "^0.4.6", optional = true }
 
+# When testing regalloc2 by itself, enable debug assertions and overflow checks
 [profile.release]
 debug = true
+debug-assertions = true
+overflow-checks = true
 
 [features]
 default = []
-fuzzing = ["arbitrary"]
+
+# Enables generation of DefAlloc edits for the checker.
+checker = []
+
+# Enables detailed logging which can be somewhat expensive.
+trace-log = []
+
+# Exposes the internal API for fuzzing.
+fuzzing = ["arbitrary", "checker", "trace-log"]

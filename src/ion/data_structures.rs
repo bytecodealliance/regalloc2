@@ -264,7 +264,6 @@ pub struct VRegData {
 
 #[derive(Clone, Debug)]
 pub struct PRegData {
-    pub reg: PReg,
     pub allocations: LiveRangeSet,
     pub is_stack: bool,
 }
@@ -278,6 +277,56 @@ pub struct MultiFixedRegFixup {
     pub vreg: VRegIndex,
 }
 
+/// The field order is significant: these are sorted so that a
+/// scan over vregs, then blocks in each range, can scan in
+/// order through this (sorted) list and add allocs to the
+/// half-move list.
+///
+/// The fields in this struct are reversed in sort order so that the entire
+/// struct can be treated as a u128 for sorting purposes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(C)]
+pub struct BlockparamOut {
+    pub to_vreg: VRegIndex,
+    pub to_block: Block,
+    pub from_block: Block,
+    pub from_vreg: VRegIndex,
+}
+impl BlockparamOut {
+    #[inline(always)]
+    pub fn key(&self) -> u128 {
+        u128_key(
+            self.from_vreg.raw_u32(),
+            self.from_block.raw_u32(),
+            self.to_block.raw_u32(),
+            self.to_vreg.raw_u32(),
+        )
+    }
+}
+
+/// As above for `BlockparamIn`, field order is significant.
+///
+/// The fields in this struct are reversed in sort order so that the entire
+/// struct can be treated as a u128 for sorting purposes.
+#[derive(Clone, Debug)]
+#[repr(C)]
+pub struct BlockparamIn {
+    pub from_block: Block,
+    pub to_block: Block,
+    pub to_vreg: VRegIndex,
+}
+impl BlockparamIn {
+    #[inline(always)]
+    pub fn key(&self) -> u128 {
+        u128_key(
+            self.to_vreg.raw_u32(),
+            self.to_block.raw_u32(),
+            self.from_block.raw_u32(),
+            0,
+        )
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Env<'a, F: Function> {
     pub func: &'a F,
@@ -285,16 +334,8 @@ pub struct Env<'a, F: Function> {
     pub cfginfo: CFGInfo,
     pub liveins: Vec<IndexSet>,
     pub liveouts: Vec<IndexSet>,
-    /// Blockparam outputs: from-vreg, (end of) from-block, (start of)
-    /// to-block, to-vreg. The field order is significant: these are sorted so
-    /// that a scan over vregs, then blocks in each range, can scan in
-    /// order through this (sorted) list and add allocs to the
-    /// half-move list.
-    pub blockparam_outs: Vec<(VRegIndex, Block, Block, VRegIndex)>,
-    /// Blockparam inputs: to-vreg, (start of) to-block, (end of)
-    /// from-block. As above for `blockparam_outs`, field order is
-    /// significant.
-    pub blockparam_ins: Vec<(VRegIndex, Block, Block)>,
+    pub blockparam_outs: Vec<BlockparamOut>,
+    pub blockparam_ins: Vec<BlockparamIn>,
     /// Blockparam allocs: block, idx, vreg, alloc. Info to describe
     /// blockparam locations at block entry, for metadata purposes
     /// (e.g. for the checker).
@@ -344,7 +385,7 @@ pub struct Env<'a, F: Function> {
     pub inserted_moves: Vec<InsertedMove>,
 
     // Output:
-    pub edits: Vec<(u32, InsertMovePrio, Edit)>,
+    pub edits: Vec<(PosWithPrio, Edit)>,
     pub allocs: Vec<Allocation>,
     pub inst_alloc_offsets: Vec<u32>,
     pub num_spillslots: u32,
@@ -488,8 +529,7 @@ impl LiveRangeSet {
 
 #[derive(Clone, Debug)]
 pub struct InsertedMove {
-    pub pos: ProgPoint,
-    pub prio: InsertMovePrio,
+    pub pos_prio: PosWithPrio,
     pub from_alloc: Allocation,
     pub to_alloc: Allocation,
     pub to_vreg: Option<VReg>,
@@ -504,6 +544,21 @@ pub enum InsertMovePrio {
     MultiFixedReg,
     ReusedInput,
     OutEdgeMoves,
+}
+
+/// The fields in this struct are reversed in sort order so that the entire
+/// struct can be treated as a u64 for sorting purposes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(C)]
+pub struct PosWithPrio {
+    pub prio: u32,
+    pub pos: ProgPoint,
+}
+
+impl PosWithPrio {
+    pub fn key(self) -> u64 {
+        u64_key(self.pos.to_index(), self.prio)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -543,4 +598,18 @@ pub struct Stats {
     pub blockparam_allocs_count: usize,
     pub halfmoves_count: usize,
     pub edits_count: usize,
+}
+
+// Helper function for generating sorting keys. The order of arguments is from
+// the most significant field to the least significant one.
+//
+// These work best when the fields are stored in reverse order in memory so that
+// they can be loaded with a single u64 load on little-endian machines.
+#[inline(always)]
+pub fn u64_key(b: u32, a: u32) -> u64 {
+    a as u64 | (b as u64) << 32
+}
+#[inline(always)]
+pub fn u128_key(d: u32, c: u32, b: u32, a: u32) -> u128 {
+    a as u128 | (b as u128) << 32 | (c as u128) << 64 | (d as u128) << 96
 }

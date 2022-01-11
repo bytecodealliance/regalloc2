@@ -62,7 +62,7 @@ impl<'a, F: Function> Env<'a, F> {
         // `AllocRegResult::ConflictHighCost`.
         max_allowable_cost: Option<u32>,
     ) -> AllocRegResult {
-        log::trace!("try_to_allocate_bundle_to_reg: {:?} -> {:?}", bundle, reg);
+        trace!("try_to_allocate_bundle_to_reg: {:?} -> {:?}", bundle, reg);
         let mut conflicts = smallvec![];
         let mut conflict_set = FxHashSet::default();
         let mut max_conflict_weight = 0;
@@ -89,7 +89,7 @@ impl<'a, F: Function> Env<'a, F> {
             .btree
             .range(from_key..)
             .peekable();
-        log::trace!(
+        trace!(
             "alloc map for {:?} in range {:?}..: {:?}",
             reg,
             from_key,
@@ -98,19 +98,19 @@ impl<'a, F: Function> Env<'a, F> {
         let mut first_conflict: Option<ProgPoint> = None;
 
         'ranges: for entry in bundle_ranges {
-            log::trace!(" -> range LR {:?}: {:?}", entry.index, entry.range);
+            trace!(" -> range LR {:?}: {:?}", entry.index, entry.range);
             let key = LiveRangeKey::from_range(&entry.range);
 
             let mut skips = 0;
             'alloc: loop {
-                log::trace!("  -> PReg range {:?}", preg_range_iter.peek());
+                trace!("  -> PReg range {:?}", preg_range_iter.peek());
 
                 // Advance our BTree traversal until it is >= this bundle
                 // range (i.e., skip PReg allocations in the BTree that
                 // are completely before this bundle range).
 
                 if preg_range_iter.peek().is_some() && *preg_range_iter.peek().unwrap().0 < key {
-                    log::trace!(
+                    trace!(
                         "Skipping PReg range {:?}",
                         preg_range_iter.peek().unwrap().0
                     );
@@ -135,13 +135,13 @@ impl<'a, F: Function> Env<'a, F> {
 
                 // If there are no more PReg allocations, we're done!
                 if preg_range_iter.peek().is_none() {
-                    log::trace!(" -> no more PReg allocations; so no conflict possible!");
+                    trace!(" -> no more PReg allocations; so no conflict possible!");
                     break 'ranges;
                 }
 
                 // If the current PReg range is beyond this range, there is no conflict; continue.
                 if *preg_range_iter.peek().unwrap().0 > key {
-                    log::trace!(
+                    trace!(
                         " -> next PReg allocation is at {:?}; moving to next VReg range",
                         preg_range_iter.peek().unwrap().0
                     );
@@ -150,16 +150,16 @@ impl<'a, F: Function> Env<'a, F> {
 
                 // Otherwise, there is a conflict.
                 let preg_key = *preg_range_iter.peek().unwrap().0;
-                assert_eq!(preg_key, key); // Assert that this range overlaps.
+                debug_assert_eq!(preg_key, key); // Assert that this range overlaps.
                 let preg_range = preg_range_iter.next().unwrap().1;
 
-                log::trace!(" -> btree contains range {:?} that overlaps", preg_range);
+                trace!(" -> btree contains range {:?} that overlaps", preg_range);
                 if preg_range.is_valid() {
-                    log::trace!("   -> from vreg {:?}", self.ranges[preg_range.index()].vreg);
+                    trace!("   -> from vreg {:?}", self.ranges[preg_range.index()].vreg);
                     // range from an allocated bundle: find the bundle and add to
                     // conflicts list.
                     let conflict_bundle = self.ranges[preg_range.index()].bundle;
-                    log::trace!("   -> conflict bundle {:?}", conflict_bundle);
+                    trace!("   -> conflict bundle {:?}", conflict_bundle);
                     if !conflict_set.contains(&conflict_bundle) {
                         conflicts.push(conflict_bundle);
                         conflict_set.insert(conflict_bundle);
@@ -170,7 +170,7 @@ impl<'a, F: Function> Env<'a, F> {
                         if max_allowable_cost.is_some()
                             && max_conflict_weight > max_allowable_cost.unwrap()
                         {
-                            log::trace!("   -> reached high cost, retrying early");
+                            trace!("   -> reached high cost, retrying early");
                             return AllocRegResult::ConflictHighCost;
                         }
                     }
@@ -182,7 +182,7 @@ impl<'a, F: Function> Env<'a, F> {
                         )));
                     }
                 } else {
-                    log::trace!("   -> conflict with fixed reservation");
+                    trace!("   -> conflict with fixed reservation");
                     // range from a direct use of the PReg (due to clobber).
                     return AllocRegResult::ConflictWithFixed(
                         max_conflict_weight,
@@ -197,8 +197,8 @@ impl<'a, F: Function> Env<'a, F> {
         }
 
         // We can allocate! Add our ranges to the preg's BTree.
-        let preg = self.pregs[reg.index()].reg;
-        log::trace!("  -> bundle {:?} assigned to preg {:?}", bundle, preg);
+        let preg = PReg::from_index(reg.index());
+        trace!("  -> bundle {:?} assigned to preg {:?}", bundle, preg);
         self.bundles[bundle.index()].allocation = Allocation::reg(preg);
         for entry in &self.bundles[bundle.index()].ranges {
             self.pregs[reg.index()]
@@ -211,7 +211,7 @@ impl<'a, F: Function> Env<'a, F> {
     }
 
     pub fn evict_bundle(&mut self, bundle: LiveBundleIndex) {
-        log::trace!(
+        trace!(
             "evicting bundle {:?}: alloc {:?}",
             bundle,
             self.bundles[bundle.index()].allocation
@@ -219,7 +219,7 @@ impl<'a, F: Function> Env<'a, F> {
         let preg = match self.bundles[bundle.index()].allocation.as_reg() {
             Some(preg) => preg,
             None => {
-                log::trace!(
+                trace!(
                     "  -> has no allocation! {:?}",
                     self.bundles[bundle.index()].allocation
                 );
@@ -229,14 +229,14 @@ impl<'a, F: Function> Env<'a, F> {
         let preg_idx = PRegIndex::new(preg.index());
         self.bundles[bundle.index()].allocation = Allocation::none();
         for entry in &self.bundles[bundle.index()].ranges {
-            log::trace!(" -> removing LR {:?} from reg {:?}", entry.index, preg_idx);
+            trace!(" -> removing LR {:?} from reg {:?}", entry.index, preg_idx);
             self.pregs[preg_idx.index()]
                 .allocations
                 .btree
                 .remove(&LiveRangeKey::from_range(&entry.range));
         }
         let prio = self.bundles[bundle.index()].prio;
-        log::trace!(" -> prio {}; back into queue", prio);
+        trace!(" -> prio {}; back into queue", prio);
         self.allocation_queue
             .insert(bundle, prio as usize, PReg::invalid());
     }
@@ -246,22 +246,22 @@ impl<'a, F: Function> Env<'a, F> {
     }
 
     pub fn maximum_spill_weight_in_bundle_set(&self, bundles: &LiveBundleVec) -> u32 {
-        log::trace!("maximum_spill_weight_in_bundle_set: {:?}", bundles);
+        trace!("maximum_spill_weight_in_bundle_set: {:?}", bundles);
         let m = bundles
             .iter()
             .map(|&b| {
                 let w = self.bundles[b.index()].cached_spill_weight();
-                log::trace!("bundle{}: {}", b.index(), w);
+                trace!("bundle{}: {}", b.index(), w);
                 w
             })
             .max()
             .unwrap_or(0);
-        log::trace!(" -> max: {}", m);
+        trace!(" -> max: {}", m);
         m
     }
 
     pub fn recompute_bundle_properties(&mut self, bundle: LiveBundleIndex) {
-        log::trace!("recompute bundle properties: bundle {:?}", bundle);
+        trace!("recompute bundle properties: bundle {:?}", bundle);
 
         let minimal;
         let mut fixed = false;
@@ -273,18 +273,18 @@ impl<'a, F: Function> Env<'a, F> {
         self.bundles[bundle.index()].prio = self.compute_bundle_prio(bundle);
 
         if first_range_data.vreg.is_invalid() {
-            log::trace!("  -> no vreg; minimal and fixed");
+            trace!("  -> no vreg; minimal and fixed");
             minimal = true;
             fixed = true;
         } else {
             for u in &first_range_data.uses {
-                log::trace!("  -> use: {:?}", u);
+                trace!("  -> use: {:?}", u);
                 if let OperandConstraint::FixedReg(_) = u.operand.constraint() {
-                    log::trace!("  -> fixed use at {:?}: {:?}", u.pos, u.operand);
+                    trace!("  -> fixed use at {:?}: {:?}", u.pos, u.operand);
                     fixed = true;
                 }
                 if let OperandConstraint::Stack = u.operand.constraint() {
-                    log::trace!("  -> stack use at {:?}: {:?}", u.pos, u.operand);
+                    trace!("  -> stack use at {:?}: {:?}", u.pos, u.operand);
                     stack = true;
                 }
                 if stack && fixed {
@@ -295,7 +295,7 @@ impl<'a, F: Function> Env<'a, F> {
             // that it could cover just one ProgPoint,
             // i.e. X.Before..X.After, or two ProgPoints,
             // i.e. X.Before..X+1.Before.
-            log::trace!("  -> first range has range {:?}", first_range_data.range);
+            trace!("  -> first range has range {:?}", first_range_data.range);
             let bundle_start = self.bundles[bundle.index()]
                 .ranges
                 .first()
@@ -304,22 +304,22 @@ impl<'a, F: Function> Env<'a, F> {
                 .from;
             let bundle_end = self.bundles[bundle.index()].ranges.last().unwrap().range.to;
             minimal = bundle_start.inst() == bundle_end.prev().inst();
-            log::trace!("  -> minimal: {}", minimal);
+            trace!("  -> minimal: {}", minimal);
         }
 
         let spill_weight = if minimal {
             if fixed {
-                log::trace!("  -> fixed and minimal");
+                trace!("  -> fixed and minimal");
                 MINIMAL_FIXED_BUNDLE_SPILL_WEIGHT
             } else {
-                log::trace!("  -> non-fixed and minimal");
+                trace!("  -> non-fixed and minimal");
                 MINIMAL_BUNDLE_SPILL_WEIGHT
             }
         } else {
             let mut total = SpillWeight::zero();
             for entry in &self.bundles[bundle.index()].ranges {
                 let range_data = &self.ranges[entry.index.index()];
-                log::trace!(
+                trace!(
                     "  -> uses spill weight: +{:?}",
                     range_data.uses_spill_weight()
                 );
@@ -328,7 +328,7 @@ impl<'a, F: Function> Env<'a, F> {
 
             if self.bundles[bundle.index()].prio > 0 {
                 let final_weight = (total.to_f32() as u32) / self.bundles[bundle.index()].prio;
-                log::trace!(
+                trace!(
                     " -> dividing by prio {}; final weight {}",
                     self.bundles[bundle.index()].prio,
                     final_weight
@@ -356,7 +356,7 @@ impl<'a, F: Function> Env<'a, F> {
         let mut w = SpillWeight::zero();
         for u in &rangedata.uses {
             w = w + SpillWeight::from_bits(u.weight);
-            log::trace!("range{}: use {:?}", range.index(), u);
+            trace!("range{}: use {:?}", range.index(), u);
         }
         rangedata.set_uses_spill_weight(w);
         if rangedata.uses.len() > 0 && rangedata.uses[0].operand.kind() == OperandKind::Def {
@@ -397,7 +397,7 @@ impl<'a, F: Function> Env<'a, F> {
         reg_hint: PReg,
     ) {
         self.stats.splits += 1;
-        log::trace!(
+        trace!(
             "split bundle {:?} at {:?} and requeue with reg hint (for first part) {:?}",
             bundle,
             split_at,
@@ -410,7 +410,7 @@ impl<'a, F: Function> Env<'a, F> {
 
         let spillset = self.bundles[bundle.index()].spillset;
 
-        assert!(!self.bundles[bundle.index()].ranges.is_empty());
+        debug_assert!(!self.bundles[bundle.index()].ranges.is_empty());
         // Split point *at* start is OK; this means we peel off
         // exactly one use to create a minimal bundle.
         let bundle_start = self.bundles[bundle.index()]
@@ -419,9 +419,9 @@ impl<'a, F: Function> Env<'a, F> {
             .unwrap()
             .range
             .from;
-        assert!(split_at >= bundle_start);
+        debug_assert!(split_at >= bundle_start);
         let bundle_end = self.bundles[bundle.index()].ranges.last().unwrap().range.to;
-        assert!(split_at < bundle_end);
+        debug_assert!(split_at < bundle_end);
 
         // Is the split point *at* the start? If so, peel off the
         // first use: set the split point just after it, or just
@@ -435,7 +435,7 @@ impl<'a, F: Function> Env<'a, F> {
                     break 'outer;
                 }
             }
-            log::trace!(" -> first use loc is {:?}", first_use);
+            trace!(" -> first use loc is {:?}", first_use);
             split_at = match first_use {
                 Some(pos) => {
                     if pos.inst() == bundle_start.inst() {
@@ -455,7 +455,7 @@ impl<'a, F: Function> Env<'a, F> {
                         .next(),
                 ),
             };
-            log::trace!(
+            trace!(
                 "split point is at bundle start; advancing to {:?}",
                 split_at
             );
@@ -471,13 +471,13 @@ impl<'a, F: Function> Env<'a, F> {
             }
         }
 
-        assert!(split_at > bundle_start && split_at < bundle_end);
+        debug_assert!(split_at > bundle_start && split_at < bundle_end);
 
         // We need to find which LRs fall on each side of the split,
         // which LR we need to split down the middle, then update the
         // current bundle, create a new one, and (re)-queue both.
 
-        log::trace!(" -> LRs: {:?}", self.bundles[bundle.index()].ranges);
+        trace!(" -> LRs: {:?}", self.bundles[bundle.index()].ranges);
 
         let mut last_lr_in_old_bundle_idx = 0; // last LR-list index in old bundle
         let mut first_lr_in_new_bundle_idx = 0; // first LR-list index in new bundle
@@ -492,11 +492,11 @@ impl<'a, F: Function> Env<'a, F> {
             }
         }
 
-        log::trace!(
+        trace!(
             " -> last LR in old bundle: LR {:?}",
             self.bundles[bundle.index()].ranges[last_lr_in_old_bundle_idx]
         );
-        log::trace!(
+        trace!(
             " -> first LR in new bundle: LR {:?}",
             self.bundles[bundle.index()].ranges[first_lr_in_new_bundle_idx]
         );
@@ -516,14 +516,14 @@ impl<'a, F: Function> Env<'a, F> {
         // down the middle, replace it with a new LR and chop off the
         // end of the same LR in the original list.
         if split_at > new_lr_list[0].range.from {
-            assert_eq!(last_lr_in_old_bundle_idx, first_lr_in_new_bundle_idx);
+            debug_assert_eq!(last_lr_in_old_bundle_idx, first_lr_in_new_bundle_idx);
             let orig_lr = new_lr_list[0].index;
             let new_lr = self.create_liverange(CodeRange {
                 from: split_at,
                 to: new_lr_list[0].range.to,
             });
             self.ranges[new_lr.index()].vreg = self.ranges[orig_lr.index()].vreg;
-            log::trace!(" -> splitting LR {:?} into {:?}", orig_lr, new_lr);
+            trace!(" -> splitting LR {:?} into {:?}", orig_lr, new_lr);
             let first_use = self.ranges[orig_lr.index()]
                 .uses
                 .iter()
@@ -560,7 +560,7 @@ impl<'a, F: Function> Env<'a, F> {
         }
 
         let new_bundle = self.create_bundle();
-        log::trace!(" -> creating new bundle {:?}", new_bundle);
+        trace!(" -> creating new bundle {:?}", new_bundle);
         self.bundles[new_bundle.index()].spillset = spillset;
         for entry in &new_lr_list {
             self.ranges[entry.index.index()].bundle = new_bundle;
@@ -582,7 +582,7 @@ impl<'a, F: Function> Env<'a, F> {
                 let spill = self
                     .get_or_create_spill_bundle(bundle, /* create_if_absent = */ true)
                     .unwrap();
-                log::trace!(
+                trace!(
                     " -> bundle {:?} range {:?}: no uses; moving to spill bundle {:?}",
                     bundle,
                     entry.index,
@@ -627,13 +627,13 @@ impl<'a, F: Function> Env<'a, F> {
                     range,
                     index: empty_lr,
                 });
-                log::trace!(
+                trace!(
                     " -> bundle {:?} range {:?}: last use implies split point {:?}",
                     bundle,
                     entry.index,
                     split
                 );
-                log::trace!(
+                trace!(
                     " -> moving trailing empty region to new spill bundle {:?} with new LR {:?}",
                     spill,
                     empty_lr
@@ -652,7 +652,7 @@ impl<'a, F: Function> Env<'a, F> {
                 let spill = self
                     .get_or_create_spill_bundle(new_bundle, /* create_if_absent = */ true)
                     .unwrap();
-                log::trace!(
+                trace!(
                     " -> bundle {:?} range {:?}: no uses; moving to spill bundle {:?}",
                     new_bundle,
                     entry.index,
@@ -697,13 +697,13 @@ impl<'a, F: Function> Env<'a, F> {
                     range,
                     index: empty_lr,
                 });
-                log::trace!(
+                trace!(
                     " -> bundle {:?} range {:?}: first use implies split point {:?}",
                     bundle,
                     entry.index,
                     first_use,
                 );
-                log::trace!(
+                trace!(
                     " -> moving leading empty region to new spill bundle {:?} with new LR {:?}",
                     spill,
                     empty_lr
@@ -741,7 +741,7 @@ impl<'a, F: Function> Env<'a, F> {
         if self.pregs[hint_reg.index()].is_stack {
             hint_reg = PReg::invalid();
         }
-        log::trace!("process_bundle: bundle {:?} hint {:?}", bundle, hint_reg,);
+        trace!("process_bundle: bundle {:?} hint {:?}", bundle, hint_reg,);
 
         let req = match self.compute_requirement(bundle) {
             Ok(req) => req,
@@ -749,7 +749,7 @@ impl<'a, F: Function> Env<'a, F> {
                 // We have to split right away. We'll find a point to
                 // split that would allow at least the first half of the
                 // split to be conflict-free.
-                assert!(
+                debug_assert!(
                     !self.minimal_bundle(bundle),
                     "Minimal bundle with conflict!"
                 );
@@ -786,7 +786,7 @@ impl<'a, F: Function> Env<'a, F> {
         let mut attempts = 0;
         loop {
             attempts += 1;
-            log::trace!("attempt {}, req {:?}", attempts, req);
+            trace!("attempt {}, req {:?}", attempts, req);
             debug_assert!(attempts < 100 * self.func.num_insts());
 
             let fixed_preg = match req {
@@ -836,7 +836,7 @@ impl<'a, F: Function> Env<'a, F> {
             ) {
                 self.stats.process_bundle_reg_probes_any += 1;
                 let preg_idx = PRegIndex::new(preg.index());
-                log::trace!("trying preg {:?}", preg_idx);
+                trace!("trying preg {:?}", preg_idx);
 
                 let scan_limit_cost = match (
                     lowest_cost_evict_conflict_cost,
@@ -848,13 +848,13 @@ impl<'a, F: Function> Env<'a, F> {
                 match self.try_to_allocate_bundle_to_reg(bundle, preg_idx, scan_limit_cost) {
                     AllocRegResult::Allocated(alloc) => {
                         self.stats.process_bundle_reg_success_any += 1;
-                        log::trace!(" -> allocated to any {:?}", preg_idx);
+                        trace!(" -> allocated to any {:?}", preg_idx);
                         self.spillsets[self.bundles[bundle.index()].spillset.index()].reg_hint =
                             alloc.as_reg().unwrap();
                         return Ok(());
                     }
                     AllocRegResult::Conflict(bundles, first_conflict_point) => {
-                        log::trace!(
+                        trace!(
                             " -> conflict with bundles {:?}, first conflict at {:?}",
                             bundles,
                             first_conflict_point
@@ -887,7 +887,7 @@ impl<'a, F: Function> Env<'a, F> {
                         }
                     }
                     AllocRegResult::ConflictWithFixed(max_cost, point) => {
-                        log::trace!(" -> conflict with fixed alloc; cost of other bundles up to point is {}, conflict at {:?}", max_cost, point);
+                        trace!(" -> conflict with fixed alloc; cost of other bundles up to point is {}, conflict at {:?}", max_cost, point);
 
                         let loop_depth = self.cfginfo.approx_loop_depth
                             [self.cfginfo.insn_block[point.inst().index()].index()];
@@ -919,12 +919,12 @@ impl<'a, F: Function> Env<'a, F> {
             // any with current bundle assignments. Hence, we will need
             // to either split or attempt to evict some bundles.
 
-            log::trace!(
+            trace!(
                 " -> lowest cost evict: set {:?}, cost {:?}",
                 lowest_cost_evict_conflict_set,
                 lowest_cost_evict_conflict_cost,
             );
-            log::trace!(
+            trace!(
                 " -> lowest cost split: cost {:?}, point {:?}, reg {:?}",
                 lowest_cost_split_conflict_cost,
                 lowest_cost_split_conflict_point,
@@ -932,13 +932,13 @@ impl<'a, F: Function> Env<'a, F> {
             );
 
             // If we reach here, we *must* have an option either to split or evict.
-            assert!(
+            debug_assert!(
                 lowest_cost_split_conflict_cost.is_some()
                     || lowest_cost_evict_conflict_cost.is_some()
             );
 
             let our_spill_weight = self.bundle_spill_weight(bundle);
-            log::trace!(" -> our spill weight: {}", our_spill_weight);
+            trace!(" -> our spill weight: {}", our_spill_weight);
 
             // We detect the "too-many-live-registers" case here and
             // return an error cleanly, rather than panicking, because
@@ -953,7 +953,7 @@ impl<'a, F: Function> Env<'a, F> {
                 if let Requirement::Register = req {
                     // Check if this is a too-many-live-registers situation.
                     let range = self.bundles[bundle.index()].ranges[0].range;
-                    log::trace!("checking for too many live regs");
+                    trace!("checking for too many live regs");
                     let mut min_bundles_assigned = 0;
                     let mut fixed_assigned = 0;
                     let mut total_regs = 0;
@@ -961,7 +961,7 @@ impl<'a, F: Function> Env<'a, F> {
                         .iter()
                         .chain(self.env.non_preferred_regs_by_class[class as u8 as usize].iter())
                     {
-                        log::trace!(" -> PR {:?}", preg);
+                        trace!(" -> PR {:?}", preg);
                         let start = LiveRangeKey::from_range(&CodeRange {
                             from: range.from.prev(),
                             to: range.from.prev(),
@@ -976,19 +976,19 @@ impl<'a, F: Function> Env<'a, F> {
                             }
                             if lr.is_valid() {
                                 if self.minimal_bundle(self.ranges[lr.index()].bundle) {
-                                    log::trace!("  -> min bundle {:?}", lr);
+                                    trace!("  -> min bundle {:?}", lr);
                                     min_bundles_assigned += 1;
                                 } else {
-                                    log::trace!("  -> non-min bundle {:?}", lr);
+                                    trace!("  -> non-min bundle {:?}", lr);
                                 }
                             } else {
-                                log::trace!("  -> fixed bundle");
+                                trace!("  -> fixed bundle");
                                 fixed_assigned += 1;
                             }
                         }
                         total_regs += 1;
                     }
-                    log::trace!(
+                    trace!(
                         " -> total {}, fixed {}, min {}",
                         total_regs,
                         fixed_assigned,
@@ -1020,7 +1020,7 @@ impl<'a, F: Function> Env<'a, F> {
                     || lowest_cost_evict_conflict_cost.is_none()
                     || our_spill_weight <= lowest_cost_evict_conflict_cost.unwrap())
             {
-                log::trace!(
+                trace!(
                     " -> deciding to split: our spill weight is {}",
                     self.bundle_spill_weight(bundle)
                 );
@@ -1053,7 +1053,7 @@ impl<'a, F: Function> Env<'a, F> {
                 // Evict all bundles in `conflicting bundles` and try again.
                 self.stats.evict_bundle_event += 1;
                 for &bundle in &lowest_cost_evict_conflict_set.unwrap() {
-                    log::trace!(" -> evicting {:?}", bundle);
+                    trace!(" -> evicting {:?}", bundle);
                     self.evict_bundle(bundle);
                     self.stats.evict_bundle_count += 1;
                 }

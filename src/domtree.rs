@@ -33,7 +33,7 @@ fn merge_sets(
             node2 = idom[node2.index()];
         }
     }
-    assert!(node1 == node2);
+    debug_assert!(node1 == node2);
     node1
 }
 

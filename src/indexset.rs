@@ -93,7 +93,7 @@ impl AdaptiveMap {
         };
 
         if needs_expand {
-            assert!(small_mode_idx.is_none());
+            debug_assert!(small_mode_idx.is_none());
             self.expand();
         }
 
@@ -111,7 +111,7 @@ impl AdaptiveMap {
                 }
                 // Otherwise, the key must not be present; add a new
                 // entry.
-                assert!(*len < SMALL_ELEMS as u32);
+                debug_assert!(*len < SMALL_ELEMS as u32);
                 let idx = *len;
                 *len += 1;
                 keys[idx as usize] = key;
@@ -344,11 +344,11 @@ mod test {
 
         let mut checksum = 0;
         for bit in vec.iter() {
-            assert!(bit % 17 == 0);
+            debug_assert!(bit % 17 == 0);
             checksum += bit;
         }
 
-        assert_eq!(sum, checksum);
+        debug_assert_eq!(sum, checksum);
     }
 
     #[test]
@@ -362,6 +362,6 @@ mod test {
         // should still be in small mode.
         vec.set(64 * 5, false);
         vec.set(64 * 100, true);
-        assert!(vec.is_small());
+        debug_assert!(vec.is_small());
     }
 }

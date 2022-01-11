@@ -12,6 +12,16 @@
 
 #![allow(dead_code)]
 
+// Even when trace logging is disabled, the trace macro has a significant
+// performance cost so we disable it in release builds.
+macro_rules! trace {
+    ($($tt:tt)*) => {
+        if cfg!(feature = "trace-log") {
+            ::log::trace!($($tt)*);
+        }
+    };
+}
+
 pub(crate) mod cfg;
 pub(crate) mod domtree;
 pub mod indexset;
@@ -234,7 +244,7 @@ impl SpillSlot {
     /// Create a new SpillSlot of a given class.
     #[inline(always)]
     pub fn new(slot: usize, class: RegClass) -> Self {
-        assert!(slot < (1 << 24));
+        debug_assert!(slot < (1 << 24));
         SpillSlot {
             bits: (slot as u32) | (class as u8 as u32) << 24,
         }
@@ -412,11 +422,11 @@ impl Operand {
             OperandConstraint::Reg => 1,
             OperandConstraint::Stack => 2,
             OperandConstraint::FixedReg(preg) => {
-                assert_eq!(preg.class(), vreg.class());
+                debug_assert_eq!(preg.class(), vreg.class());
                 0b1000000 | preg.hw_enc() as u32
             }
             OperandConstraint::Reuse(which) => {
-                assert!(which <= 31);
+                debug_assert!(which <= 31);
                 0b0100000 | which as u32
             }
         };
@@ -696,7 +706,7 @@ impl Allocation {
     /// Construct a new Allocation.
     #[inline(always)]
     pub(crate) fn new(kind: AllocationKind, index: usize) -> Self {
-        assert!(index < (1 << 28));
+        debug_assert!(index < (1 << 28));
         Self {
             bits: ((kind as u8 as u32) << 29) | (index as u32),
         }
@@ -1105,20 +1115,16 @@ pub enum Edit {
     /// register or a stack slot (spillslot). However, stack-to-stack
     /// moves will never be generated.
     ///
-    /// `to_vreg`, if defined, is useful as metadata: it indicates
-    /// that the moved value is a def of a new vreg.
-    ///
     /// `Move` edits will be generated even if src and dst allocation
     /// are the same if the vreg changes; this allows proper metadata
     /// tracking even when moves are elided.
-    Move {
-        from: Allocation,
-        to: Allocation,
-        to_vreg: Option<VReg>,
-    },
+    Move { from: Allocation, to: Allocation },
 
     /// Define a particular Allocation to contain a particular VReg. Useful
     /// for the checker.
+    ///
+    /// `DefAlloc` edits are only emitted when the `"checker"` Cargo feature is
+    /// enabled.
     DefAlloc { alloc: Allocation, vreg: VReg },
 }
 

@@ -10,7 +10,7 @@ macro_rules! define_index {
             }
             #[inline(always)]
             pub fn index(self) -> usize {
-                assert!(self.is_valid());
+                debug_assert!(self.is_valid());
                 self.0 as usize
             }
             #[inline(always)]
@@ -27,12 +27,12 @@ macro_rules! define_index {
             }
             #[inline(always)]
             pub fn next(self) -> $ix {
-                assert!(self.is_valid());
+                debug_assert!(self.is_valid());
                 Self(self.0 + 1)
             }
             #[inline(always)]
             pub fn prev(self) -> $ix {
-                assert!(self.is_valid());
+                debug_assert!(self.is_valid());
                 Self(self.0 - 1)
             }
 
@@ -62,19 +62,19 @@ pub struct InstRange(Inst, Inst, bool);
 impl InstRange {
     #[inline(always)]
     pub fn forward(from: Inst, to: Inst) -> Self {
-        assert!(from.index() <= to.index());
+        debug_assert!(from.index() <= to.index());
         InstRange(from, to, true)
     }
 
     #[inline(always)]
     pub fn backward(from: Inst, to: Inst) -> Self {
-        assert!(from.index() >= to.index());
+        debug_assert!(from.index() >= to.index());
         InstRange(to, from, false)
     }
 
     #[inline(always)]
     pub fn first(self) -> Inst {
-        assert!(self.len() > 0);
+        debug_assert!(self.len() > 0);
         if self.is_forward() {
             self.0
         } else {
@@ -84,7 +84,7 @@ impl InstRange {
 
     #[inline(always)]
     pub fn last(self) -> Inst {
-        assert!(self.len() > 0);
+        debug_assert!(self.len() > 0);
         if self.is_forward() {
             self.1.prev()
         } else {
@@ -94,7 +94,7 @@ impl InstRange {
 
     #[inline(always)]
     pub fn rest(self) -> InstRange {
-        assert!(self.len() > 0);
+        debug_assert!(self.len() > 0);
         if self.is_forward() {
             InstRange::forward(self.0.next(), self.1)
         } else {
@@ -147,13 +147,13 @@ mod test {
     #[test]
     fn test_inst_range() {
         let range = InstRange::forward(Inst::new(0), Inst::new(0));
-        assert_eq!(range.len(), 0);
+        debug_assert_eq!(range.len(), 0);
 
         let range = InstRange::forward(Inst::new(0), Inst::new(5));
-        assert_eq!(range.first().index(), 0);
-        assert_eq!(range.last().index(), 4);
-        assert_eq!(range.len(), 5);
-        assert_eq!(
+        debug_assert_eq!(range.first().index(), 0);
+        debug_assert_eq!(range.last().index(), 4);
+        debug_assert_eq!(range.len(), 5);
+        debug_assert_eq!(
             range.iter().collect::<Vec<_>>(),
             vec![
                 Inst::new(0),
@@ -164,10 +164,10 @@ mod test {
             ]
         );
         let range = range.rev();
-        assert_eq!(range.first().index(), 4);
-        assert_eq!(range.last().index(), 0);
-        assert_eq!(range.len(), 5);
-        assert_eq!(
+        debug_assert_eq!(range.first().index(), 4);
+        debug_assert_eq!(range.last().index(), 0);
+        debug_assert_eq!(range.len(), 5);
+        debug_assert_eq!(
             range.iter().collect::<Vec<_>>(),
             vec![
                 Inst::new(4),
