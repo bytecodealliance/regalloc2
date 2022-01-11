@@ -16,7 +16,7 @@ use super::{
     Env, LiveBundleIndex, LiveRangeIndex, LiveRangeKey, SpillSet, SpillSetIndex, SpillSlotIndex,
     VRegIndex,
 };
-use crate::{Function, Inst, OperandConstraint, PReg};
+use crate::{ion::data_structures::BlockparamOut, Function, Inst, OperandConstraint, PReg};
 use smallvec::smallvec;
 
 impl<'a, F: Function> Env<'a, F> {
@@ -332,7 +332,9 @@ impl<'a, F: Function> Env<'a, F> {
 
         // Attempt to merge blockparams with their inputs.
         for i in 0..self.blockparam_outs.len() {
-            let (from_vreg, _, _, to_vreg) = self.blockparam_outs[i];
+            let BlockparamOut {
+                from_vreg, to_vreg, ..
+            } = self.blockparam_outs[i];
             log::trace!(
                 "trying to merge blockparam v{} with input v{}",
                 to_vreg.index(),

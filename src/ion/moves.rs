@@ -17,7 +17,7 @@ use super::{
     VRegIndex, SLOT_NONE,
 };
 
-use crate::ion::data_structures::u64_key;
+use crate::ion::data_structures::{BlockparamIn, BlockparamOut, PosWithPrio};
 use crate::moves::ParallelMoves;
 use crate::{
     Allocation, Block, Edit, Function, Inst, InstPosition, OperandConstraint, OperandKind,
@@ -68,8 +68,10 @@ impl<'a, F: Function> Env<'a, F> {
             _ => {}
         }
         self.inserted_moves.push(InsertedMove {
-            pos,
-            prio,
+            pos_prio: PosWithPrio {
+                pos,
+                prio: prio as u32,
+            },
             from_alloc,
             to_alloc,
             to_vreg,
@@ -334,8 +336,12 @@ impl<'a, F: Function> Env<'a, F> {
                             blockparam_out_idx,
                         );
                         while blockparam_out_idx < self.blockparam_outs.len() {
-                            let (from_vreg, from_block, to_block, to_vreg) =
-                                self.blockparam_outs[blockparam_out_idx];
+                            let BlockparamOut {
+                                from_vreg,
+                                from_block,
+                                to_block,
+                                to_vreg,
+                            } = self.blockparam_outs[blockparam_out_idx];
                             if (from_vreg, from_block) > (vreg, block) {
                                 break;
                             }
@@ -399,8 +405,11 @@ impl<'a, F: Function> Env<'a, F> {
                             blockparam_in_idx
                         );
                         while blockparam_in_idx < self.blockparam_ins.len() {
-                            let (to_vreg, to_block, from_block) =
-                                self.blockparam_ins[blockparam_in_idx];
+                            let BlockparamIn {
+                                from_block,
+                                to_block,
+                                to_vreg,
+                            } = self.blockparam_ins[blockparam_in_idx];
                             if (to_vreg, to_block) > (vreg, block) {
                                 break;
                             }
@@ -855,7 +864,7 @@ impl<'a, F: Function> Env<'a, F> {
         // resolve (see cases below).
         let mut i = 0;
         self.inserted_moves
-            .sort_unstable_by_key(|m| u64_key(m.pos.to_index(), m.prio as u32));
+            .sort_unstable_by_key(|m| m.pos_prio.key());
 
         // Redundant-move elimination state tracker.
         let mut redundant_moves = RedundantMoveEliminator::default();
@@ -912,18 +921,14 @@ impl<'a, F: Function> Env<'a, F> {
 
         while i < self.inserted_moves.len() {
             let start = i;
-            let pos = self.inserted_moves[i].pos;
-            let prio = self.inserted_moves[i].prio;
-            while i < self.inserted_moves.len()
-                && self.inserted_moves[i].pos == pos
-                && self.inserted_moves[i].prio == prio
-            {
+            let pos_prio = self.inserted_moves[i].pos_prio;
+            while i < self.inserted_moves.len() && self.inserted_moves[i].pos_prio == pos_prio {
                 i += 1;
             }
             let moves = &self.inserted_moves[start..i];
 
-            redundant_move_process_side_effects(self, &mut redundant_moves, last_pos, pos);
-            last_pos = pos;
+            redundant_move_process_side_effects(self, &mut redundant_moves, last_pos, pos_prio.pos);
+            last_pos = pos_prio.pos;
 
             // Gather all the moves with Int class and Float class
             // separately. These cannot interact, so it is safe to
@@ -966,7 +971,11 @@ impl<'a, F: Function> Env<'a, F> {
                 // that can be done one at a time.
                 let scratch = self.env.scratch_by_class[regclass as u8 as usize];
                 let mut parallel_moves = ParallelMoves::new(Allocation::reg(scratch));
-                log::trace!("parallel moves at pos {:?} prio {:?}", pos, prio);
+                log::trace!(
+                    "parallel moves at pos {:?} prio {:?}",
+                    pos_prio.pos,
+                    pos_prio.prio
+                );
                 for m in moves {
                     if (m.from_alloc != m.to_alloc) || m.to_vreg.is_some() {
                         log::trace!(" {} -> {}", m.from_alloc, m.to_alloc,);
@@ -1009,15 +1018,13 @@ impl<'a, F: Function> Env<'a, F> {
                         if self.allocation_is_stack(src) && self.allocation_is_stack(dst) {
                             if !scratch_used_yet {
                                 self.add_move_edit(
-                                    pos,
-                                    prio,
+                                    pos_prio,
                                     src,
                                     Allocation::reg(scratch),
                                     to_vreg,
                                 );
                                 self.add_move_edit(
-                                    pos,
-                                    prio,
+                                    pos_prio,
                                     Allocation::reg(scratch),
                                     dst,
                                     to_vreg,
@@ -1025,36 +1032,32 @@ impl<'a, F: Function> Env<'a, F> {
                             } else {
                                 debug_assert!(extra_slot.is_some());
                                 self.add_move_edit(
-                                    pos,
-                                    prio,
+                                    pos_prio,
                                     Allocation::reg(scratch),
                                     extra_slot.unwrap(),
                                     None,
                                 );
                                 self.add_move_edit(
-                                    pos,
-                                    prio,
+                                    pos_prio,
                                     src,
                                     Allocation::reg(scratch),
                                     to_vreg,
                                 );
                                 self.add_move_edit(
-                                    pos,
-                                    prio,
+                                    pos_prio,
                                     Allocation::reg(scratch),
                                     dst,
                                     to_vreg,
                                 );
                                 self.add_move_edit(
-                                    pos,
-                                    prio,
+                                    pos_prio,
                                     extra_slot.unwrap(),
                                     Allocation::reg(scratch),
                                     None,
                                 );
                             }
                         } else {
-                            self.add_move_edit(pos, prio, src, dst, to_vreg);
+                            self.add_move_edit(pos_prio, src, dst, to_vreg);
                         }
                     } else {
                         log::trace!("    -> redundant move elided");
@@ -1066,8 +1069,7 @@ impl<'a, F: Function> Env<'a, F> {
                             alloc,
                             vreg
                         );
-                        self.edits
-                            .push((pos.to_index(), prio, Edit::DefAlloc { alloc, vreg }));
+                        self.edits.push((pos_prio, Edit::DefAlloc { alloc, vreg }));
                     }
                 }
             }
@@ -1076,8 +1078,8 @@ impl<'a, F: Function> Env<'a, F> {
             for m in &self_moves {
                 log::trace!(
                     "self move at pos {:?} prio {:?}: {} -> {} to_vreg {:?}",
-                    pos,
-                    prio,
+                    pos_prio.pos,
+                    pos_prio.prio,
                     m.from_alloc,
                     m.to_alloc,
                     m.to_vreg
@@ -1086,8 +1088,7 @@ impl<'a, F: Function> Env<'a, F> {
                 debug_assert!(action.elide);
                 if let Some((alloc, vreg)) = action.def_alloc {
                     log::trace!(" -> DefAlloc: alloc {} vreg {}", alloc, vreg);
-                    self.edits
-                        .push((pos.to_index(), prio, Edit::DefAlloc { alloc, vreg }));
+                    self.edits.push((pos_prio, Edit::DefAlloc { alloc, vreg }));
                 }
             }
         }
@@ -1096,6 +1097,7 @@ impl<'a, F: Function> Env<'a, F> {
         {
             // Add edits to describe blockparam locations too. This is
             // required by the checker. This comes after any edge-moves.
+            use crate::ion::data_structures::u64_key;
             self.blockparam_allocs
                 .sort_unstable_by_key(|&(block, idx, _, _)| u64_key(block.raw_u32(), idx));
             self.stats.blockparam_allocs_count = self.blockparam_allocs.len();
@@ -1119,8 +1121,10 @@ impl<'a, F: Function> Env<'a, F> {
                 debug_assert_eq!(allocs.len(), self.func.block_params(block).len());
                 for (vreg, alloc) in vregs.into_iter().zip(allocs.into_iter()) {
                     self.edits.push((
-                        self.cfginfo.block_entry[block.index()].to_index(),
-                        InsertMovePrio::BlockParam,
+                        PosWithPrio {
+                            pos: self.cfginfo.block_entry[block.index()],
+                            prio: InsertMovePrio::BlockParam as u32,
+                        },
                         Edit::DefAlloc { alloc, vreg },
                     ));
                 }
@@ -1131,24 +1135,20 @@ impl<'a, F: Function> Env<'a, F> {
         // be a stable sort! We have to keep the order produced by the
         // parallel-move resolver for all moves within a single sort
         // key.
-        self.edits
-            .sort_by_key(|&(pos, prio, _)| u64_key(pos, prio as u32));
+        self.edits.sort_by_key(|&(pos_prio, _)| pos_prio.key());
         self.stats.edits_count = self.edits.len();
 
         // Add debug annotations.
         if self.annotations_enabled {
             for i in 0..self.edits.len() {
-                let &(pos, _, ref edit) = &self.edits[i];
+                let &(pos_prio, ref edit) = &self.edits[i];
                 match edit {
                     &Edit::Move { from, to } => {
-                        self.annotate(
-                            ProgPoint::from_index(pos),
-                            format!("move {} -> {})", from, to),
-                        );
+                        self.annotate(pos_prio.pos, format!("move {} -> {})", from, to));
                     }
                     &Edit::DefAlloc { alloc, vreg } => {
                         let s = format!("defalloc {:?} := {:?}", alloc, vreg);
-                        self.annotate(ProgPoint::from_index(pos), s);
+                        self.annotate(pos_prio.pos, s);
                     }
                 }
             }
@@ -1157,8 +1157,7 @@ impl<'a, F: Function> Env<'a, F> {
 
     pub fn add_move_edit(
         &mut self,
-        pos: ProgPoint,
-        prio: InsertMovePrio,
+        pos_prio: PosWithPrio,
         from: Allocation,
         to: Allocation,
         _to_vreg: Option<VReg>,
@@ -1167,15 +1166,13 @@ impl<'a, F: Function> Env<'a, F> {
             if from.is_reg() && to.is_reg() {
                 debug_assert_eq!(from.as_reg().unwrap().class(), to.as_reg().unwrap().class());
             }
-            self.edits
-                .push((pos.to_index(), prio, Edit::Move { from, to }));
+            self.edits.push((pos_prio, Edit::Move { from, to }));
         }
 
         #[cfg(feature = "checker")]
         if let Some(to_vreg) = _to_vreg {
             self.edits.push((
-                pos.to_index(),
-                prio,
+                pos_prio,
                 Edit::DefAlloc {
                     alloc: to,
                     vreg: to_vreg,

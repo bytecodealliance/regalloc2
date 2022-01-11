@@ -133,7 +133,7 @@ pub fn run<F: Function>(
         edits: env
             .edits
             .into_iter()
-            .map(|(pos, _, edit)| (ProgPoint::from_index(pos), edit))
+            .map(|(pos_prio, edit)| (pos_prio.pos, edit))
             .collect(),
         allocs: env.allocs,
         inst_alloc_offsets: env.inst_alloc_offsets,

@@ -18,7 +18,7 @@ use super::{
     SpillSetIndex, Use, VRegData, VRegIndex, SLOT_NONE,
 };
 use crate::indexset::IndexSet;
-use crate::ion::data_structures::{u128_key, MultiFixedRegFixup};
+use crate::ion::data_structures::{BlockparamIn, BlockparamOut, MultiFixedRegFixup};
 use crate::{
     Allocation, Block, Function, Inst, InstPosition, Operand, OperandConstraint, OperandKind,
     OperandPos, PReg, ProgPoint, RegAllocError, VReg,
@@ -430,8 +430,12 @@ impl<'a, F: Function> Env<'a, F> {
                     {
                         let blockparam_out = VRegIndex::new(blockparam_out.vreg());
                         let blockparam_in = VRegIndex::new(blockparam_in.vreg());
-                        self.blockparam_outs
-                            .push((blockparam_out, block, succ, blockparam_in));
+                        self.blockparam_outs.push(BlockparamOut {
+                            to_vreg: blockparam_in,
+                            to_block: succ,
+                            from_block: block,
+                            from_vreg: blockparam_out,
+                        });
 
                         // Include outgoing blockparams in the initial live set.
                         live.set(blockparam_out.index(), true);
@@ -1050,7 +1054,11 @@ impl<'a, F: Function> Env<'a, F> {
                 // add `blockparam_ins` entries.
                 let vreg_idx = VRegIndex::new(vreg.vreg());
                 for &pred in self.func.block_preds(block) {
-                    self.blockparam_ins.push((vreg_idx, block, pred));
+                    self.blockparam_ins.push(BlockparamIn {
+                        to_vreg: vreg_idx,
+                        to_block: block,
+                        from_block: pred,
+                    });
                 }
             }
         }
@@ -1141,24 +1149,8 @@ impl<'a, F: Function> Env<'a, F> {
             }
         }
 
-        self.blockparam_ins
-            .sort_unstable_by_key(|(to_vreg, to_block, from_block)| {
-                u128_key(
-                    to_vreg.raw_u32(),
-                    to_block.raw_u32(),
-                    from_block.raw_u32(),
-                    0,
-                )
-            });
-        self.blockparam_outs
-            .sort_unstable_by_key(|(from_vreg, from_block, to_block, to_vreg)| {
-                u128_key(
-                    from_vreg.raw_u32(),
-                    from_block.raw_u32(),
-                    to_block.raw_u32(),
-                    to_vreg.raw_u32(),
-                )
-            });
+        self.blockparam_ins.sort_unstable_by_key(|x| x.key());
+        self.blockparam_outs.sort_unstable_by_key(|x| x.key());
         self.prog_move_srcs.sort_unstable_by_key(|(pos, _)| *pos);
         self.prog_move_dsts.sort_unstable_by_key(|(pos, _)| *pos);
 
