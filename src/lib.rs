@@ -234,7 +234,7 @@ impl SpillSlot {
     /// Create a new SpillSlot of a given class.
     #[inline(always)]
     pub fn new(slot: usize, class: RegClass) -> Self {
-        assert!(slot < (1 << 24));
+        debug_assert!(slot < (1 << 24));
         SpillSlot {
             bits: (slot as u32) | (class as u8 as u32) << 24,
         }
@@ -412,11 +412,11 @@ impl Operand {
             OperandConstraint::Reg => 1,
             OperandConstraint::Stack => 2,
             OperandConstraint::FixedReg(preg) => {
-                assert_eq!(preg.class(), vreg.class());
+                debug_assert_eq!(preg.class(), vreg.class());
                 0b1000000 | preg.hw_enc() as u32
             }
             OperandConstraint::Reuse(which) => {
-                assert!(which <= 31);
+                debug_assert!(which <= 31);
                 0b0100000 | which as u32
             }
         };
@@ -696,7 +696,7 @@ impl Allocation {
     /// Construct a new Allocation.
     #[inline(always)]
     pub(crate) fn new(kind: AllocationKind, index: usize) -> Self {
-        assert!(index < (1 << 28));
+        debug_assert!(index < (1 << 28));
         Self {
             bits: ((kind as u8 as u32) << 29) | (index as u32),
         }

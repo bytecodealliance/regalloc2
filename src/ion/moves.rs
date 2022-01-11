@@ -62,7 +62,7 @@ impl<'a, F: Function> Env<'a, F> {
         );
         match (from_alloc.as_reg(), to_alloc.as_reg()) {
             (Some(from), Some(to)) => {
-                assert_eq!(from.class(), to.class());
+                debug_assert_eq!(from.class(), to.class());
             }
             _ => {}
         }
@@ -148,9 +148,9 @@ impl<'a, F: Function> Env<'a, F> {
             to_vreg: VRegIndex,
             kind: HalfMoveKind,
         ) -> u64 {
-            assert!(from_block.index() < 1 << 21);
-            assert!(to_block.index() < 1 << 21);
-            assert!(to_vreg.index() < 1 << 21);
+            debug_assert!(from_block.index() < 1 << 21);
+            debug_assert!(to_block.index() < 1 << 21);
+            debug_assert!(to_vreg.index() < 1 << 21);
             ((from_block.index() as u64) << 43)
                 | ((to_block.index() as u64) << 22)
                 | ((to_vreg.index() as u64) << 1)
@@ -277,7 +277,7 @@ impl<'a, F: Function> Env<'a, F> {
                             alloc,
                             vreg.index()
                         );
-                        assert_eq!(range.from.pos(), InstPosition::Before);
+                        debug_assert_eq!(range.from.pos(), InstPosition::Before);
                         self.insert_move(
                             range.from,
                             InsertMovePrio::Regular,
@@ -816,7 +816,7 @@ impl<'a, F: Function> Env<'a, F> {
             .sort_unstable_by_key(|((_, inst), _)| inst.prev());
         let prog_move_srcs = std::mem::replace(&mut self.prog_move_srcs, vec![]);
         let prog_move_dsts = std::mem::replace(&mut self.prog_move_dsts, vec![]);
-        assert_eq!(prog_move_srcs.len(), prog_move_dsts.len());
+        debug_assert_eq!(prog_move_srcs.len(), prog_move_dsts.len());
         for (&((_, from_inst), from_alloc), &((to_vreg, to_inst), to_alloc)) in
             prog_move_srcs.iter().zip(prog_move_dsts.iter())
         {
@@ -827,9 +827,9 @@ impl<'a, F: Function> Env<'a, F> {
                 to_alloc,
                 to_vreg.index(),
             );
-            assert!(from_alloc.is_some());
-            assert!(to_alloc.is_some());
-            assert_eq!(from_inst, to_inst.prev());
+            debug_assert!(from_alloc.is_some());
+            debug_assert!(to_alloc.is_some());
+            debug_assert_eq!(from_inst, to_inst.prev());
             // N.B.: these moves happen with the *same* priority as
             // LR-to-LR moves, because they work just like them: they
             // connect a use at one progpoint (move-After) with a def
@@ -933,7 +933,7 @@ impl<'a, F: Function> Env<'a, F> {
 
             for m in moves {
                 if m.from_alloc.is_reg() && m.to_alloc.is_reg() {
-                    assert_eq!(m.from_alloc.class(), m.to_alloc.class());
+                    debug_assert_eq!(m.from_alloc.class(), m.to_alloc.class());
                 }
                 if m.from_alloc == m.to_alloc {
                     if m.to_vreg.is_some() {
@@ -1020,7 +1020,7 @@ impl<'a, F: Function> Env<'a, F> {
                                     },
                                 );
                             } else {
-                                assert!(extra_slot.is_some());
+                                debug_assert!(extra_slot.is_some());
                                 self.add_edit(
                                     pos,
                                     prio,
@@ -1093,7 +1093,7 @@ impl<'a, F: Function> Env<'a, F> {
                     m.to_vreg
                 );
                 let action = redundant_moves.process_move(m.from_alloc, m.to_alloc, m.to_vreg);
-                assert!(action.elide);
+                debug_assert!(action.elide);
                 if let Some((alloc, vreg)) = action.def_alloc {
                     log::trace!(" -> DefAlloc: alloc {} vreg {}", alloc, vreg);
                     self.add_edit(pos, prio, Edit::DefAlloc { alloc, vreg });
@@ -1122,8 +1122,8 @@ impl<'a, F: Function> Env<'a, F> {
                 .iter()
                 .map(|(_, _, _, alloc)| *alloc)
                 .collect::<Vec<_>>();
-            assert_eq!(vregs.len(), self.func.block_params(block).len());
-            assert_eq!(allocs.len(), self.func.block_params(block).len());
+            debug_assert_eq!(vregs.len(), self.func.block_params(block).len());
+            debug_assert_eq!(allocs.len(), self.func.block_params(block).len());
             for (vreg, alloc) in vregs.into_iter().zip(allocs.into_iter()) {
                 self.add_edit(
                     self.cfginfo.block_entry[block.index()],
@@ -1164,7 +1164,7 @@ impl<'a, F: Function> Env<'a, F> {
         match &edit {
             &Edit::Move { from, to, to_vreg } if from == to && to_vreg.is_none() => return,
             &Edit::Move { from, to, .. } if from.is_reg() && to.is_reg() => {
-                assert_eq!(from.as_reg().unwrap().class(), to.as_reg().unwrap().class());
+                debug_assert_eq!(from.as_reg().unwrap().class(), to.as_reg().unwrap().class());
             }
             _ => {}
         }

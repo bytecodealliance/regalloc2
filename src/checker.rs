@@ -550,7 +550,7 @@ impl<'a, F: Function> Checker<'a, F> {
             for inst_or_edit in out.block_insts_and_edits(self.f, block) {
                 match inst_or_edit {
                     InstOrEdit::Inst(inst) => {
-                        assert!(last_inst.is_none() || inst > last_inst.unwrap());
+                        debug_assert!(last_inst.is_none() || inst > last_inst.unwrap());
                         last_inst = Some(inst);
                         self.handle_inst(block, inst, &mut safepoint_slots, out);
                     }

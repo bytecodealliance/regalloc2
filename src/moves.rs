@@ -183,7 +183,7 @@ impl<T: Clone + Copy + Default> ParallelMoves<T> {
                             scratch_src = Some(src);
                             src = self.scratch;
                         } else {
-                            assert_eq!(last_dst.unwrap(), src);
+                            debug_assert_eq!(last_dst.unwrap(), src);
                         }
                         ret.push((src, dst, dst_t));
 

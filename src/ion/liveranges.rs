@@ -199,7 +199,7 @@ impl<'a, F: Function> Env<'a, F> {
         // array, then reverse them at the end of
         // `compute_liveness()`.
 
-        assert!(
+        debug_assert!(
             self.vregs[vreg.index()].ranges.is_empty()
                 || range.to
                     <= self.ranges[self.vregs[vreg.index()]
@@ -235,7 +235,7 @@ impl<'a, F: Function> Env<'a, F> {
             // Is contiguous with previously-added range; just extend
             // its range and return it.
             let lr = self.vregs[vreg.index()].ranges.last().unwrap().index;
-            assert!(range.to == self.ranges[lr.index()].range.from);
+            debug_assert!(range.to == self.ranges[lr.index()].range.from);
             self.ranges[lr.index()].range.from = range.from;
             lr
         }
@@ -504,11 +504,11 @@ impl<'a, F: Function> Env<'a, F> {
                     if src.vreg() != dst.vreg() {
                         log::trace!(" -> move inst{}: src {} -> dst {}", inst.index(), src, dst);
 
-                        assert_eq!(src.class(), dst.class());
-                        assert_eq!(src.kind(), OperandKind::Use);
-                        assert_eq!(src.pos(), OperandPos::Early);
-                        assert_eq!(dst.kind(), OperandKind::Def);
-                        assert_eq!(dst.pos(), OperandPos::Late);
+                        debug_assert_eq!(src.class(), dst.class());
+                        debug_assert_eq!(src.kind(), OperandKind::Use);
+                        debug_assert_eq!(src.pos(), OperandPos::Early);
+                        debug_assert_eq!(dst.kind(), OperandKind::Def);
+                        debug_assert_eq!(dst.pos(), OperandPos::Late);
 
                         // If both src and dest are pinned, emit the
                         // move right here, right now.
@@ -1012,7 +1012,7 @@ impl<'a, F: Function> Env<'a, F> {
                                     );
                                     vreg_ranges[operand.vreg().vreg()] = lr;
                                 }
-                                assert!(lr.is_valid());
+                                debug_assert!(lr.is_valid());
 
                                 log::trace!("Use of {:?} at {:?} -> {:?}", operand, pos, lr,);
 
@@ -1082,7 +1082,7 @@ impl<'a, F: Function> Env<'a, F> {
                 // need to update with the final range here.
                 entry.range = self.ranges[entry.index.index()].range;
                 // Assert in-order and non-overlapping.
-                assert!(last.is_none() || last.unwrap() <= entry.range.from);
+                debug_assert!(last.is_none() || last.unwrap() <= entry.range.from);
                 last = Some(entry.range.to);
             }
         }

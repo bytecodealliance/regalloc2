@@ -52,11 +52,11 @@ impl<'a, F: Function> Env<'a, F> {
             // Sanity check: both bundles should contain only ranges with appropriate VReg classes.
             for entry in &self.bundles[from.index()].ranges {
                 let vreg = self.ranges[entry.index.index()].vreg;
-                assert_eq!(from_rc, self.vreg_regs[vreg.index()].class());
+                debug_assert_eq!(from_rc, self.vreg_regs[vreg.index()].class());
             }
             for entry in &self.bundles[to.index()].ranges {
                 let vreg = self.ranges[entry.index.index()].vreg;
-                assert_eq!(to_rc, self.vreg_regs[vreg.index()].class());
+                debug_assert_eq!(to_rc, self.vreg_regs[vreg.index()].class());
             }
         }
 
@@ -175,7 +175,7 @@ impl<'a, F: Function> Env<'a, F> {
             for i in 0..self.bundles[to.index()].ranges.len() {
                 let entry = self.bundles[to.index()].ranges[i];
                 if last_range.is_some() {
-                    assert!(last_range.unwrap() < entry.range);
+                    debug_assert!(last_range.unwrap() < entry.range);
                 }
                 last_range = Some(entry.range);
 
@@ -321,10 +321,10 @@ impl<'a, F: Function> Env<'a, F> {
                     );
                     let src_bundle =
                         self.ranges[self.vregs[src_vreg.vreg()].ranges[0].index.index()].bundle;
-                    assert!(src_bundle.is_valid());
+                    debug_assert!(src_bundle.is_valid());
                     let dest_bundle =
                         self.ranges[self.vregs[dst_vreg.vreg()].ranges[0].index.index()].bundle;
-                    assert!(dest_bundle.is_valid());
+                    debug_assert!(dest_bundle.is_valid());
                     self.merge_bundles(/* from */ dest_bundle, /* to */ src_bundle);
                 }
             }
@@ -339,10 +339,10 @@ impl<'a, F: Function> Env<'a, F> {
                 from_vreg.index()
             );
             let to_bundle = self.ranges[self.vregs[to_vreg.index()].ranges[0].index.index()].bundle;
-            assert!(to_bundle.is_valid());
+            debug_assert!(to_bundle.is_valid());
             let from_bundle =
                 self.ranges[self.vregs[from_vreg.index()].ranges[0].index.index()].bundle;
-            assert!(from_bundle.is_valid());
+            debug_assert!(from_bundle.is_valid());
             log::trace!(
                 " -> from bundle{} to bundle{}",
                 from_bundle.index(),
@@ -384,9 +384,9 @@ impl<'a, F: Function> Env<'a, F> {
             }
 
             let src_bundle = self.ranges[src.index()].bundle;
-            assert!(src_bundle.is_valid());
+            debug_assert!(src_bundle.is_valid());
             let dest_bundle = self.ranges[dst.index()].bundle;
-            assert!(dest_bundle.is_valid());
+            debug_assert!(dest_bundle.is_valid());
             self.stats.prog_move_merge_attempt += 1;
             if self.merge_bundles(/* from */ dest_bundle, /* to */ src_bundle) {
                 self.stats.prog_move_merge_success += 1;

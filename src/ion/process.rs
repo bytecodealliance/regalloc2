@@ -150,7 +150,7 @@ impl<'a, F: Function> Env<'a, F> {
 
                 // Otherwise, there is a conflict.
                 let preg_key = *preg_range_iter.peek().unwrap().0;
-                assert_eq!(preg_key, key); // Assert that this range overlaps.
+                debug_assert_eq!(preg_key, key); // Assert that this range overlaps.
                 let preg_range = preg_range_iter.next().unwrap().1;
 
                 log::trace!(" -> btree contains range {:?} that overlaps", preg_range);
@@ -410,7 +410,7 @@ impl<'a, F: Function> Env<'a, F> {
 
         let spillset = self.bundles[bundle.index()].spillset;
 
-        assert!(!self.bundles[bundle.index()].ranges.is_empty());
+        debug_assert!(!self.bundles[bundle.index()].ranges.is_empty());
         // Split point *at* start is OK; this means we peel off
         // exactly one use to create a minimal bundle.
         let bundle_start = self.bundles[bundle.index()]
@@ -419,9 +419,9 @@ impl<'a, F: Function> Env<'a, F> {
             .unwrap()
             .range
             .from;
-        assert!(split_at >= bundle_start);
+        debug_assert!(split_at >= bundle_start);
         let bundle_end = self.bundles[bundle.index()].ranges.last().unwrap().range.to;
-        assert!(split_at < bundle_end);
+        debug_assert!(split_at < bundle_end);
 
         // Is the split point *at* the start? If so, peel off the
         // first use: set the split point just after it, or just
@@ -471,7 +471,7 @@ impl<'a, F: Function> Env<'a, F> {
             }
         }
 
-        assert!(split_at > bundle_start && split_at < bundle_end);
+        debug_assert!(split_at > bundle_start && split_at < bundle_end);
 
         // We need to find which LRs fall on each side of the split,
         // which LR we need to split down the middle, then update the
@@ -516,7 +516,7 @@ impl<'a, F: Function> Env<'a, F> {
         // down the middle, replace it with a new LR and chop off the
         // end of the same LR in the original list.
         if split_at > new_lr_list[0].range.from {
-            assert_eq!(last_lr_in_old_bundle_idx, first_lr_in_new_bundle_idx);
+            debug_assert_eq!(last_lr_in_old_bundle_idx, first_lr_in_new_bundle_idx);
             let orig_lr = new_lr_list[0].index;
             let new_lr = self.create_liverange(CodeRange {
                 from: split_at,
@@ -749,7 +749,7 @@ impl<'a, F: Function> Env<'a, F> {
                 // We have to split right away. We'll find a point to
                 // split that would allow at least the first half of the
                 // split to be conflict-free.
-                assert!(
+                debug_assert!(
                     !self.minimal_bundle(bundle),
                     "Minimal bundle with conflict!"
                 );
@@ -932,7 +932,7 @@ impl<'a, F: Function> Env<'a, F> {
             );
 
             // If we reach here, we *must* have an option either to split or evict.
-            assert!(
+            debug_assert!(
                 lowest_cost_split_conflict_cost.is_some()
                     || lowest_cost_evict_conflict_cost.is_some()
             );

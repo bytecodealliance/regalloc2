@@ -79,7 +79,7 @@ impl Function for Func {
     }
 
     fn entry_block(&self) -> Block {
-        assert!(self.blocks.len() > 0);
+        debug_assert!(self.blocks.len() > 0);
         Block::new(0)
     }
 
@@ -237,7 +237,7 @@ fn choose_dominating_block(
     allow_self: bool,
     u: &mut Unstructured,
 ) -> ArbitraryResult<Block> {
-    assert!(block.is_valid());
+    debug_assert!(block.is_valid());
     let orig_block = block;
     loop {
         if (allow_self || block != orig_block) && bool::arbitrary(u)? {
@@ -445,7 +445,7 @@ impl Func {
                 if operands.len() > 1 && opts.reused_inputs && bool::arbitrary(u)? {
                     // Make the def a reused input.
                     let op = operands[0];
-                    assert_eq!(op.kind(), OperandKind::Def);
+                    debug_assert_eq!(op.kind(), OperandKind::Def);
                     let reused = u.int_in_range(1..=(operands.len() - 1))?;
                     operands[0] = Operand::new(
                         op.vreg(),

@@ -49,3 +49,9 @@ name = "ion_checker"
 path = "fuzz_targets/ion_checker.rs"
 test = false
 doc = false
+
+# Enable debug assertions and overflow checks when fuzzing
+[profile.release]
+debug = true
+debug-assertions = true
+overflow-checks = true
