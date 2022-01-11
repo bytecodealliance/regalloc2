@@ -1105,20 +1105,16 @@ pub enum Edit {
     /// register or a stack slot (spillslot). However, stack-to-stack
     /// moves will never be generated.
     ///
-    /// `to_vreg`, if defined, is useful as metadata: it indicates
-    /// that the moved value is a def of a new vreg.
-    ///
     /// `Move` edits will be generated even if src and dst allocation
     /// are the same if the vreg changes; this allows proper metadata
     /// tracking even when moves are elided.
-    Move {
-        from: Allocation,
-        to: Allocation,
-        to_vreg: Option<VReg>,
-    },
+    Move { from: Allocation, to: Allocation },
 
     /// Define a particular Allocation to contain a particular VReg. Useful
     /// for the checker.
+    ///
+    /// `DefAlloc` edits are only emitted when the `"checker"` Cargo feature is
+    /// enabled.
     DefAlloc { alloc: Allocation, vreg: VReg },
 }
 

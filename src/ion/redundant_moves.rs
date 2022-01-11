@@ -18,6 +18,7 @@ pub struct RedundantMoveEliminator {
 #[derive(Copy, Clone, Debug)]
 pub struct RedundantMoveAction {
     pub elide: bool,
+    #[cfg(feature = "checker")]
     pub def_alloc: Option<(Allocation, VReg)>,
 }
 
@@ -58,6 +59,7 @@ impl RedundantMoveEliminator {
                 .insert(to, RedundantMoveState::Orig(to_vreg.unwrap()));
             return RedundantMoveAction {
                 elide: true,
+                #[cfg(feature = "checker")]
                 def_alloc: Some((to, to_vreg.unwrap())),
             };
         }
@@ -111,7 +113,11 @@ impl RedundantMoveEliminator {
                 .push(to);
         }
 
-        RedundantMoveAction { elide, def_alloc }
+        RedundantMoveAction {
+            elide,
+            #[cfg(feature = "checker")]
+            def_alloc,
+        }
     }
 
     pub fn clear(&mut self) {

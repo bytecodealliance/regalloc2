@@ -599,17 +599,11 @@ impl<'a, F: Function> Checker<'a, F> {
     fn handle_edit(&mut self, block: Block, edit: &Edit) {
         log::trace!("checker: adding edit {:?}", edit);
         match edit {
-            &Edit::Move { from, to, to_vreg } => {
+            &Edit::Move { from, to } => {
                 self.bb_insts
                     .get_mut(&block)
                     .unwrap()
                     .push(CheckerInst::Move { into: to, from });
-                if let Some(vreg) = to_vreg {
-                    self.bb_insts
-                        .get_mut(&block)
-                        .unwrap()
-                        .push(CheckerInst::DefAlloc { alloc: to, vreg });
-                }
             }
             &Edit::DefAlloc { alloc, vreg } => {
                 self.bb_insts

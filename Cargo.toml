@@ -25,4 +25,6 @@ overflow-checks = true
 
 [features]
 default = []
-fuzzing = ["arbitrary"]
+checker = []
+fuzzing = ["arbitrary", "checker"]
+
