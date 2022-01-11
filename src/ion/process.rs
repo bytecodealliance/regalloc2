@@ -197,7 +197,7 @@ impl<'a, F: Function> Env<'a, F> {
         }
 
         // We can allocate! Add our ranges to the preg's BTree.
-        let preg = self.pregs[reg.index()].reg;
+        let preg = PReg::from_index(reg.index());
         log::trace!("  -> bundle {:?} assigned to preg {:?}", bundle, preg);
         self.bundles[bundle.index()].allocation = Allocation::reg(preg);
         for entry in &self.bundles[bundle.index()].ranges {

@@ -20,7 +20,7 @@ use super::{
 use crate::moves::ParallelMoves;
 use crate::{
     Allocation, Block, Edit, Function, Inst, InstPosition, OperandConstraint, OperandKind,
-    OperandPos, ProgPoint, RegClass, VReg,
+    OperandPos, PReg, ProgPoint, RegClass, VReg,
 };
 use smallvec::{smallvec, SmallVec};
 use std::fmt::Debug;
@@ -697,7 +697,7 @@ impl<'a, F: Function> Env<'a, F> {
         // Handle multi-fixed-reg constraints by copying.
         for fixup in std::mem::replace(&mut self.multi_fixed_reg_fixups, vec![]) {
             let from_alloc = self.get_alloc(fixup.pos.inst(), fixup.from_slot as usize);
-            let to_alloc = Allocation::reg(self.pregs[fixup.to_preg.index()].reg);
+            let to_alloc = Allocation::reg(PReg::from_index(fixup.to_preg.index()));
             log::trace!(
                 "multi-fixed-move constraint at {:?} from {} to {} for v{}",
                 fixup.pos,
@@ -715,7 +715,7 @@ impl<'a, F: Function> Env<'a, F> {
             self.set_alloc(
                 fixup.pos.inst(),
                 fixup.to_slot as usize,
-                Allocation::reg(self.pregs[fixup.to_preg.index()].reg),
+                Allocation::reg(PReg::from_index(fixup.to_preg.index())),
             );
         }
 

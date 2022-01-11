@@ -102,17 +102,10 @@ impl<'a, F: Function> Env<'a, F> {
         self.pregs.resize(
             PReg::NUM_INDEX,
             PRegData {
-                reg: PReg::invalid(),
                 allocations: LiveRangeSet::new(),
                 is_stack: false,
             },
         );
-        for i in 0..=PReg::MAX {
-            let preg_int = PReg::new(i, RegClass::Int);
-            self.pregs[preg_int.index()].reg = preg_int;
-            let preg_float = PReg::new(i, RegClass::Float);
-            self.pregs[preg_float.index()].reg = preg_float;
-        }
         for &preg in &self.env.fixed_stack_slots {
             self.pregs[preg.index()].is_stack = true;
         }
