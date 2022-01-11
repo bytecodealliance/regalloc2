@@ -1,7 +1,10 @@
 [package]
 name = "regalloc2"
 version = "0.0.1"
-authors = ["Chris Fallin <chris@cfallin.org>", "Mozilla SpiderMonkey Developers"]
+authors = [
+    "Chris Fallin <chris@cfallin.org>",
+    "Mozilla SpiderMonkey Developers",
+]
 edition = "2018"
 license = "Apache-2.0 WITH LLVM-exception"
 description = "Backtracking register allocator inspired from IonMonkey"
@@ -27,4 +30,3 @@ overflow-checks = true
 default = []
 checker = []
 fuzzing = ["arbitrary", "checker"]
-
