@@ -25,7 +25,7 @@ impl<'a, F: Function> Env<'a, F> {
             // Merge bundle into self -- trivial merge.
             return true;
         }
-        log::trace!(
+        trace!(
             "merging from bundle{} to bundle{}",
             from.index(),
             to.index()
@@ -35,7 +35,7 @@ impl<'a, F: Function> Env<'a, F> {
         let from_rc = self.spillsets[self.bundles[from.index()].spillset.index()].class;
         let to_rc = self.spillsets[self.bundles[to.index()].spillset.index()].class;
         if from_rc != to_rc {
-            log::trace!(" -> mismatching reg classes");
+            trace!(" -> mismatching reg classes");
             return false;
         }
 
@@ -43,7 +43,7 @@ impl<'a, F: Function> Env<'a, F> {
         if self.bundles[from.index()].allocation.is_some()
             || self.bundles[to.index()].allocation.is_some()
         {
-            log::trace!("one of the bundles is already assigned (pinned)");
+            trace!("one of the bundles is already assigned (pinned)");
             return false;
         }
 
@@ -70,7 +70,7 @@ impl<'a, F: Function> Env<'a, F> {
         while idx_from < ranges_from.len() && idx_to < ranges_to.len() {
             range_count += 1;
             if range_count > 200 {
-                log::trace!(
+                trace!(
                     "reached merge complexity (range_count = {}); exiting",
                     range_count
                 );
@@ -84,7 +84,7 @@ impl<'a, F: Function> Env<'a, F> {
                 idx_from += 1;
             } else {
                 // Overlap -- cannot merge.
-                log::trace!(
+                trace!(
                     " -> overlap between {:?} and {:?}, exiting",
                     ranges_from[idx_from].index,
                     ranges_to[idx_to].index
@@ -100,12 +100,12 @@ impl<'a, F: Function> Env<'a, F> {
             || self.bundles[to.index()].cached_fixed()
         {
             if self.merge_bundle_requirements(from, to).is_err() {
-                log::trace!(" -> conflicting requirements; aborting merge");
+                trace!(" -> conflicting requirements; aborting merge");
                 return false;
             }
         }
 
-        log::trace!(" -> committing to merge");
+        trace!(" -> committing to merge");
 
         // If we reach here, then the bundles do not overlap -- merge
         // them!  We do this with a merge-sort-like scan over both
@@ -113,13 +113,13 @@ impl<'a, F: Function> Env<'a, F> {
         // `to` when we're done.
         if ranges_from.is_empty() {
             // `from` bundle is empty -- trivial merge.
-            log::trace!(" -> from bundle{} is empty; trivial merge", from.index());
+            trace!(" -> from bundle{} is empty; trivial merge", from.index());
             return true;
         }
         if ranges_to.is_empty() {
             // `to` bundle is empty -- just move the list over from
             // `from` and set `bundle` up-link on all ranges.
-            log::trace!(" -> to bundle{} is empty; trivial merge", to.index());
+            trace!(" -> to bundle{} is empty; trivial merge", to.index());
             let list = std::mem::replace(&mut self.bundles[from.index()].ranges, smallvec![]);
             for entry in &list {
                 self.ranges[entry.index.index()].bundle = to;
@@ -149,7 +149,7 @@ impl<'a, F: Function> Env<'a, F> {
             return true;
         }
 
-        log::trace!(
+        trace!(
             "merging: ranges_from = {:?} ranges_to = {:?}",
             ranges_from,
             ranges_to
@@ -170,7 +170,7 @@ impl<'a, F: Function> Env<'a, F> {
             .sort_unstable_by_key(|entry| entry.range.from);
 
         if self.annotations_enabled {
-            log::trace!("merging: merged = {:?}", self.bundles[to.index()].ranges);
+            trace!("merging: merged = {:?}", self.bundles[to.index()].ranges);
             let mut last_range = None;
             for i in 0..self.bundles[to.index()].ranges.len() {
                 let entry = self.bundles[to.index()].ranges[i];
@@ -192,7 +192,7 @@ impl<'a, F: Function> Env<'a, F> {
                     );
                 }
 
-                log::trace!(
+                trace!(
                     " -> merged result for bundle{}: range{}",
                     to.index(),
                     entry.index.index(),
@@ -225,7 +225,7 @@ impl<'a, F: Function> Env<'a, F> {
 
     pub fn merge_vreg_bundles(&mut self) {
         // Create a bundle for every vreg, initially.
-        log::trace!("merge_vreg_bundles: creating vreg bundles");
+        trace!("merge_vreg_bundles: creating vreg bundles");
         for vreg in 0..self.vregs.len() {
             let vreg = VRegIndex::new(vreg);
             if self.vregs[vreg.index()].ranges.is_empty() {
@@ -251,9 +251,9 @@ impl<'a, F: Function> Env<'a, F> {
 
             let bundle = self.create_bundle();
             self.bundles[bundle.index()].ranges = self.vregs[vreg.index()].ranges.clone();
-            log::trace!("vreg v{} gets bundle{}", vreg.index(), bundle.index());
+            trace!("vreg v{} gets bundle{}", vreg.index(), bundle.index());
             for entry in &self.bundles[bundle.index()].ranges {
-                log::trace!(
+                trace!(
                     " -> with LR range{}: {:?}",
                     entry.index.index(),
                     entry.range
@@ -314,7 +314,7 @@ impl<'a, F: Function> Env<'a, F> {
                         continue;
                     }
 
-                    log::trace!(
+                    trace!(
                         "trying to merge reused-input def: src {} to dst {}",
                         src_vreg,
                         dst_vreg
@@ -335,7 +335,7 @@ impl<'a, F: Function> Env<'a, F> {
             let BlockparamOut {
                 from_vreg, to_vreg, ..
             } = self.blockparam_outs[i];
-            log::trace!(
+            trace!(
                 "trying to merge blockparam v{} with input v{}",
                 to_vreg.index(),
                 from_vreg.index()
@@ -345,7 +345,7 @@ impl<'a, F: Function> Env<'a, F> {
             let from_bundle =
                 self.ranges[self.vregs[from_vreg.index()].ranges[0].index.index()].bundle;
             debug_assert!(from_bundle.is_valid());
-            log::trace!(
+            trace!(
                 " -> from bundle{} to bundle{}",
                 from_bundle.index(),
                 to_bundle.index()
@@ -356,10 +356,10 @@ impl<'a, F: Function> Env<'a, F> {
         // Attempt to merge move srcs/dsts.
         for i in 0..self.prog_move_merges.len() {
             let (src, dst) = self.prog_move_merges[i];
-            log::trace!("trying to merge move src LR {:?} to dst LR {:?}", src, dst);
+            trace!("trying to merge move src LR {:?} to dst LR {:?}", src, dst);
             let src = self.resolve_merged_lr(src);
             let dst = self.resolve_merged_lr(dst);
-            log::trace!(
+            trace!(
                 "resolved LR-construction merging chains: move-merge is now src LR {:?} to dst LR {:?}",
                 src,
                 dst
@@ -395,7 +395,7 @@ impl<'a, F: Function> Env<'a, F> {
             }
         }
 
-        log::trace!("done merging bundles");
+        trace!("done merging bundles");
     }
 
     pub fn resolve_merged_lr(&self, mut lr: LiveRangeIndex) -> LiveRangeIndex {
@@ -419,14 +419,14 @@ impl<'a, F: Function> Env<'a, F> {
 
     pub fn queue_bundles(&mut self) {
         for bundle in 0..self.bundles.len() {
-            log::trace!("enqueueing bundle{}", bundle);
+            trace!("enqueueing bundle{}", bundle);
             if self.bundles[bundle].ranges.is_empty() {
-                log::trace!(" -> no ranges; skipping");
+                trace!(" -> no ranges; skipping");
                 continue;
             }
             let bundle = LiveBundleIndex::new(bundle);
             let prio = self.compute_bundle_prio(bundle);
-            log::trace!(" -> prio {}", prio);
+            trace!(" -> prio {}", prio);
             self.bundles[bundle.index()].prio = prio;
             self.recompute_bundle_properties(bundle);
             self.allocation_queue

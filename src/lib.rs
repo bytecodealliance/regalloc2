@@ -12,6 +12,16 @@
 
 #![allow(dead_code)]
 
+// Even when trace logging is disabled, the trace macro has a significant
+// performance cost so we disable it in release builds.
+macro_rules! trace {
+    ($($tt:tt)*) => {
+        if cfg!(debug_assertions) {
+            ::log::trace!($($tt)*);
+        }
+    };
+}
+
 pub(crate) mod cfg;
 pub(crate) mod domtree;
 pub mod indexset;

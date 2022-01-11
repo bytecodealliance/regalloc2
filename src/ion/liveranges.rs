@@ -179,7 +179,7 @@ impl<'a, F: Function> Env<'a, F> {
     ///
     /// Returns the liverange that contains the given range.
     pub fn add_liverange_to_vreg(&mut self, vreg: VRegIndex, range: CodeRange) -> LiveRangeIndex {
-        log::trace!("add_liverange_to_vreg: vreg {:?} range {:?}", vreg, range);
+        trace!("add_liverange_to_vreg: vreg {:?} range {:?}", vreg, range);
 
         // Invariant: as we are building liveness information, we
         // *always* process instructions bottom-to-top, and as a
@@ -246,7 +246,7 @@ impl<'a, F: Function> Env<'a, F> {
         );
         u.weight = weight.to_bits();
 
-        log::trace!(
+        trace!(
             "insert use {:?} into lr {:?} with weight {:?}",
             u,
             into,
@@ -262,7 +262,7 @@ impl<'a, F: Function> Env<'a, F> {
         // Update stats.
         let range_weight = self.ranges[into.index()].uses_spill_weight() + weight;
         self.ranges[into.index()].set_uses_spill_weight(range_weight);
-        log::trace!(
+        trace!(
             "  -> now range has weight {:?}",
             self.ranges[into.index()].uses_spill_weight(),
         );
@@ -282,7 +282,7 @@ impl<'a, F: Function> Env<'a, F> {
     }
 
     pub fn add_liverange_to_preg(&mut self, range: CodeRange, reg: PReg) {
-        log::trace!("adding liverange to preg: {:?} to {}", range, reg);
+        trace!("adding liverange to preg: {:?} to {}", range, reg);
         let preg_idx = PRegIndex::new(reg.index());
         self.pregs[preg_idx.index()]
             .allocations
@@ -316,12 +316,12 @@ impl<'a, F: Function> Env<'a, F> {
             workqueue_set.remove(&block);
             let insns = self.func.block_insns(block);
 
-            log::trace!("computing liveins for block{}", block.index());
+            trace!("computing liveins for block{}", block.index());
 
             self.stats.livein_iterations += 1;
 
             let mut live = self.liveouts[block.index()].clone();
-            log::trace!(" -> initial liveout set: {:?}", live);
+            trace!(" -> initial liveout set: {:?}", live);
 
             // Include outgoing blockparams in the initial live set.
             if self.func.is_branch(insns.last()) {
@@ -342,7 +342,7 @@ impl<'a, F: Function> Env<'a, F> {
                     for op in self.func.inst_operands(inst) {
                         if op.pos() == *pos {
                             let was_live = live.get(op.vreg().vreg());
-                            log::trace!("op {:?} was_live = {}", op, was_live);
+                            trace!("op {:?} was_live = {}", op, was_live);
                             match op.kind() {
                                 OperandKind::Use | OperandKind::Mod => {
                                     live.set(op.vreg().vreg(), true);
@@ -368,7 +368,7 @@ impl<'a, F: Function> Env<'a, F> {
                 }
             }
 
-            log::trace!("computed liveins at block{}: {:?}", block.index(), live);
+            trace!("computed liveins at block{}: {:?}", block.index(), live);
             self.liveins[block.index()] = live;
         }
 
@@ -380,7 +380,7 @@ impl<'a, F: Function> Env<'a, F> {
             .next()
             .is_some()
         {
-            log::trace!(
+            trace!(
                 "non-empty liveins to entry block: {:?}",
                 self.liveins[self.func.entry_block().index()]
             );
@@ -449,7 +449,7 @@ impl<'a, F: Function> Env<'a, F> {
                     from: self.cfginfo.block_entry[block.index()],
                     to: self.cfginfo.block_exit[block.index()].next(),
                 };
-                log::trace!(
+                trace!(
                     "vreg {:?} live at end of block --> create range {:?}",
                     VRegIndex::new(vreg),
                     range
@@ -499,7 +499,7 @@ impl<'a, F: Function> Env<'a, F> {
                     // We can completely skip the move if it is
                     // trivial (vreg to same vreg).
                     if src.vreg() != dst.vreg() {
-                        log::trace!(" -> move inst{}: src {} -> dst {}", inst.index(), src, dst);
+                        trace!(" -> move inst{}: src {} -> dst {}", inst.index(), src, dst);
 
                         debug_assert_eq!(src.class(), dst.class());
                         debug_assert_eq!(src.kind(), OperandKind::Use);
@@ -561,9 +561,7 @@ impl<'a, F: Function> Env<'a, F> {
                         else if self.vregs[src.vreg().vreg()].is_pinned
                             || self.vregs[dst.vreg().vreg()].is_pinned
                         {
-                            log::trace!(
-                                " -> exactly one of src/dst is pinned; converting to ghost use"
-                            );
+                            trace!(" -> exactly one of src/dst is pinned; converting to ghost use");
                             let (preg, vreg, pinned_vreg, kind, pos, progpoint) =
                                 if self.vregs[src.vreg().vreg()].is_pinned {
                                     // Source is pinned: this is a def on the dst with a pinned preg.
@@ -589,7 +587,7 @@ impl<'a, F: Function> Env<'a, F> {
                             let constraint = OperandConstraint::FixedReg(preg);
                             let operand = Operand::new(vreg, constraint, kind, pos);
 
-                            log::trace!(
+                            trace!(
                                 concat!(
                                     " -> preg {:?} vreg {:?} kind {:?} ",
                                     "pos {:?} progpoint {:?} constraint {:?} operand {:?}"
@@ -616,9 +614,9 @@ impl<'a, F: Function> Env<'a, F> {
                                     VRegIndex::new(vreg.vreg()),
                                     CodeRange { from, to },
                                 );
-                                log::trace!("   -> dead; created LR");
+                                trace!("   -> dead; created LR");
                             }
-                            log::trace!("  -> LR {:?}", lr);
+                            trace!("  -> LR {:?}", lr);
 
                             self.insert_use_into_liverange(
                                 lr,
@@ -652,7 +650,7 @@ impl<'a, F: Function> Env<'a, F> {
                             // (this is the last use), start it
                             // before.
                             if kind == OperandKind::Def {
-                                log::trace!(" -> src on pinned vreg {:?}", pinned_vreg);
+                                trace!(" -> src on pinned vreg {:?}", pinned_vreg);
                                 // The *other* vreg is a def, so the pinned-vreg
                                 // mention is a use. If already live,
                                 // end the existing LR just *after*
@@ -666,7 +664,7 @@ impl<'a, F: Function> Env<'a, F> {
                                 if live.get(pinned_vreg.vreg()) {
                                     let pinned_lr = vreg_ranges[pinned_vreg.vreg()];
                                     let orig_start = self.ranges[pinned_lr.index()].range.from;
-                                    log::trace!(
+                                    trace!(
                                         " -> live with LR {:?}; truncating to start at {:?}",
                                         pinned_lr,
                                         progpoint.next()
@@ -680,7 +678,7 @@ impl<'a, F: Function> Env<'a, F> {
                                         },
                                     );
                                     vreg_ranges[pinned_vreg.vreg()] = new_lr;
-                                    log::trace!(" -> created LR {:?} with remaining range from {:?} to {:?}", new_lr, orig_start, progpoint);
+                                    trace!(" -> created LR {:?} with remaining range from {:?} to {:?}", new_lr, orig_start, progpoint);
 
                                     // Add an edit right now to indicate that at
                                     // this program point, the given
@@ -714,10 +712,7 @@ impl<'a, F: Function> Env<'a, F> {
                                         );
                                         vreg_ranges[pinned_vreg.vreg()] = new_lr;
                                         live.set(pinned_vreg.vreg(), true);
-                                        log::trace!(
-                                            " -> was not live; created new LR {:?}",
-                                            new_lr
-                                        );
+                                        trace!(" -> was not live; created new LR {:?}", new_lr);
                                     }
 
                                     // Add an edit right now to indicate that at
@@ -734,7 +729,7 @@ impl<'a, F: Function> Env<'a, F> {
                                     );
                                 }
                             } else {
-                                log::trace!(" -> dst on pinned vreg {:?}", pinned_vreg);
+                                trace!(" -> dst on pinned vreg {:?}", pinned_vreg);
                                 // The *other* vreg is a use, so the pinned-vreg
                                 // mention is a def. Truncate its LR
                                 // just *after* the `progpoint`
@@ -742,7 +737,7 @@ impl<'a, F: Function> Env<'a, F> {
                                 if live.get(pinned_vreg.vreg()) {
                                     let pinned_lr = vreg_ranges[pinned_vreg.vreg()];
                                     self.ranges[pinned_lr.index()].range.from = progpoint.next();
-                                    log::trace!(
+                                    trace!(
                                         " -> was live with LR {:?}; truncated start to {:?}",
                                         pinned_lr,
                                         progpoint.next()
@@ -842,14 +837,14 @@ impl<'a, F: Function> Env<'a, F> {
                                     VRegIndex::new(dst.vreg().vreg()),
                                     CodeRange { from, to },
                                 );
-                                log::trace!(" -> invalid LR for def; created {:?}", dst_lr);
+                                trace!(" -> invalid LR for def; created {:?}", dst_lr);
                             }
-                            log::trace!(" -> has existing LR {:?}", dst_lr);
+                            trace!(" -> has existing LR {:?}", dst_lr);
                             // Trim the LR to start here.
                             if self.ranges[dst_lr.index()].range.from
                                 == self.cfginfo.block_entry[block.index()]
                             {
-                                log::trace!(" -> started at block start; trimming to {:?}", pos);
+                                trace!(" -> started at block start; trimming to {:?}", pos);
                                 self.ranges[dst_lr.index()].range.from = pos;
                             }
                             self.ranges[dst_lr.index()].set_flag(LiveRangeFlag::StartsAtDef);
@@ -876,7 +871,7 @@ impl<'a, F: Function> Env<'a, F> {
                                 vreg_ranges[src.vreg().vreg()]
                             };
 
-                            log::trace!(" -> src LR {:?}", src_lr);
+                            trace!(" -> src LR {:?}", src_lr);
 
                             // Add to live-set.
                             let src_is_dead_after_move = !live.get(src.vreg().vreg());
@@ -929,7 +924,7 @@ impl<'a, F: Function> Env<'a, F> {
                             continue;
                         }
 
-                        log::trace!(
+                        trace!(
                             "processing inst{} operand at {:?}: {:?}",
                             inst.index(),
                             pos,
@@ -938,14 +933,14 @@ impl<'a, F: Function> Env<'a, F> {
 
                         match operand.kind() {
                             OperandKind::Def | OperandKind::Mod => {
-                                log::trace!("Def of {} at {:?}", operand.vreg(), pos);
+                                trace!("Def of {} at {:?}", operand.vreg(), pos);
 
                                 // Fill in vreg's actual data.
                                 self.vreg_regs[operand.vreg().vreg()] = operand.vreg();
 
                                 // Get or create the LiveRange.
                                 let mut lr = vreg_ranges[operand.vreg().vreg()];
-                                log::trace!(" -> has existing LR {:?}", lr);
+                                trace!(" -> has existing LR {:?}", lr);
                                 // If there was no liverange (dead def), create a trivial one.
                                 if !live.get(operand.vreg().vreg()) {
                                     let from = match operand.kind() {
@@ -962,7 +957,7 @@ impl<'a, F: Function> Env<'a, F> {
                                         VRegIndex::new(operand.vreg().vreg()),
                                         CodeRange { from, to },
                                     );
-                                    log::trace!(" -> invalid; created {:?}", lr);
+                                    trace!(" -> invalid; created {:?}", lr);
                                     vreg_ranges[operand.vreg().vreg()] = lr;
                                     live.set(operand.vreg().vreg(), true);
                                 }
@@ -979,10 +974,7 @@ impl<'a, F: Function> Env<'a, F> {
                                     if self.ranges[lr.index()].range.from
                                         == self.cfginfo.block_entry[block.index()]
                                     {
-                                        log::trace!(
-                                            " -> started at block start; trimming to {:?}",
-                                            pos
-                                        );
+                                        trace!(" -> started at block start; trimming to {:?}", pos);
                                         self.ranges[lr.index()].range.from = pos;
                                     }
 
@@ -1011,7 +1003,7 @@ impl<'a, F: Function> Env<'a, F> {
                                 }
                                 debug_assert!(lr.is_valid());
 
-                                log::trace!("Use of {:?} at {:?} -> {:?}", operand, pos, lr,);
+                                trace!("Use of {:?} at {:?} -> {:?}", operand, pos, lr,);
 
                                 self.insert_use_into_liverange(lr, Use::new(operand, pos, i as u8));
 
@@ -1023,11 +1015,11 @@ impl<'a, F: Function> Env<'a, F> {
                 }
 
                 if self.func.requires_refs_on_stack(inst) {
-                    log::trace!("inst{} is safepoint", inst.index());
+                    trace!("inst{} is safepoint", inst.index());
                     self.safepoints.push(inst);
                     for vreg in live.iter() {
                         if let Some(safepoints) = self.safepoints_per_vreg.get_mut(&vreg) {
-                            log::trace!("vreg v{} live at safepoint inst{}", vreg, inst.index());
+                            trace!("vreg v{} live at safepoint inst{}", vreg, inst.index());
                             safepoints.insert(inst);
                         }
                     }
@@ -1124,7 +1116,7 @@ impl<'a, F: Function> Env<'a, F> {
                         OperandPos::Early,
                     );
 
-                    log::trace!(
+                    trace!(
                         "Safepoint-induced stack use of {:?} at {:?} -> {:?}",
                         operand,
                         pos,
@@ -1154,8 +1146,8 @@ impl<'a, F: Function> Env<'a, F> {
         self.prog_move_srcs.sort_unstable_by_key(|(pos, _)| *pos);
         self.prog_move_dsts.sort_unstable_by_key(|(pos, _)| *pos);
 
-        log::trace!("prog_move_srcs = {:?}", self.prog_move_srcs);
-        log::trace!("prog_move_dsts = {:?}", self.prog_move_dsts);
+        trace!("prog_move_srcs = {:?}", self.prog_move_srcs);
+        trace!("prog_move_dsts = {:?}", self.prog_move_dsts);
 
         self.stats.initial_liverange_count = self.ranges.len();
         self.stats.blockparam_ins_count = self.blockparam_ins.len();
@@ -1177,7 +1169,7 @@ impl<'a, F: Function> Env<'a, F> {
             for range_idx in 0..self.vregs[vreg].ranges.len() {
                 let entry = self.vregs[vreg].ranges[range_idx];
                 let range = entry.index;
-                log::trace!(
+                trace!(
                     "multi-fixed-reg cleanup: vreg {:?} range {:?}",
                     VRegIndex::new(vreg),
                     range,
@@ -1246,7 +1238,7 @@ impl<'a, F: Function> Env<'a, F> {
                         if let OperandConstraint::FixedReg(preg) = u.operand.constraint() {
                             let vreg_idx = VRegIndex::new(u.operand.vreg().vreg());
                             let preg_idx = PRegIndex::new(preg.index());
-                            log::trace!(
+                            trace!(
                                 "at pos {:?}, vreg {:?} has fixed constraint to preg {:?}",
                                 u.pos,
                                 vreg_idx,
@@ -1265,7 +1257,7 @@ impl<'a, F: Function> Env<'a, F> {
                                 continue;
                             }
 
-                            log::trace!(" -> duplicate; switching to constraint Any");
+                            trace!(" -> duplicate; switching to constraint Any");
                             self.multi_fixed_reg_fixups.push(MultiFixedRegFixup {
                                 pos: u.pos,
                                 from_slot: source_slot,
@@ -1279,11 +1271,7 @@ impl<'a, F: Function> Env<'a, F> {
                                 u.operand.kind(),
                                 u.operand.pos(),
                             );
-                            log::trace!(
-                                " -> extra clobber {} at inst{}",
-                                preg,
-                                u.pos.inst().index()
-                            );
+                            trace!(" -> extra clobber {} at inst{}", preg, u.pos.inst().index());
                             extra_clobbers.push((preg, u.pos.inst()));
                         }
                     }

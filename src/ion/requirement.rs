@@ -71,21 +71,21 @@ impl<'a, F: Function> Env<'a, F> {
         bundle: LiveBundleIndex,
     ) -> Result<Requirement, RequirementConflictAt> {
         let mut req = Requirement::Any;
-        log::trace!("compute_requirement: {:?}", bundle);
+        trace!("compute_requirement: {:?}", bundle);
         let ranges = &self.bundles[bundle.index()].ranges;
         for entry in ranges {
-            log::trace!(" -> LR {:?}", entry.index);
+            trace!(" -> LR {:?}", entry.index);
             for u in &self.ranges[entry.index.index()].uses {
-                log::trace!("  -> use {:?}", u);
+                trace!("  -> use {:?}", u);
                 let r = self.requirement_from_operand(u.operand);
                 req = req.merge(r).map_err(|_| {
-                    log::trace!("     -> conflict");
+                    trace!("     -> conflict");
                     RequirementConflictAt(u.pos)
                 })?;
-                log::trace!("     -> req {:?}", req);
+                trace!("     -> req {:?}", req);
             }
         }
-        log::trace!(" -> final: {:?}", req);
+        trace!(" -> final: {:?}", req);
         Ok(req)
     }
 

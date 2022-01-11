@@ -191,7 +191,7 @@ impl CheckerValue {
                 CheckerValue::Reg(r1, ref1)
             }
             _ => {
-                log::trace!("{:?} and {:?} meet to Conflicted", self, other);
+                trace!("{:?} and {:?} meet to Conflicted", self, other);
                 CheckerValue::Conflicted
             }
         }
@@ -322,7 +322,7 @@ impl CheckerState {
                         .get(alloc)
                         .cloned()
                         .unwrap_or(Default::default());
-                    log::trace!(
+                    trace!(
                         "checker: checkinst {:?}: op {:?}, alloc {:?}, checker value {:?}",
                         checkinst,
                         op,
@@ -339,7 +339,7 @@ impl CheckerState {
                         .get(&alloc)
                         .cloned()
                         .unwrap_or(Default::default());
-                    log::trace!(
+                    trace!(
                         "checker: checkinst {:?}: safepoint slot {}, checker value {:?}",
                         checkinst,
                         alloc,
@@ -372,7 +372,7 @@ impl CheckerState {
                     .get(&from)
                     .cloned()
                     .unwrap_or(Default::default());
-                log::trace!(
+                trace!(
                     "checker: checkinst {:?} updating: move {:?} -> {:?} val {:?}",
                     checkinst,
                     from,
@@ -534,7 +534,7 @@ impl<'a, F: Function> Checker<'a, F> {
     /// Build the list of checker instructions based on the given func
     /// and allocation results.
     pub fn prepare(&mut self, out: &Output) {
-        log::trace!("checker: out = {:?}", out);
+        trace!("checker: out = {:?}", out);
         // Preprocess safepoint stack-maps into per-inst vecs.
         let mut safepoint_slots: HashMap<Inst, Vec<Allocation>> = HashMap::new();
         for &(progpoint, slot) in &out.safepoint_slots {
@@ -591,13 +591,13 @@ impl<'a, F: Function> Checker<'a, F> {
                 allocs,
                 clobbers,
             };
-            log::trace!("checker: adding inst {:?}", checkinst);
+            trace!("checker: adding inst {:?}", checkinst);
             self.bb_insts.get_mut(&block).unwrap().push(checkinst);
         }
     }
 
     fn handle_edit(&mut self, block: Block, edit: &Edit) {
-        log::trace!("checker: adding edit {:?}", edit);
+        trace!("checker: adding edit {:?}", edit);
         match edit {
             &Edit::Move { from, to } => {
                 self.bb_insts
@@ -628,10 +628,10 @@ impl<'a, F: Function> Checker<'a, F> {
             let block = queue.pop_front().unwrap();
             queue_set.remove(&block);
             let mut state = self.bb_in.get(&block).cloned().unwrap();
-            log::trace!("analyze: block {} has state {:?}", block.index(), state);
+            trace!("analyze: block {} has state {:?}", block.index(), state);
             for inst in self.bb_insts.get(&block).unwrap() {
                 state.update(inst, self);
-                log::trace!("analyze: inst {:?} -> state {:?}", inst, state);
+                trace!("analyze: inst {:?} -> state {:?}", inst, state);
             }
 
             for &succ in self.f.block_succs(block) {
@@ -640,7 +640,7 @@ impl<'a, F: Function> Checker<'a, F> {
                 new_state.meet_with(cur_succ_in);
                 let changed = &new_state != cur_succ_in;
                 if changed {
-                    log::trace!(
+                    trace!(
                         "analyze: block {} state changed from {:?} to {:?}; pushing onto queue",
                         succ.index(),
                         cur_succ_in,
@@ -665,12 +665,12 @@ impl<'a, F: Function> Checker<'a, F> {
             let mut state = input.clone();
             for inst in self.bb_insts.get(block).unwrap() {
                 if let Err(e) = state.check(InstPosition::Before, inst) {
-                    log::trace!("Checker error: {:?}", e);
+                    trace!("Checker error: {:?}", e);
                     errors.push(e);
                 }
                 state.update(inst, self);
                 if let Err(e) = state.check(InstPosition::After, inst) {
-                    log::trace!("Checker error: {:?}", e);
+                    trace!("Checker error: {:?}", e);
                     errors.push(e);
                 }
             }
@@ -689,20 +689,20 @@ impl<'a, F: Function> Checker<'a, F> {
         self.analyze();
         let result = self.find_errors();
 
-        log::trace!("=== CHECKER RESULT ===");
+        trace!("=== CHECKER RESULT ===");
         fn print_state(state: &CheckerState) {
             let mut s = vec![];
             for (alloc, state) in &state.allocations {
                 s.push(format!("{} := {}", alloc, state));
             }
-            log::trace!("    {{ {} }}", s.join(", "))
+            trace!("    {{ {} }}", s.join(", "))
         }
         for vreg in self.f.reftype_vregs() {
-            log::trace!("  REF: {}", vreg);
+            trace!("  REF: {}", vreg);
         }
         for bb in 0..self.f.num_blocks() {
             let bb = Block::new(bb);
-            log::trace!("block{}:", bb.index());
+            trace!("block{}:", bb.index());
             let insts = self.bb_insts.get(&bb).unwrap();
             let mut state = self.bb_in.get(&bb).unwrap().clone();
             print_state(&state);
@@ -714,7 +714,7 @@ impl<'a, F: Function> Checker<'a, F> {
                         ref allocs,
                         ref clobbers,
                     } => {
-                        log::trace!(
+                        trace!(
                             "  inst{}: {:?} ({:?}) clobbers:{:?}",
                             inst.index(),
                             operands,
@@ -723,17 +723,17 @@ impl<'a, F: Function> Checker<'a, F> {
                         );
                     }
                     &CheckerInst::Move { from, into } => {
-                        log::trace!("    {} -> {}", from, into);
+                        trace!("    {} -> {}", from, into);
                     }
                     &CheckerInst::DefAlloc { alloc, vreg } => {
-                        log::trace!("    defalloc: {}:{}", vreg, alloc);
+                        trace!("    defalloc: {}:{}", vreg, alloc);
                     }
                     &CheckerInst::Safepoint { ref allocs, .. } => {
                         let mut slotargs = vec![];
                         for &slot in allocs {
                             slotargs.push(format!("{}", slot));
                         }
-                        log::trace!("    safepoint: {}", slotargs.join(", "));
+                        trace!("    safepoint: {}", slotargs.join(", "));
                     }
                 }
                 state.update(inst, &self);

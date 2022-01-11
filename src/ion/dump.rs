@@ -5,16 +5,16 @@ use crate::{Block, Function, ProgPoint};
 
 impl<'a, F: Function> Env<'a, F> {
     pub fn dump_state(&self) {
-        log::trace!("Bundles:");
+        trace!("Bundles:");
         for (i, b) in self.bundles.iter().enumerate() {
-            log::trace!(
+            trace!(
                 "bundle{}: spillset={:?} alloc={:?}",
                 i,
                 b.spillset,
                 b.allocation
             );
             for entry in &b.ranges {
-                log::trace!(
+                trace!(
                     " * range {:?} -- {:?}: range{}",
                     entry.range.from,
                     entry.range.to,
@@ -22,11 +22,11 @@ impl<'a, F: Function> Env<'a, F> {
                 );
             }
         }
-        log::trace!("VRegs:");
+        trace!("VRegs:");
         for (i, v) in self.vregs.iter().enumerate() {
-            log::trace!("vreg{}:", i);
+            trace!("vreg{}:", i);
             for entry in &v.ranges {
-                log::trace!(
+                trace!(
                     " * range {:?} -- {:?}: range{}",
                     entry.range.from,
                     entry.range.to,
@@ -34,9 +34,9 @@ impl<'a, F: Function> Env<'a, F> {
                 );
             }
         }
-        log::trace!("Ranges:");
+        trace!("Ranges:");
         for (i, r) in self.ranges.iter().enumerate() {
-            log::trace!(
+            trace!(
                 "range{}: range={:?} vreg={:?} bundle={:?} weight={:?}",
                 i,
                 r.range,
@@ -45,7 +45,7 @@ impl<'a, F: Function> Env<'a, F> {
                 r.uses_spill_weight(),
             );
             for u in &r.uses {
-                log::trace!(" * use at {:?} (slot {}): {:?}", u.pos, u.slot, u.operand);
+                trace!(" * use at {:?} (slot {}): {:?}", u.pos, u.slot, u.operand);
             }
         }
     }
