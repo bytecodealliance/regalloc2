@@ -28,5 +28,12 @@ overflow-checks = true
 
 [features]
 default = []
+
+# Enables generation of DefAlloc edits for the checker.
 checker = []
-fuzzing = ["arbitrary", "checker"]
+
+# Enables detailed logging which can be somewhat expensive.
+trace-log = []
+
+# Exposes the internal API for fuzzing.
+fuzzing = ["arbitrary", "checker", "trace-log"]

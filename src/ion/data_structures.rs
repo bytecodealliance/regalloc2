@@ -604,7 +604,7 @@ pub struct Stats {
 // the most significant field to the least significant one.
 //
 // These work best when the fields are stored in reverse order in memory so that
-// they can be loaded with a single u64 load.
+// they can be loaded with a single u64 load on little-endian machines.
 #[inline(always)]
 pub fn u64_key(b: u32, a: u32) -> u64 {
     a as u64 | (b as u64) << 32

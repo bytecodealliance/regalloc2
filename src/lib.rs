@@ -16,7 +16,7 @@
 // performance cost so we disable it in release builds.
 macro_rules! trace {
     ($($tt:tt)*) => {
-        if cfg!(debug_assertions) {
+        if cfg!(feature = "trace-log") {
             ::log::trace!($($tt)*);
         }
     };
