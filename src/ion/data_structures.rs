@@ -543,3 +543,17 @@ pub struct Stats {
     pub halfmoves_count: usize,
     pub edits_count: usize,
 }
+
+// Helper function for generating sorting keys. The order of arguments is from
+// the most significant field to the least significant one.
+//
+// These work best when the fields are stored in reverse order in memory so that
+// they can be loaded with a single u64 load.
+#[inline(always)]
+pub fn u64_key(b: u32, a: u32) -> u64 {
+    a as u64 | (b as u64) << 32
+}
+#[inline(always)]
+pub fn u128_key(d: u32, c: u32, b: u32, a: u32) -> u128 {
+    a as u128 | (b as u128) << 32 | (c as u128) << 64 | (d as u128) << 96
+}

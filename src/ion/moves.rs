@@ -17,6 +17,7 @@ use super::{
     VRegIndex, SLOT_NONE,
 };
 
+use crate::ion::data_structures::u64_key;
 use crate::moves::ParallelMoves;
 use crate::{
     Allocation, Block, Edit, Function, Inst, InstPosition, OperandConstraint, OperandKind,
@@ -850,7 +851,7 @@ impl<'a, F: Function> Env<'a, F> {
         // resolve (see cases below).
         let mut i = 0;
         self.inserted_moves
-            .sort_unstable_by_key(|m| (m.pos.to_index(), m.prio));
+            .sort_unstable_by_key(|m| u64_key(m.pos.to_index(), m.prio as u32));
 
         // Redundant-move elimination state tracker.
         let mut redundant_moves = RedundantMoveEliminator::default();
@@ -1104,7 +1105,7 @@ impl<'a, F: Function> Env<'a, F> {
         // Add edits to describe blockparam locations too. This is
         // required by the checker. This comes after any edge-moves.
         self.blockparam_allocs
-            .sort_unstable_by_key(|&(block, idx, _, _)| (block, idx));
+            .sort_unstable_by_key(|&(block, idx, _, _)| u64_key(block.raw_u32(), idx));
         self.stats.blockparam_allocs_count = self.blockparam_allocs.len();
         let mut i = 0;
         while i < self.blockparam_allocs.len() {
@@ -1137,7 +1138,8 @@ impl<'a, F: Function> Env<'a, F> {
         // be a stable sort! We have to keep the order produced by the
         // parallel-move resolver for all moves within a single sort
         // key.
-        self.edits.sort_by_key(|&(pos, prio, _)| (pos, prio));
+        self.edits
+            .sort_by_key(|&(pos, prio, _)| u64_key(pos, prio as u32));
         self.stats.edits_count = self.edits.len();
 
         // Add debug annotations.

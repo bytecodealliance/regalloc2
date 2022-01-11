@@ -3,7 +3,7 @@
  * exception. See `LICENSE` for details.
  */
 
-use crate::Allocation;
+use crate::{ion::data_structures::u64_key, Allocation};
 use smallvec::{smallvec, SmallVec};
 
 pub type MoveVec<T> = SmallVec<[(Allocation, Allocation, T); 16]>;
@@ -53,7 +53,8 @@ impl<T: Clone + Copy + Default> ParallelMoves<T> {
 
         // Sort moves by source so that we can efficiently test for
         // presence.
-        self.parallel_moves.sort_by_key(|&(src, dst, _)| (src, dst));
+        self.parallel_moves
+            .sort_by_key(|&(src, dst, _)| u64_key(src.bits(), dst.bits()));
 
         // Do any dests overlap sources? If not, we can also just
         // return the list.

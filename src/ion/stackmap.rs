@@ -13,7 +13,7 @@
 //! Stackmap computation.
 
 use super::{Env, ProgPoint, VRegIndex};
-use crate::Function;
+use crate::{ion::data_structures::u64_key, Function};
 
 impl<'a, F: Function> Env<'a, F> {
     pub fn compute_stackmaps(&mut self) {
@@ -64,7 +64,8 @@ impl<'a, F: Function> Env<'a, F> {
             }
         }
 
-        self.safepoint_slots.sort_unstable();
+        self.safepoint_slots
+            .sort_unstable_by_key(|(progpoint, slot)| u64_key(progpoint.to_index(), slot.bits()));
         log::trace!("final safepoint slots info: {:?}", self.safepoint_slots);
     }
 }
