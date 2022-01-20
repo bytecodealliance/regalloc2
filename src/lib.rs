@@ -1119,13 +1119,6 @@ pub enum Edit {
     /// are the same if the vreg changes; this allows proper metadata
     /// tracking even when moves are elided.
     Move { from: Allocation, to: Allocation },
-
-    /// Define a particular Allocation to contain a particular VReg. Useful
-    /// for the checker.
-    ///
-    /// `DefAlloc` edits are only emitted when the `"checker"` Cargo feature is
-    /// enabled.
-    DefAlloc { alloc: Allocation, vreg: VReg },
 }
 
 /// Wrapper around either an original instruction or an inserted edit.

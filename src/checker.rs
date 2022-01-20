@@ -743,7 +743,6 @@ impl<'a, F: Function> Checker<'a, F> {
                     .unwrap()
                     .push(CheckerInst::Move { into: to, from });
             }
-            _ => {}
         }
     }
 

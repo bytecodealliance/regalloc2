@@ -18,8 +18,6 @@ pub struct RedundantMoveEliminator {
 #[derive(Copy, Clone, Debug)]
 pub struct RedundantMoveAction {
     pub elide: bool,
-    #[cfg(feature = "checker")]
-    pub def_alloc: Option<(Allocation, VReg)>,
 }
 
 impl RedundantMoveEliminator {
@@ -57,11 +55,7 @@ impl RedundantMoveEliminator {
             self.clear_alloc(to);
             self.allocs
                 .insert(to, RedundantMoveState::Orig(to_vreg.unwrap()));
-            return RedundantMoveAction {
-                elide: true,
-                #[cfg(feature = "checker")]
-                def_alloc: Some((to, to_vreg.unwrap())),
-            };
+            return RedundantMoveAction { elide: true };
         }
 
         let src_vreg = match from_state {
@@ -86,13 +80,6 @@ impl RedundantMoveEliminator {
         };
         trace!("      -> elide {}", elide);
 
-        let def_alloc = if dst_vreg != existing_dst_vreg && dst_vreg.is_some() {
-            Some((to, dst_vreg.unwrap()))
-        } else {
-            None
-        };
-        trace!("      -> def_alloc {:?}", def_alloc);
-
         // Invalidate all existing copies of `to` if `to` actually changed value.
         if !elide {
             self.clear_alloc(to);
@@ -113,11 +100,7 @@ impl RedundantMoveEliminator {
                 .push(to);
         }
 
-        RedundantMoveAction {
-            elide,
-            #[cfg(feature = "checker")]
-            def_alloc,
-        }
+        RedundantMoveAction { elide }
     }
 
     pub fn clear(&mut self) {
