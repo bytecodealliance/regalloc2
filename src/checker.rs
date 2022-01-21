@@ -45,11 +45,13 @@
 //!
 //! The analysis lattice is:
 //!
+//! ```plain
 //!                      Top (V)
 //!                         |
 //!                        𝒫(V)   // the Powerset of the set of virtual regs
 //!                         |
 //!                 Bottom ( ∅ )     // the empty set
+//! ```
 //!
 //! and the lattice ordering relation is the subset relation: S ≤ U
 //! iff S ⊆ U. The lattice meet-function is intersection.
