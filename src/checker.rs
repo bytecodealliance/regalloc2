@@ -199,27 +199,13 @@ impl CheckerValue {
     /// Meet function of the abstract-interpretation value
     /// lattice. Returns a boolean value indicating whether `self` was
     /// changed.
-    fn meet_with(&mut self, other: &CheckerValue) -> bool {
-        if self.universe {
+    fn meet_with(&mut self, other: &CheckerValue) {
+        if other.universe {
+            // Nothing.
+        } else if self.universe {
             *self = other.clone();
-            true
-        } else if other.universe {
-            false
         } else {
-            let mut remove_keys: SmallVec<[VReg; 4]> = smallvec![];
-            for vreg in &self.vregs {
-                if !other.vregs.contains(vreg) {
-                    // Not present in other; this is intersection, so
-                    // remove.
-                    remove_keys.push(vreg.clone());
-                }
-            }
-
-            for key in &remove_keys {
-                self.vregs.remove(key);
-            }
-
-            !remove_keys.is_empty()
+            self.vregs.retain(|vreg| other.vregs.contains(vreg));
         }
     }
 
@@ -280,23 +266,12 @@ impl std::fmt::Display for CheckerValue {
 fn merge_map<K: Copy + Clone + PartialEq + Eq + Hash>(
     into: &mut FxHashMap<K, CheckerValue>,
     from: &FxHashMap<K, CheckerValue>,
-) -> bool {
-    let mut changed = false;
-    let mut remove_keys: SmallVec<[K; 4]> = smallvec![];
+) {
+    into.retain(|k, _| from.contains_key(k));
     for (k, into_v) in into.iter_mut() {
-        if let Some(from_v) = from.get(k) {
-            changed |= into_v.meet_with(from_v);
-        } else {
-            remove_keys.push(k.clone());
-        }
+        let from_v = from.get(k).unwrap();
+        into_v.meet_with(from_v);
     }
-
-    for remove_key in &remove_keys {
-        into.remove(remove_key);
-    }
-    changed |= !remove_keys.is_empty();
-
-    changed
 }
 
 impl CheckerState {
@@ -306,15 +281,14 @@ impl CheckerState {
     }
 
     /// Merge this checker state with another at a CFG join-point.
-    fn meet_with(&mut self, other: &CheckerState) -> bool {
-        if self.top {
+    fn meet_with(&mut self, other: &CheckerState) {
+        if other.top {
+            // Nothing.
+        } else if self.top {
             *self = other.clone();
-            !self.top
-        } else if other.top {
-            false
         } else {
             self.top = false;
-            merge_map(&mut self.allocations, &other.allocations)
+            merge_map(&mut self.allocations, &other.allocations);
         }
     }
 
@@ -450,7 +424,7 @@ impl CheckerState {
                 );
                 self.allocations.insert(into, val);
             }
-            &CheckerInst::ParallelMove { ref into, ref from } => {
+            &CheckerInst::ParallelMove { ref moves } => {
                 // First, build map of actions for each vreg in an
                 // alloc. If an alloc has a reg V_i before a parallel
                 // move, then for each use of V_i as a source (V_i ->
@@ -460,7 +434,7 @@ impl CheckerState {
                 let mut additions: FxHashMap<VReg, SmallVec<[VReg; 2]>> = FxHashMap::default();
                 let mut deletions: FxHashSet<VReg> = FxHashSet::default();
 
-                for (&dest, &src) in into.iter().zip(from.iter()) {
+                for &(dest, src) in moves {
                     deletions.insert(dest);
                     additions
                         .entry(src)
@@ -596,7 +570,10 @@ pub(crate) enum CheckerInst {
     /// from all source vregs to all corresponding dest vregs,
     /// permitting overlap in the src and dest sets and doing all
     /// reads before any writes.
-    ParallelMove { into: Vec<VReg>, from: Vec<VReg> },
+    ParallelMove {
+        /// Vector of (dest, src) moves.
+        moves: Vec<(VReg, VReg)>,
+    },
 
     /// A regular instruction with fixed use and def slots. Contains
     /// both the original operands (as given to the regalloc) and the
@@ -725,12 +702,11 @@ impl<'a, F: Function> Checker<'a, F> {
                 let params = self.f.block_params(succ);
                 assert_eq!(args.len(), params.len());
                 if args.len() > 0 {
-                    self.edge_insts.get_mut(&(block, succ)).unwrap().push(
-                        CheckerInst::ParallelMove {
-                            into: params.iter().cloned().collect(),
-                            from: args.iter().cloned().collect(),
-                        },
-                    );
+                    let moves = params.iter().cloned().zip(args.iter().cloned()).collect();
+                    self.edge_insts
+                        .get_mut(&(block, succ))
+                        .unwrap()
+                        .push(CheckerInst::ParallelMove { moves });
                 }
             }
         }
@@ -898,8 +874,12 @@ impl<'a, F: Function> Checker<'a, F> {
                 let mut state = state.clone();
                 for edge_inst in self.edge_insts.get(&(bb, succ)).unwrap() {
                     match edge_inst {
-                        &CheckerInst::ParallelMove { ref from, ref into } => {
-                            trace!("    parallel_move {:?} -> {:?}", from, into);
+                        &CheckerInst::ParallelMove { ref moves } => {
+                            let moves = moves
+                                .iter()
+                                .map(|(dest, src)| format!("{} -> {}", src, dest))
+                                .collect::<Vec<_>>();
+                            trace!("    parallel_move {}", moves.join(", "));
                         }
                         _ => panic!("unexpected edge_inst: not a parallel move"),
                     }
