@@ -1017,59 +1017,28 @@ impl<'a, F: Function> Env<'a, F> {
                         }
                         if self.allocation_is_stack(src) && self.allocation_is_stack(dst) {
                             if !scratch_used_yet {
-                                self.add_move_edit(
-                                    pos_prio,
-                                    src,
-                                    Allocation::reg(scratch),
-                                    to_vreg,
-                                );
-                                self.add_move_edit(
-                                    pos_prio,
-                                    Allocation::reg(scratch),
-                                    dst,
-                                    to_vreg,
-                                );
+                                self.add_move_edit(pos_prio, src, Allocation::reg(scratch));
+                                self.add_move_edit(pos_prio, Allocation::reg(scratch), dst);
                             } else {
                                 debug_assert!(extra_slot.is_some());
                                 self.add_move_edit(
                                     pos_prio,
                                     Allocation::reg(scratch),
                                     extra_slot.unwrap(),
-                                    None,
                                 );
-                                self.add_move_edit(
-                                    pos_prio,
-                                    src,
-                                    Allocation::reg(scratch),
-                                    to_vreg,
-                                );
-                                self.add_move_edit(
-                                    pos_prio,
-                                    Allocation::reg(scratch),
-                                    dst,
-                                    to_vreg,
-                                );
+                                self.add_move_edit(pos_prio, src, Allocation::reg(scratch));
+                                self.add_move_edit(pos_prio, Allocation::reg(scratch), dst);
                                 self.add_move_edit(
                                     pos_prio,
                                     extra_slot.unwrap(),
                                     Allocation::reg(scratch),
-                                    None,
                                 );
                             }
                         } else {
-                            self.add_move_edit(pos_prio, src, dst, to_vreg);
+                            self.add_move_edit(pos_prio, src, dst);
                         }
                     } else {
                         trace!("    -> redundant move elided");
-                    }
-                    #[cfg(feature = "checker")]
-                    if let Some((alloc, vreg)) = action.def_alloc {
-                        trace!(
-                            "     -> converted to DefAlloc: alloc {} vreg {}",
-                            alloc,
-                            vreg
-                        );
-                        self.edits.push((pos_prio, Edit::DefAlloc { alloc, vreg }));
                     }
                 }
             }
@@ -1086,48 +1055,6 @@ impl<'a, F: Function> Env<'a, F> {
                 );
                 let action = redundant_moves.process_move(m.from_alloc, m.to_alloc, m.to_vreg);
                 debug_assert!(action.elide);
-                if let Some((alloc, vreg)) = action.def_alloc {
-                    trace!(" -> DefAlloc: alloc {} vreg {}", alloc, vreg);
-                    self.edits.push((pos_prio, Edit::DefAlloc { alloc, vreg }));
-                }
-            }
-        }
-
-        #[cfg(feature = "checker")]
-        {
-            // Add edits to describe blockparam locations too. This is
-            // required by the checker. This comes after any edge-moves.
-            use crate::ion::data_structures::u64_key;
-            self.blockparam_allocs
-                .sort_unstable_by_key(|&(block, idx, _, _)| u64_key(block.raw_u32(), idx));
-            self.stats.blockparam_allocs_count = self.blockparam_allocs.len();
-            let mut i = 0;
-            while i < self.blockparam_allocs.len() {
-                let start = i;
-                let block = self.blockparam_allocs[i].0;
-                while i < self.blockparam_allocs.len() && self.blockparam_allocs[i].0 == block {
-                    i += 1;
-                }
-                let params = &self.blockparam_allocs[start..i];
-                let vregs = params
-                    .iter()
-                    .map(|(_, _, vreg_idx, _)| self.vreg_regs[vreg_idx.index()])
-                    .collect::<Vec<_>>();
-                let allocs = params
-                    .iter()
-                    .map(|(_, _, _, alloc)| *alloc)
-                    .collect::<Vec<_>>();
-                debug_assert_eq!(vregs.len(), self.func.block_params(block).len());
-                debug_assert_eq!(allocs.len(), self.func.block_params(block).len());
-                for (vreg, alloc) in vregs.into_iter().zip(allocs.into_iter()) {
-                    self.edits.push((
-                        PosWithPrio {
-                            pos: self.cfginfo.block_entry[block.index()],
-                            prio: InsertMovePrio::BlockParam as u32,
-                        },
-                        Edit::DefAlloc { alloc, vreg },
-                    ));
-                }
             }
         }
 
@@ -1146,38 +1073,17 @@ impl<'a, F: Function> Env<'a, F> {
                     &Edit::Move { from, to } => {
                         self.annotate(pos_prio.pos, format!("move {} -> {})", from, to));
                     }
-                    &Edit::DefAlloc { alloc, vreg } => {
-                        let s = format!("defalloc {:?} := {:?}", alloc, vreg);
-                        self.annotate(pos_prio.pos, s);
-                    }
                 }
             }
         }
     }
 
-    pub fn add_move_edit(
-        &mut self,
-        pos_prio: PosWithPrio,
-        from: Allocation,
-        to: Allocation,
-        _to_vreg: Option<VReg>,
-    ) {
+    pub fn add_move_edit(&mut self, pos_prio: PosWithPrio, from: Allocation, to: Allocation) {
         if from != to {
             if from.is_reg() && to.is_reg() {
                 debug_assert_eq!(from.as_reg().unwrap().class(), to.as_reg().unwrap().class());
             }
             self.edits.push((pos_prio, Edit::Move { from, to }));
-        }
-
-        #[cfg(feature = "checker")]
-        if let Some(to_vreg) = _to_vreg {
-            self.edits.push((
-                pos_prio,
-                Edit::DefAlloc {
-                    alloc: to,
-                    vreg: to_vreg,
-                },
-            ));
         }
     }
 }
