@@ -17,7 +17,7 @@ use super::{
     VRegIndex, SLOT_NONE,
 };
 
-use crate::ion::data_structures::{BlockparamIn, BlockparamOut, PosWithPrio};
+use crate::ion::data_structures::{BlockparamIn, BlockparamOut, CodeRange, PosWithPrio};
 use crate::moves::ParallelMoves;
 use crate::{
     Allocation, Block, Edit, Function, Inst, InstPosition, OperandConstraint, OperandKind,
@@ -177,6 +177,8 @@ impl<'a, F: Function> Env<'a, F> {
                 }
             }
         }
+
+        let debug_labels = self.func.debug_value_labels();
 
         let mut half_moves: Vec<HalfMove> = Vec::with_capacity(6 * self.func.num_insts());
         let mut reuse_input_insts = Vec::with_capacity(self.func.num_insts() / 2);
@@ -480,25 +482,6 @@ impl<'a, F: Function> Env<'a, F> {
 
                         block = block.next();
                     }
-
-                    #[cfg(feature = "checker")]
-                    {
-                        // If this is a blockparam vreg and the start of block
-                        // is in this range, add to blockparam_allocs.
-                        let (blockparam_block, blockparam_idx) =
-                            self.cfginfo.vreg_def_blockparam[vreg.index()];
-                        if blockparam_block.is_valid()
-                            && range
-                                .contains_point(self.cfginfo.block_entry[blockparam_block.index()])
-                        {
-                            self.blockparam_allocs.push((
-                                blockparam_block,
-                                blockparam_idx,
-                                vreg,
-                                alloc,
-                            ));
-                        }
-                    }
                 }
 
                 // Scan over def/uses and apply allocations.
@@ -516,6 +499,73 @@ impl<'a, F: Function> Env<'a, F> {
                     }
                     if let OperandConstraint::Reuse(_) = operand.constraint() {
                         reuse_input_insts.push(inst);
+                    }
+                }
+
+                // Scan debug-labels on this vreg that overlap with
+                // this range, producing a debug-info output record
+                // giving the allocation location for each label.
+                if !debug_labels.is_empty() {
+                    // Do a binary search to find the start of any
+                    // relevant labels. Recall that we require
+                    // debug-label requests to be sorted by vreg then
+                    // by inst-range.
+                    //
+                    // We search by the *end* of vale-label range as
+                    // the key in the slice (`tuple.2`), with the
+                    // *start* of this vreg range as the search key,
+                    // so we will find the first value-label range
+                    // with an end equal to or less than this range's
+                    // start. As long as we are careful to exclude the
+                    // just-adjacent case (end == start)
+                    // below, this will give us the first value-label
+                    // that possibly exists in this vreg range.
+                    let start = match debug_labels
+                        .binary_search_by_key(&(vreg.index(), range.from), |tuple| {
+                            (tuple.0.vreg(), ProgPoint::before(tuple.2))
+                        }) {
+                        // Exact match: this debug-label tuple had an
+                        // (exclusive) end exactly equal to this vreg
+                        // range's (inclusive) start; so take the next
+                        // entry as our start.
+                        Ok(i) => i + 1,
+                        // No exact match; `i` is the index at which
+                        // this key would have been inserted.
+                        Err(i) => i,
+                    };
+
+                    for &(label_vreg, label_from, label_to, label) in &debug_labels[start..] {
+                        let label_from = ProgPoint::before(label_from);
+                        let label_to = ProgPoint::before(label_to);
+                        if label_from >= range.to {
+                            break;
+                        }
+                        if label_vreg.vreg() != vreg.index() {
+                            break;
+                        }
+                        if label_from == label_to {
+                            continue;
+                        }
+                        assert!(label_from < label_to);
+
+                        #[cfg(debug_assertions)]
+                        {
+                            let label_range = CodeRange {
+                                from: label_from,
+                                to: label_to,
+                            };
+                            debug_assert!(
+                                label_range.overlaps(&range),
+                                "label_range = {:?} range = {:?}",
+                                label_range,
+                                range
+                            );
+                        }
+
+                        let from = std::cmp::max(label_from, range.from);
+                        let to = std::cmp::min(label_to, range.to);
+
+                        self.debug_locations.push((label, from, to, alloc));
                     }
                 }
 
@@ -857,6 +907,10 @@ impl<'a, F: Function> Env<'a, F> {
                 Some(self.vreg_regs[to_vreg.index()]),
             );
         }
+
+        // Sort the debug-locations vector; we provide this
+        // invariant to the client.
+        self.debug_locations.sort_unstable();
     }
 
     pub fn resolve_inserted_moves(&mut self) {
@@ -939,18 +993,12 @@ impl<'a, F: Function> Env<'a, F> {
             // regs, but this seems simpler.)
             let mut int_moves: SmallVec<[InsertedMove; 8]> = smallvec![];
             let mut float_moves: SmallVec<[InsertedMove; 8]> = smallvec![];
-            #[cfg(feature = "checker")]
-            let mut self_moves: SmallVec<[InsertedMove; 8]> = smallvec![];
 
             for m in moves {
                 if m.from_alloc.is_reg() && m.to_alloc.is_reg() {
                     debug_assert_eq!(m.from_alloc.class(), m.to_alloc.class());
                 }
                 if m.from_alloc == m.to_alloc {
-                    #[cfg(feature = "checker")]
-                    if m.to_vreg.is_some() {
-                        self_moves.push(m.clone());
-                    }
                     continue;
                 }
                 match m.from_alloc.class() {
@@ -1041,20 +1089,6 @@ impl<'a, F: Function> Env<'a, F> {
                         trace!("    -> redundant move elided");
                     }
                 }
-            }
-
-            #[cfg(feature = "checker")]
-            for m in &self_moves {
-                trace!(
-                    "self move at pos {:?} prio {:?}: {} -> {} to_vreg {:?}",
-                    pos_prio.pos,
-                    pos_prio.prio,
-                    m.from_alloc,
-                    m.to_alloc,
-                    m.to_vreg
-                );
-                let action = redundant_moves.process_move(m.from_alloc, m.to_alloc, m.to_vreg);
-                debug_assert!(action.elide);
             }
         }
 

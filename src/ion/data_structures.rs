@@ -336,10 +336,6 @@ pub struct Env<'a, F: Function> {
     pub liveouts: Vec<IndexSet>,
     pub blockparam_outs: Vec<BlockparamOut>,
     pub blockparam_ins: Vec<BlockparamIn>,
-    /// Blockparam allocs: block, idx, vreg, alloc. Info to describe
-    /// blockparam locations at block entry, for metadata purposes
-    /// (e.g. for the checker).
-    pub blockparam_allocs: Vec<(Block, u32, VRegIndex, Allocation)>,
 
     pub ranges: Vec<LiveRange>,
     pub bundles: Vec<LiveBundle>,
@@ -390,6 +386,7 @@ pub struct Env<'a, F: Function> {
     pub inst_alloc_offsets: Vec<u32>,
     pub num_spillslots: u32,
     pub safepoint_slots: Vec<(ProgPoint, Allocation)>,
+    pub debug_locations: Vec<(u32, ProgPoint, ProgPoint, Allocation)>,
 
     pub allocated_bundle_count: usize,
 
@@ -595,7 +592,6 @@ pub struct Stats {
     pub spill_bundle_reg_success: usize,
     pub blockparam_ins_count: usize,
     pub blockparam_outs_count: usize,
-    pub blockparam_allocs_count: usize,
     pub halfmoves_count: usize,
     pub edits_count: usize,
 }
