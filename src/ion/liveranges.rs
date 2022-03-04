@@ -119,15 +119,11 @@ impl<'a, F: Function> Env<'a, F> {
                     ranges: smallvec![],
                     blockparam: Block::invalid(),
                     is_ref: false,
-                    is_pinned: false,
                 },
             );
         }
         for v in self.func.reftype_vregs() {
             self.vregs[v.vreg()].is_ref = true;
-        }
-        for v in self.func.pinned_vregs() {
-            self.vregs[v.vreg()].is_pinned = true;
         }
         // Create allocations too.
         for inst in 0..self.func.num_insts() {
@@ -507,389 +503,388 @@ impl<'a, F: Function> Env<'a, F> {
                         debug_assert_eq!(dst.kind(), OperandKind::Def);
                         debug_assert_eq!(dst.pos(), OperandPos::Late);
 
-                        // If both src and dest are pinned, emit the
-                        // move right here, right now.
-                        if self.vregs[src.vreg().vreg()].is_pinned
-                            && self.vregs[dst.vreg().vreg()].is_pinned
-                        {
-                            // Update LRs.
-                            if !live.get(src.vreg().vreg()) {
-                                let lr = self.add_liverange_to_vreg(
-                                    VRegIndex::new(src.vreg().vreg()),
-                                    CodeRange {
-                                        from: self.cfginfo.block_entry[block.index()],
-                                        to: ProgPoint::after(inst),
-                                    },
-                                );
-                                live.set(src.vreg().vreg(), true);
-                                vreg_ranges[src.vreg().vreg()] = lr;
-                            }
-                            if live.get(dst.vreg().vreg()) {
-                                let lr = vreg_ranges[dst.vreg().vreg()];
-                                self.ranges[lr.index()].range.from = ProgPoint::after(inst);
-                                live.set(dst.vreg().vreg(), false);
-                            } else {
-                                self.add_liverange_to_vreg(
-                                    VRegIndex::new(dst.vreg().vreg()),
-                                    CodeRange {
-                                        from: ProgPoint::after(inst),
-                                        to: ProgPoint::before(inst.next()),
-                                    },
-                                );
-                            }
+                        let src_pinned = self.func.is_pinned_vreg(src.vreg());
+                        let dst_pinned = self.func.is_pinned_vreg(dst.vreg());
 
-                            let src_preg = match src.constraint() {
-                                OperandConstraint::FixedReg(r) => r,
-                                _ => unreachable!(),
-                            };
-                            let dst_preg = match dst.constraint() {
-                                OperandConstraint::FixedReg(r) => r,
-                                _ => unreachable!(),
-                            };
-                            self.insert_move(
-                                ProgPoint::before(inst),
-                                InsertMovePrio::MultiFixedReg,
-                                Allocation::reg(src_preg),
-                                Allocation::reg(dst_preg),
-                                Some(dst.vreg()),
-                            );
-                        }
-                        // If exactly one of source and dest (but not
-                        // both) is a pinned-vreg, convert this into a
-                        // ghost use on the other vreg with a FixedReg
-                        // constraint.
-                        else if self.vregs[src.vreg().vreg()].is_pinned
-                            || self.vregs[dst.vreg().vreg()].is_pinned
-                        {
-                            trace!(" -> exactly one of src/dst is pinned; converting to ghost use");
-                            let (preg, vreg, pinned_vreg, kind, pos, progpoint) =
-                                if self.vregs[src.vreg().vreg()].is_pinned {
-                                    // Source is pinned: this is a def on the dst with a pinned preg.
-                                    (
-                                        self.func.is_pinned_vreg(src.vreg()).unwrap(),
-                                        dst.vreg(),
-                                        src.vreg(),
-                                        OperandKind::Def,
-                                        OperandPos::Late,
-                                        ProgPoint::after(inst),
-                                    )
-                                } else {
-                                    // Dest is pinned: this is a use on the src with a pinned preg.
-                                    (
-                                        self.func.is_pinned_vreg(dst.vreg()).unwrap(),
-                                        src.vreg(),
-                                        dst.vreg(),
-                                        OperandKind::Use,
-                                        OperandPos::Early,
-                                        ProgPoint::after(inst),
-                                    )
-                                };
-                            let constraint = OperandConstraint::FixedReg(preg);
-                            let operand = Operand::new(vreg, constraint, kind, pos);
-
-                            trace!(
-                                concat!(
-                                    " -> preg {:?} vreg {:?} kind {:?} ",
-                                    "pos {:?} progpoint {:?} constraint {:?} operand {:?}"
-                                ),
-                                preg,
-                                vreg,
-                                kind,
-                                pos,
-                                progpoint,
-                                constraint,
-                                operand
-                            );
-
-                            // Get the LR for the vreg; if none, create one.
-                            let mut lr = vreg_ranges[vreg.vreg()];
-                            if !live.get(vreg.vreg()) {
-                                let from = match kind {
-                                    OperandKind::Use => self.cfginfo.block_entry[block.index()],
-                                    OperandKind::Def => progpoint,
-                                    _ => unreachable!(),
-                                };
-                                let to = progpoint.next();
-                                lr = self.add_liverange_to_vreg(
-                                    VRegIndex::new(vreg.vreg()),
-                                    CodeRange { from, to },
-                                );
-                                trace!("   -> dead; created LR");
-                            }
-                            trace!("  -> LR {:?}", lr);
-
-                            self.insert_use_into_liverange(
-                                lr,
-                                Use::new(operand, progpoint, SLOT_NONE),
-                            );
-
-                            if kind == OperandKind::Def {
-                                live.set(vreg.vreg(), false);
-                                if self.ranges[lr.index()].range.from
-                                    == self.cfginfo.block_entry[block.index()]
-                                {
-                                    self.ranges[lr.index()].range.from = progpoint;
-                                }
-                                self.ranges[lr.index()].set_flag(LiveRangeFlag::StartsAtDef);
-                            } else {
-                                live.set(vreg.vreg(), true);
-                                vreg_ranges[vreg.vreg()] = lr;
-                            }
-
-                            // Handle liveness of the other vreg. Note
-                            // that this is somewhat special. For the
-                            // destination case, we want the pinned
-                            // vreg's LR to start just *after* the
-                            // operand we inserted above, because
-                            // otherwise it would overlap, and
-                            // interfere, and prevent allocation. For
-                            // the source case, we want to "poke a
-                            // hole" in the LR: if it's live going
-                            // downward, end it just after the operand
-                            // and restart it before; if it isn't
-                            // (this is the last use), start it
-                            // before.
-                            if kind == OperandKind::Def {
-                                trace!(" -> src on pinned vreg {:?}", pinned_vreg);
-                                // The *other* vreg is a def, so the pinned-vreg
-                                // mention is a use. If already live,
-                                // end the existing LR just *after*
-                                // the `progpoint` defined above and
-                                // start a new one just *before* the
-                                // `progpoint` defined above,
-                                // preserving the start. If not, start
-                                // a new one live back to the top of
-                                // the block, starting just before
-                                // `progpoint`.
-                                if live.get(pinned_vreg.vreg()) {
-                                    let pinned_lr = vreg_ranges[pinned_vreg.vreg()];
-                                    let orig_start = self.ranges[pinned_lr.index()].range.from;
-                                    trace!(
-                                        " -> live with LR {:?}; truncating to start at {:?}",
-                                        pinned_lr,
-                                        progpoint.next()
-                                    );
-                                    self.ranges[pinned_lr.index()].range.from = progpoint.next();
-                                    let new_lr = self.add_liverange_to_vreg(
-                                        VRegIndex::new(pinned_vreg.vreg()),
+                        match (src_pinned, dst_pinned) {
+                            // If both src and dest are pinned, emit
+                            // the move right here, right now.
+                            (Some(src_preg), Some(dst_preg)) => {
+                                // Update LRs.
+                                if !live.get(src.vreg().vreg()) {
+                                    let lr = self.add_liverange_to_vreg(
+                                        VRegIndex::new(src.vreg().vreg()),
                                         CodeRange {
-                                            from: orig_start,
-                                            to: progpoint.prev(),
+                                            from: self.cfginfo.block_entry[block.index()],
+                                            to: ProgPoint::after(inst),
                                         },
                                     );
-                                    vreg_ranges[pinned_vreg.vreg()] = new_lr;
-                                    trace!(" -> created LR {:?} with remaining range from {:?} to {:?}", new_lr, orig_start, progpoint);
-
-                                    // Add an edit right now to indicate that at
-                                    // this program point, the given
-                                    // preg is now known as that vreg,
-                                    // not the preg, but immediately
-                                    // after, it is known as the preg
-                                    // again. This is used by the
-                                    // checker.
-                                    self.insert_move(
-                                        ProgPoint::after(inst),
-                                        InsertMovePrio::Regular,
-                                        Allocation::reg(preg),
-                                        Allocation::reg(preg),
-                                        Some(dst.vreg()),
-                                    );
-                                    self.insert_move(
-                                        ProgPoint::before(inst.next()),
-                                        InsertMovePrio::MultiFixedReg,
-                                        Allocation::reg(preg),
-                                        Allocation::reg(preg),
-                                        Some(src.vreg()),
-                                    );
+                                    live.set(src.vreg().vreg(), true);
+                                    vreg_ranges[src.vreg().vreg()] = lr;
+                                }
+                                if live.get(dst.vreg().vreg()) {
+                                    let lr = vreg_ranges[dst.vreg().vreg()];
+                                    self.ranges[lr.index()].range.from = ProgPoint::after(inst);
+                                    live.set(dst.vreg().vreg(), false);
                                 } else {
-                                    if inst > self.cfginfo.block_entry[block.index()].inst() {
+                                    self.add_liverange_to_vreg(
+                                        VRegIndex::new(dst.vreg().vreg()),
+                                        CodeRange {
+                                            from: ProgPoint::after(inst),
+                                            to: ProgPoint::before(inst.next()),
+                                        },
+                                    );
+                                }
+
+                                self.insert_move(
+                                    ProgPoint::before(inst),
+                                    InsertMovePrio::MultiFixedReg,
+                                    Allocation::reg(src_preg),
+                                    Allocation::reg(dst_preg),
+                                    Some(dst.vreg()),
+                                );
+                            }
+
+                            // If exactly one of source and dest (but
+                            // not both) is a pinned-vreg, convert
+                            // this into a ghost use on the other vreg
+                            // with a FixedReg constraint.
+                            (Some(preg), None) | (None, Some(preg)) => {
+                                trace!(
+                                    " -> exactly one of src/dst is pinned; converting to ghost use"
+                                );
+                                let (vreg, pinned_vreg, kind, pos, progpoint) =
+                                    if src_pinned.is_some() {
+                                        // Source is pinned: this is a def on the dst with a pinned preg.
+                                        (
+                                            dst.vreg(),
+                                            src.vreg(),
+                                            OperandKind::Def,
+                                            OperandPos::Late,
+                                            ProgPoint::after(inst),
+                                        )
+                                    } else {
+                                        // Dest is pinned: this is a use on the src with a pinned preg.
+                                        (
+                                            src.vreg(),
+                                            dst.vreg(),
+                                            OperandKind::Use,
+                                            OperandPos::Early,
+                                            ProgPoint::after(inst),
+                                        )
+                                    };
+                                let constraint = OperandConstraint::FixedReg(preg);
+                                let operand = Operand::new(vreg, constraint, kind, pos);
+
+                                trace!(
+                                    concat!(
+                                        " -> preg {:?} vreg {:?} kind {:?} ",
+                                        "pos {:?} progpoint {:?} constraint {:?} operand {:?}"
+                                    ),
+                                    preg,
+                                    vreg,
+                                    kind,
+                                    pos,
+                                    progpoint,
+                                    constraint,
+                                    operand
+                                );
+
+                                // Get the LR for the vreg; if none, create one.
+                                let mut lr = vreg_ranges[vreg.vreg()];
+                                if !live.get(vreg.vreg()) {
+                                    let from = match kind {
+                                        OperandKind::Use => self.cfginfo.block_entry[block.index()],
+                                        OperandKind::Def => progpoint,
+                                        _ => unreachable!(),
+                                    };
+                                    let to = progpoint.next();
+                                    lr = self.add_liverange_to_vreg(
+                                        VRegIndex::new(vreg.vreg()),
+                                        CodeRange { from, to },
+                                    );
+                                    trace!("   -> dead; created LR");
+                                }
+                                trace!("  -> LR {:?}", lr);
+
+                                self.insert_use_into_liverange(
+                                    lr,
+                                    Use::new(operand, progpoint, SLOT_NONE),
+                                );
+
+                                if kind == OperandKind::Def {
+                                    live.set(vreg.vreg(), false);
+                                    if self.ranges[lr.index()].range.from
+                                        == self.cfginfo.block_entry[block.index()]
+                                    {
+                                        self.ranges[lr.index()].range.from = progpoint;
+                                    }
+                                    self.ranges[lr.index()].set_flag(LiveRangeFlag::StartsAtDef);
+                                } else {
+                                    live.set(vreg.vreg(), true);
+                                    vreg_ranges[vreg.vreg()] = lr;
+                                }
+
+                                // Handle liveness of the other vreg. Note
+                                // that this is somewhat special. For the
+                                // destination case, we want the pinned
+                                // vreg's LR to start just *after* the
+                                // operand we inserted above, because
+                                // otherwise it would overlap, and
+                                // interfere, and prevent allocation. For
+                                // the source case, we want to "poke a
+                                // hole" in the LR: if it's live going
+                                // downward, end it just after the operand
+                                // and restart it before; if it isn't
+                                // (this is the last use), start it
+                                // before.
+                                if kind == OperandKind::Def {
+                                    trace!(" -> src on pinned vreg {:?}", pinned_vreg);
+                                    // The *other* vreg is a def, so the pinned-vreg
+                                    // mention is a use. If already live,
+                                    // end the existing LR just *after*
+                                    // the `progpoint` defined above and
+                                    // start a new one just *before* the
+                                    // `progpoint` defined above,
+                                    // preserving the start. If not, start
+                                    // a new one live back to the top of
+                                    // the block, starting just before
+                                    // `progpoint`.
+                                    if live.get(pinned_vreg.vreg()) {
+                                        let pinned_lr = vreg_ranges[pinned_vreg.vreg()];
+                                        let orig_start = self.ranges[pinned_lr.index()].range.from;
+                                        trace!(
+                                            " -> live with LR {:?}; truncating to start at {:?}",
+                                            pinned_lr,
+                                            progpoint.next()
+                                        );
+                                        self.ranges[pinned_lr.index()].range.from =
+                                            progpoint.next();
                                         let new_lr = self.add_liverange_to_vreg(
                                             VRegIndex::new(pinned_vreg.vreg()),
                                             CodeRange {
-                                                from: self.cfginfo.block_entry[block.index()],
-                                                to: ProgPoint::before(inst),
+                                                from: orig_start,
+                                                to: progpoint.prev(),
                                             },
                                         );
                                         vreg_ranges[pinned_vreg.vreg()] = new_lr;
-                                        live.set(pinned_vreg.vreg(), true);
-                                        trace!(" -> was not live; created new LR {:?}", new_lr);
+                                        trace!(" -> created LR {:?} with remaining range from {:?} to {:?}", new_lr, orig_start, progpoint);
+
+                                        // Add an edit right now to indicate that at
+                                        // this program point, the given
+                                        // preg is now known as that vreg,
+                                        // not the preg, but immediately
+                                        // after, it is known as the preg
+                                        // again. This is used by the
+                                        // checker.
+                                        self.insert_move(
+                                            ProgPoint::after(inst),
+                                            InsertMovePrio::Regular,
+                                            Allocation::reg(preg),
+                                            Allocation::reg(preg),
+                                            Some(dst.vreg()),
+                                        );
+                                        self.insert_move(
+                                            ProgPoint::before(inst.next()),
+                                            InsertMovePrio::MultiFixedReg,
+                                            Allocation::reg(preg),
+                                            Allocation::reg(preg),
+                                            Some(src.vreg()),
+                                        );
+                                    } else {
+                                        if inst > self.cfginfo.block_entry[block.index()].inst() {
+                                            let new_lr = self.add_liverange_to_vreg(
+                                                VRegIndex::new(pinned_vreg.vreg()),
+                                                CodeRange {
+                                                    from: self.cfginfo.block_entry[block.index()],
+                                                    to: ProgPoint::before(inst),
+                                                },
+                                            );
+                                            vreg_ranges[pinned_vreg.vreg()] = new_lr;
+                                            live.set(pinned_vreg.vreg(), true);
+                                            trace!(" -> was not live; created new LR {:?}", new_lr);
+                                        }
+
+                                        // Add an edit right now to indicate that at
+                                        // this program point, the given
+                                        // preg is now known as that vreg,
+                                        // not the preg. This is used by
+                                        // the checker.
+                                        self.insert_move(
+                                            ProgPoint::after(inst),
+                                            InsertMovePrio::BlockParam,
+                                            Allocation::reg(preg),
+                                            Allocation::reg(preg),
+                                            Some(dst.vreg()),
+                                        );
                                     }
+                                } else {
+                                    trace!(" -> dst on pinned vreg {:?}", pinned_vreg);
+                                    // The *other* vreg is a use, so the pinned-vreg
+                                    // mention is a def. Truncate its LR
+                                    // just *after* the `progpoint`
+                                    // defined above.
+                                    if live.get(pinned_vreg.vreg()) {
+                                        let pinned_lr = vreg_ranges[pinned_vreg.vreg()];
+                                        self.ranges[pinned_lr.index()].range.from =
+                                            progpoint.next();
+                                        trace!(
+                                            " -> was live with LR {:?}; truncated start to {:?}",
+                                            pinned_lr,
+                                            progpoint.next()
+                                        );
+                                        live.set(pinned_vreg.vreg(), false);
 
-                                    // Add an edit right now to indicate that at
-                                    // this program point, the given
-                                    // preg is now known as that vreg,
-                                    // not the preg. This is used by
-                                    // the checker.
-                                    self.insert_move(
-                                        ProgPoint::after(inst),
-                                        InsertMovePrio::BlockParam,
-                                        Allocation::reg(preg),
-                                        Allocation::reg(preg),
-                                        Some(dst.vreg()),
-                                    );
+                                        // Add a no-op edit right now to indicate that
+                                        // at this program point, the
+                                        // given preg is now known as that
+                                        // preg, not the vreg. This is
+                                        // used by the checker.
+                                        self.insert_move(
+                                            ProgPoint::before(inst.next()),
+                                            InsertMovePrio::PostRegular,
+                                            Allocation::reg(preg),
+                                            Allocation::reg(preg),
+                                            Some(dst.vreg()),
+                                        );
+                                    }
+                                    // Otherwise, if dead, no need to create
+                                    // a dummy LR -- there is no
+                                    // reservation to make (the other vreg
+                                    // will land in the reg with the
+                                    // fixed-reg operand constraint, but
+                                    // it's a dead move anyway).
                                 }
-                            } else {
-                                trace!(" -> dst on pinned vreg {:?}", pinned_vreg);
-                                // The *other* vreg is a use, so the pinned-vreg
-                                // mention is a def. Truncate its LR
-                                // just *after* the `progpoint`
-                                // defined above.
-                                if live.get(pinned_vreg.vreg()) {
-                                    let pinned_lr = vreg_ranges[pinned_vreg.vreg()];
-                                    self.ranges[pinned_lr.index()].range.from = progpoint.next();
-                                    trace!(
-                                        " -> was live with LR {:?}; truncated start to {:?}",
-                                        pinned_lr,
-                                        progpoint.next()
-                                    );
-                                    live.set(pinned_vreg.vreg(), false);
-
-                                    // Add a no-op edit right now to indicate that
-                                    // at this program point, the
-                                    // given preg is now known as that
-                                    // preg, not the vreg. This is
-                                    // used by the checker.
-                                    self.insert_move(
-                                        ProgPoint::before(inst.next()),
-                                        InsertMovePrio::PostRegular,
-                                        Allocation::reg(preg),
-                                        Allocation::reg(preg),
-                                        Some(dst.vreg()),
-                                    );
-                                }
-                                // Otherwise, if dead, no need to create
-                                // a dummy LR -- there is no
-                                // reservation to make (the other vreg
-                                // will land in the reg with the
-                                // fixed-reg operand constraint, but
-                                // it's a dead move anyway).
-                            }
-                        } else {
-                            // Redefine src and dst operands to have
-                            // positions of After and Before respectively
-                            // (see note below), and to have Any
-                            // constraints if they were originally Reg.
-                            let src_constraint = match src.constraint() {
-                                OperandConstraint::Reg => OperandConstraint::Any,
-                                x => x,
-                            };
-                            let dst_constraint = match dst.constraint() {
-                                OperandConstraint::Reg => OperandConstraint::Any,
-                                x => x,
-                            };
-                            let src = Operand::new(
-                                src.vreg(),
-                                src_constraint,
-                                OperandKind::Use,
-                                OperandPos::Late,
-                            );
-                            let dst = Operand::new(
-                                dst.vreg(),
-                                dst_constraint,
-                                OperandKind::Def,
-                                OperandPos::Early,
-                            );
-
-                            if self.annotations_enabled {
-                                self.annotate(
-                                    ProgPoint::after(inst),
-                                    format!(
-                                        " prog-move v{} ({:?}) -> v{} ({:?})",
-                                        src.vreg().vreg(),
-                                        src_constraint,
-                                        dst.vreg().vreg(),
-                                        dst_constraint,
-                                    ),
-                                );
                             }
 
-                            // N.B.: in order to integrate with the move
-                            // resolution that joins LRs in general, we
-                            // conceptually treat the move as happening
-                            // between the move inst's After and the next
-                            // inst's Before. Thus the src LR goes up to
-                            // (exclusive) next-inst-pre, and the dst LR
-                            // starts at next-inst-pre. We have to take
-                            // care in our move insertion to handle this
-                            // like other inter-inst moves, i.e., at
-                            // `Regular` priority, so it properly happens
-                            // in parallel with other inter-LR moves.
-                            //
-                            // Why the progpoint between move and next
-                            // inst, and not the progpoint between prev
-                            // inst and move? Because a move can be the
-                            // first inst in a block, but cannot be the
-                            // last; so the following progpoint is always
-                            // within the same block, while the previous
-                            // one may be an inter-block point (and the
-                            // After of the prev inst in a different
-                            // block).
-
-                            // Handle the def w.r.t. liveranges: trim the
-                            // start of the range and mark it dead at this
-                            // point in our backward scan.
-                            let pos = ProgPoint::before(inst.next());
-                            let mut dst_lr = vreg_ranges[dst.vreg().vreg()];
-                            if !live.get(dst.vreg().vreg()) {
-                                let from = pos;
-                                let to = pos.next();
-                                dst_lr = self.add_liverange_to_vreg(
-                                    VRegIndex::new(dst.vreg().vreg()),
-                                    CodeRange { from, to },
-                                );
-                                trace!(" -> invalid LR for def; created {:?}", dst_lr);
-                            }
-                            trace!(" -> has existing LR {:?}", dst_lr);
-                            // Trim the LR to start here.
-                            if self.ranges[dst_lr.index()].range.from
-                                == self.cfginfo.block_entry[block.index()]
-                            {
-                                trace!(" -> started at block start; trimming to {:?}", pos);
-                                self.ranges[dst_lr.index()].range.from = pos;
-                            }
-                            self.ranges[dst_lr.index()].set_flag(LiveRangeFlag::StartsAtDef);
-                            live.set(dst.vreg().vreg(), false);
-                            vreg_ranges[dst.vreg().vreg()] = LiveRangeIndex::invalid();
-                            self.vreg_regs[dst.vreg().vreg()] = dst.vreg();
-
-                            // Handle the use w.r.t. liveranges: make it live
-                            // and create an initial LR back to the start of
-                            // the block.
-                            let pos = ProgPoint::after(inst);
-                            let src_lr = if !live.get(src.vreg().vreg()) {
-                                let range = CodeRange {
-                                    from: self.cfginfo.block_entry[block.index()],
-                                    to: pos.next(),
+                            // Ordinary move between two non-pinned vregs.
+                            (None, None) => {
+                                // Redefine src and dst operands to have
+                                // positions of After and Before respectively
+                                // (see note below), and to have Any
+                                // constraints if they were originally Reg.
+                                let src_constraint = match src.constraint() {
+                                    OperandConstraint::Reg => OperandConstraint::Any,
+                                    x => x,
                                 };
-                                let src_lr = self.add_liverange_to_vreg(
-                                    VRegIndex::new(src.vreg().vreg()),
-                                    range,
+                                let dst_constraint = match dst.constraint() {
+                                    OperandConstraint::Reg => OperandConstraint::Any,
+                                    x => x,
+                                };
+                                let src = Operand::new(
+                                    src.vreg(),
+                                    src_constraint,
+                                    OperandKind::Use,
+                                    OperandPos::Late,
                                 );
-                                vreg_ranges[src.vreg().vreg()] = src_lr;
-                                src_lr
-                            } else {
-                                vreg_ranges[src.vreg().vreg()]
-                            };
+                                let dst = Operand::new(
+                                    dst.vreg(),
+                                    dst_constraint,
+                                    OperandKind::Def,
+                                    OperandPos::Early,
+                                );
 
-                            trace!(" -> src LR {:?}", src_lr);
+                                if self.annotations_enabled {
+                                    self.annotate(
+                                        ProgPoint::after(inst),
+                                        format!(
+                                            " prog-move v{} ({:?}) -> v{} ({:?})",
+                                            src.vreg().vreg(),
+                                            src_constraint,
+                                            dst.vreg().vreg(),
+                                            dst_constraint,
+                                        ),
+                                    );
+                                }
 
-                            // Add to live-set.
-                            let src_is_dead_after_move = !live.get(src.vreg().vreg());
-                            live.set(src.vreg().vreg(), true);
+                                // N.B.: in order to integrate with the move
+                                // resolution that joins LRs in general, we
+                                // conceptually treat the move as happening
+                                // between the move inst's After and the next
+                                // inst's Before. Thus the src LR goes up to
+                                // (exclusive) next-inst-pre, and the dst LR
+                                // starts at next-inst-pre. We have to take
+                                // care in our move insertion to handle this
+                                // like other inter-inst moves, i.e., at
+                                // `Regular` priority, so it properly happens
+                                // in parallel with other inter-LR moves.
+                                //
+                                // Why the progpoint between move and next
+                                // inst, and not the progpoint between prev
+                                // inst and move? Because a move can be the
+                                // first inst in a block, but cannot be the
+                                // last; so the following progpoint is always
+                                // within the same block, while the previous
+                                // one may be an inter-block point (and the
+                                // After of the prev inst in a different
+                                // block).
 
-                            // Add to program-moves lists.
-                            self.prog_move_srcs.push((
-                                (VRegIndex::new(src.vreg().vreg()), inst),
-                                Allocation::none(),
-                            ));
-                            self.prog_move_dsts.push((
-                                (VRegIndex::new(dst.vreg().vreg()), inst.next()),
-                                Allocation::none(),
-                            ));
-                            self.stats.prog_moves += 1;
-                            if src_is_dead_after_move {
-                                self.stats.prog_moves_dead_src += 1;
-                                self.prog_move_merges.push((src_lr, dst_lr));
+                                // Handle the def w.r.t. liveranges: trim the
+                                // start of the range and mark it dead at this
+                                // point in our backward scan.
+                                let pos = ProgPoint::before(inst.next());
+                                let mut dst_lr = vreg_ranges[dst.vreg().vreg()];
+                                if !live.get(dst.vreg().vreg()) {
+                                    let from = pos;
+                                    let to = pos.next();
+                                    dst_lr = self.add_liverange_to_vreg(
+                                        VRegIndex::new(dst.vreg().vreg()),
+                                        CodeRange { from, to },
+                                    );
+                                    trace!(" -> invalid LR for def; created {:?}", dst_lr);
+                                }
+                                trace!(" -> has existing LR {:?}", dst_lr);
+                                // Trim the LR to start here.
+                                if self.ranges[dst_lr.index()].range.from
+                                    == self.cfginfo.block_entry[block.index()]
+                                {
+                                    trace!(" -> started at block start; trimming to {:?}", pos);
+                                    self.ranges[dst_lr.index()].range.from = pos;
+                                }
+                                self.ranges[dst_lr.index()].set_flag(LiveRangeFlag::StartsAtDef);
+                                live.set(dst.vreg().vreg(), false);
+                                vreg_ranges[dst.vreg().vreg()] = LiveRangeIndex::invalid();
+                                self.vreg_regs[dst.vreg().vreg()] = dst.vreg();
+
+                                // Handle the use w.r.t. liveranges: make it live
+                                // and create an initial LR back to the start of
+                                // the block.
+                                let pos = ProgPoint::after(inst);
+                                let src_lr = if !live.get(src.vreg().vreg()) {
+                                    let range = CodeRange {
+                                        from: self.cfginfo.block_entry[block.index()],
+                                        to: pos.next(),
+                                    };
+                                    let src_lr = self.add_liverange_to_vreg(
+                                        VRegIndex::new(src.vreg().vreg()),
+                                        range,
+                                    );
+                                    vreg_ranges[src.vreg().vreg()] = src_lr;
+                                    src_lr
+                                } else {
+                                    vreg_ranges[src.vreg().vreg()]
+                                };
+
+                                trace!(" -> src LR {:?}", src_lr);
+
+                                // Add to live-set.
+                                let src_is_dead_after_move = !live.get(src.vreg().vreg());
+                                live.set(src.vreg().vreg(), true);
+
+                                // Add to program-moves lists.
+                                self.prog_move_srcs.push((
+                                    (VRegIndex::new(src.vreg().vreg()), inst),
+                                    Allocation::none(),
+                                ));
+                                self.prog_move_dsts.push((
+                                    (VRegIndex::new(dst.vreg().vreg()), inst.next()),
+                                    Allocation::none(),
+                                ));
+                                self.stats.prog_moves += 1;
+                                if src_is_dead_after_move {
+                                    self.stats.prog_moves_dead_src += 1;
+                                    self.prog_move_merges.push((src_lr, dst_lr));
+                                }
                             }
                         }
                     }
@@ -1089,8 +1084,8 @@ impl<'a, F: Function> Env<'a, F> {
         }
 
         // Insert safepoint virtual stack uses, if needed.
-        for vreg in self.func.reftype_vregs() {
-            if self.vregs[vreg.vreg()].is_pinned {
+        for &vreg in self.func.reftype_vregs() {
+            if self.func.is_pinned_vreg(vreg).is_some() {
                 continue;
             }
             let vreg = VRegIndex::new(vreg.vreg());
