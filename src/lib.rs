@@ -958,7 +958,14 @@ pub trait Function {
     /// match -- specifically, the returned metadata may cover only a
     /// subset of the requested ranges -- if the value is not live for
     /// the entire requested ranges.
-    fn debug_value_labels(&self) -> &[(Inst, Inst, VReg, u32)] {
+    ///
+    /// The instruction indices imply a program point just *before*
+    /// the instruction.
+    ///
+    /// Preconditions: we require this slice to be sorted in
+    /// lexicographic order (i.e., first by vreg, then by instruction
+    /// index), and we require the ranges to be non-overlapping.
+    fn debug_value_labels(&self) -> &[(VReg, Inst, Inst, u32)] {
         &[]
     }
 

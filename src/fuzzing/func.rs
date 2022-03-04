@@ -67,6 +67,7 @@ pub struct Func {
     block_params_out: Vec<Vec<Vec<VReg>>>,
     num_vregs: usize,
     reftype_vregs: Vec<VReg>,
+    debug_value_labels: Vec<(VReg, Inst, Inst, u32)>,
 }
 
 impl Function for Func {
@@ -119,6 +120,10 @@ impl Function for Func {
         &self.reftype_vregs[..]
     }
 
+    fn debug_value_labels(&self) -> &[(VReg, Inst, Inst, u32)] {
+        &self.debug_value_labels[..]
+    }
+
     fn is_move(&self, _: Inst) -> Option<(Operand, Operand)> {
         None
     }
@@ -164,6 +169,7 @@ impl FuncBuilder {
                 blocks: vec![],
                 num_vregs: 0,
                 reftype_vregs: vec![],
+                debug_value_labels: vec![],
             },
             insts_per_block: vec![],
         }
@@ -375,6 +381,21 @@ impl Func {
                 if opts.reftypes && bool::arbitrary(u)? {
                     builder.f.reftype_vregs.push(vreg);
                 }
+                if bool::arbitrary(u)? {
+                    let assumed_end_inst = 10 * num_blocks;
+                    let mut start = u.int_in_range::<usize>(0..=assumed_end_inst)?;
+                    while start < assumed_end_inst {
+                        let end = u.int_in_range::<usize>(start..=assumed_end_inst)?;
+                        let label = u.int_in_range::<u32>(0..=100)?;
+                        builder.f.debug_value_labels.push((
+                            vreg,
+                            Inst::new(start),
+                            Inst::new(end),
+                            label,
+                        ));
+                        start = end;
+                    }
+                }
             }
             vregs_by_block.push(vregs.clone());
             vregs_by_block_to_be_defined.push(vec![]);
@@ -535,6 +556,8 @@ impl Func {
                 builder.add_inst(Block::new(block), InstData::ret());
             }
         }
+
+        builder.f.debug_value_labels.sort_unstable();
 
         Ok(builder.finalize())
     }

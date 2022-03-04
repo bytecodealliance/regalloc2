@@ -53,7 +53,6 @@ impl<'a, F: Function> Env<'a, F> {
             liveouts: Vec::with_capacity(func.num_blocks()),
             blockparam_outs: vec![],
             blockparam_ins: vec![],
-            blockparam_allocs: vec![],
             bundles: Vec::with_capacity(n),
             ranges: Vec::with_capacity(4 * n),
             spillsets: Vec::with_capacity(n),
@@ -81,6 +80,7 @@ impl<'a, F: Function> Env<'a, F> {
             inst_alloc_offsets: vec![],
             num_spillslots: 0,
             safepoint_slots: vec![],
+            debug_locations: vec![],
 
             stats: Stats::default(),
 
@@ -138,7 +138,7 @@ pub fn run<F: Function>(
         allocs: env.allocs,
         inst_alloc_offsets: env.inst_alloc_offsets,
         num_spillslots: env.num_spillslots as usize,
-        debug_locations: vec![],
+        debug_locations: env.debug_locations,
         safepoint_slots: env.safepoint_slots,
         stats: env.stats,
     })
