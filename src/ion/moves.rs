@@ -179,6 +179,25 @@ impl<'a, F: Function> Env<'a, F> {
         }
 
         let debug_labels = self.func.debug_value_labels();
+        #[cfg(debug_assertions)]
+        {
+            // Check the precondition that the debug-labels list is
+            // sorted, and that ranges are non-overlapping.
+            let mut last = None;
+            for tuple in debug_labels {
+                if let Some(last) = last {
+                    // Precondition 1: sorted.
+                    debug_assert!(last <= tuple);
+                    // Precondition 2: ranges for a given vreg are
+                    // non-overlapping. Note that `from`s are
+                    // inclusive and `to`s are exclusive.
+                    let &(last_vreg, _, last_to, _) = last;
+                    let &(tuple_vreg, tuple_from, _, _) = tuple;
+                    debug_assert!(last_vreg < tuple_vreg || last_to <= tuple_from);
+                }
+                last = Some(tuple);
+            }
+        }
 
         let mut half_moves: Vec<HalfMove> = Vec::with_capacity(6 * self.func.num_insts());
         let mut reuse_input_insts = Vec::with_capacity(self.func.num_insts() / 2);
@@ -509,34 +528,32 @@ impl<'a, F: Function> Env<'a, F> {
                     // Do a binary search to find the start of any
                     // relevant labels. Recall that we require
                     // debug-label requests to be sorted by vreg then
-                    // by inst-range.
-                    //
-                    // We search by the *end* of vale-label range as
-                    // the key in the slice (`tuple.2`), with the
-                    // *start* of this vreg range as the search key,
-                    // so we will find the first value-label range
-                    // with an end equal to or less than this range's
-                    // start. As long as we are careful to exclude the
-                    // just-adjacent case (end == start)
-                    // below, this will give us the first value-label
-                    // that possibly exists in this vreg range.
-                    let start = match debug_labels
-                        .binary_search_by_key(&(vreg.index(), range.from), |tuple| {
-                            (tuple.0.vreg(), ProgPoint::before(tuple.2))
-                        }) {
-                        // Exact match: this debug-label tuple had an
-                        // (exclusive) end exactly equal to this vreg
-                        // range's (inclusive) start; so take the next
-                        // entry as our start.
-                        Ok(i) => i + 1,
-                        // No exact match; `i` is the index at which
-                        // this key would have been inserted.
-                        Err(i) => i,
-                    };
+                    // by inst-range, with non-overlapping ranges, as
+                    // preconditions (which we verified above).
+                    let start = debug_labels
+                        .binary_search_by(|&(label_vreg, _label_from, label_to, _label)| {
+                            // Search for the point just before the first
+                            // tuple that could be for `vreg` overlapping
+                            // with `range`. Never return
+                            // `Ordering::Equal`; `binary_search_by` in
+                            // this case returns the index of the first
+                            // entry that is greater as an `Err`.
+                            label_vreg.vreg().cmp(&vreg.index()).then(
+                                if range.from < ProgPoint::before(label_to) {
+                                    std::cmp::Ordering::Less
+                                } else {
+                                    std::cmp::Ordering::Greater
+                                },
+                            )
+                        })
+                        .unwrap_err();
 
                     for &(label_vreg, label_from, label_to, label) in &debug_labels[start..] {
                         let label_from = ProgPoint::before(label_from);
                         let label_to = ProgPoint::before(label_to);
+                        if label_to <= range.from {
+                            continue;
+                        }
                         if label_from >= range.to {
                             break;
                         }
@@ -546,7 +563,7 @@ impl<'a, F: Function> Env<'a, F> {
                         if label_from == label_to {
                             continue;
                         }
-                        assert!(label_from < label_to);
+                        debug_assert!(label_from < label_to);
 
                         #[cfg(debug_assertions)]
                         {

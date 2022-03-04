@@ -557,6 +557,8 @@ impl Func {
             }
         }
 
+        builder.f.debug_value_labels.sort_unstable();
+
         Ok(builder.finalize())
     }
 }
