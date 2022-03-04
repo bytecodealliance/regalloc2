@@ -234,12 +234,8 @@ impl<'a, F: Function> Env<'a, F> {
 
             // If this is a pinned vreg, go ahead and add it to the
             // commitment map, and avoid creating a bundle entirely.
-            if self.vregs[vreg.index()].is_pinned {
+            if let Some(preg) = self.func.is_pinned_vreg(self.vreg_regs[vreg.index()]) {
                 for entry in &self.vregs[vreg.index()].ranges {
-                    let preg = self
-                        .func
-                        .is_pinned_vreg(self.vreg_regs[vreg.index()])
-                        .unwrap();
                     let key = LiveRangeKey::from_range(&entry.range);
                     self.pregs[preg.index()]
                         .allocations
@@ -308,8 +304,8 @@ impl<'a, F: Function> Env<'a, F> {
                 if let OperandConstraint::Reuse(reuse_idx) = op.constraint() {
                     let src_vreg = op.vreg();
                     let dst_vreg = self.func.inst_operands(inst)[reuse_idx].vreg();
-                    if self.vregs[src_vreg.vreg()].is_pinned
-                        || self.vregs[dst_vreg.vreg()].is_pinned
+                    if self.func.is_pinned_vreg(src_vreg).is_some()
+                        || self.func.is_pinned_vreg(dst_vreg).is_some()
                     {
                         continue;
                     }
@@ -367,21 +363,21 @@ impl<'a, F: Function> Env<'a, F> {
 
             let dst_vreg = self.vreg_regs[self.ranges[dst.index()].vreg.index()];
             let src_vreg = self.vreg_regs[self.ranges[src.index()].vreg.index()];
-            if self.vregs[src_vreg.vreg()].is_pinned && self.vregs[dst_vreg.vreg()].is_pinned {
+            if self.func.is_pinned_vreg(src_vreg).is_some()
+                && self.func.is_pinned_vreg(dst_vreg).is_some()
+            {
                 continue;
             }
-            if self.vregs[src_vreg.vreg()].is_pinned {
+            if let Some(preg) = self.func.is_pinned_vreg(src_vreg) {
                 let dest_bundle = self.ranges[dst.index()].bundle;
                 let spillset = self.bundles[dest_bundle.index()].spillset;
-                self.spillsets[spillset.index()].reg_hint =
-                    self.func.is_pinned_vreg(src_vreg).unwrap();
+                self.spillsets[spillset.index()].reg_hint = preg;
                 continue;
             }
-            if self.vregs[dst_vreg.vreg()].is_pinned {
+            if let Some(preg) = self.func.is_pinned_vreg(dst_vreg) {
                 let src_bundle = self.ranges[src.index()].bundle;
                 let spillset = self.bundles[src_bundle.index()].spillset;
-                self.spillsets[spillset.index()].reg_hint =
-                    self.func.is_pinned_vreg(dst_vreg).unwrap();
+                self.spillsets[spillset.index()].reg_hint = preg;
                 continue;
             }
 

@@ -209,11 +209,7 @@ impl<'a, F: Function> Env<'a, F> {
         for vreg in 0..self.vregs.len() {
             let vreg = VRegIndex::new(vreg);
 
-            let pinned_alloc = if self.vregs[vreg.index()].is_pinned {
-                self.func.is_pinned_vreg(self.vreg_regs[vreg.index()])
-            } else {
-                None
-            };
+            let pinned_alloc = self.func.is_pinned_vreg(self.vreg_regs[vreg.index()]);
 
             // For each range in each vreg, insert moves or
             // half-moves.  We also scan over `blockparam_ins` and

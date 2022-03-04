@@ -259,7 +259,6 @@ pub struct VRegData {
     pub ranges: LiveRangeList,
     pub blockparam: Block,
     pub is_ref: bool,
-    pub is_pinned: bool,
 }
 
 #[derive(Clone, Debug)]

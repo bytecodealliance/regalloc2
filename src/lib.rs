@@ -981,11 +981,6 @@ pub trait Function {
         None
     }
 
-    /// Return a list of all pinned vregs.
-    fn pinned_vregs(&self) -> &[VReg] {
-        &[]
-    }
-
     // --------------
     // Spills/reloads
     // --------------

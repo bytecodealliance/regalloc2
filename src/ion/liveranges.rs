@@ -119,15 +119,11 @@ impl<'a, F: Function> Env<'a, F> {
                     ranges: smallvec![],
                     blockparam: Block::invalid(),
                     is_ref: false,
-                    is_pinned: false,
                 },
             );
         }
         for v in self.func.reftype_vregs() {
             self.vregs[v.vreg()].is_ref = true;
-        }
-        for v in self.func.pinned_vregs() {
-            self.vregs[v.vreg()].is_pinned = true;
         }
         // Create allocations too.
         for inst in 0..self.func.num_insts() {
@@ -509,8 +505,8 @@ impl<'a, F: Function> Env<'a, F> {
 
                         // If both src and dest are pinned, emit the
                         // move right here, right now.
-                        if self.vregs[src.vreg().vreg()].is_pinned
-                            && self.vregs[dst.vreg().vreg()].is_pinned
+                        if self.func.is_pinned_vreg(src.vreg()).is_some()
+                            && self.func.is_pinned_vreg(dst.vreg()).is_some()
                         {
                             // Update LRs.
                             if !live.get(src.vreg().vreg()) {
@@ -558,31 +554,34 @@ impl<'a, F: Function> Env<'a, F> {
                         // both) is a pinned-vreg, convert this into a
                         // ghost use on the other vreg with a FixedReg
                         // constraint.
-                        else if self.vregs[src.vreg().vreg()].is_pinned
-                            || self.vregs[dst.vreg().vreg()].is_pinned
+                        else if self.func.is_pinned_vreg(src.vreg()).is_some()
+                            || self.func.is_pinned_vreg(dst.vreg()).is_some()
                         {
                             trace!(" -> exactly one of src/dst is pinned; converting to ghost use");
                             let (preg, vreg, pinned_vreg, kind, pos, progpoint) =
-                                if self.vregs[src.vreg().vreg()].is_pinned {
+                                if let Some(src_vreg) = self.func.is_pinned_vreg(src.vreg()) {
                                     // Source is pinned: this is a def on the dst with a pinned preg.
                                     (
-                                        self.func.is_pinned_vreg(src.vreg()).unwrap(),
+                                        src_vreg,
                                         dst.vreg(),
                                         src.vreg(),
                                         OperandKind::Def,
                                         OperandPos::Late,
                                         ProgPoint::after(inst),
                                     )
-                                } else {
+                                } else if let Some(dst_vreg) = self.func.is_pinned_vreg(dst.vreg())
+                                {
                                     // Dest is pinned: this is a use on the src with a pinned preg.
                                     (
-                                        self.func.is_pinned_vreg(dst.vreg()).unwrap(),
+                                        dst_vreg,
                                         src.vreg(),
                                         dst.vreg(),
                                         OperandKind::Use,
                                         OperandPos::Early,
                                         ProgPoint::after(inst),
                                     )
+                                } else {
+                                    unreachable!()
                                 };
                             let constraint = OperandConstraint::FixedReg(preg);
                             let operand = Operand::new(vreg, constraint, kind, pos);
@@ -1089,8 +1088,8 @@ impl<'a, F: Function> Env<'a, F> {
         }
 
         // Insert safepoint virtual stack uses, if needed.
-        for vreg in self.func.reftype_vregs() {
-            if self.vregs[vreg.vreg()].is_pinned {
+        for &vreg in self.func.reftype_vregs() {
+            if self.func.is_pinned_vreg(vreg).is_some() {
                 continue;
             }
             let vreg = VRegIndex::new(vreg.vreg());
