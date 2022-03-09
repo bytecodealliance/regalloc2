@@ -102,7 +102,6 @@ use crate::{
 };
 use fxhash::{FxHashMap, FxHashSet};
 use smallvec::{smallvec, SmallVec};
-use std::collections::VecDeque;
 use std::default::Default;
 use std::hash::Hash;
 use std::result::Result;
@@ -726,16 +725,14 @@ impl<'a, F: Function> Checker<'a, F> {
 
     /// Perform the dataflow analysis to compute checker state at each BB entry.
     fn analyze(&mut self) {
-        let mut queue = VecDeque::new();
+        let mut queue = Vec::new();
         let mut queue_set = FxHashSet::default();
-        for block in 0..self.f.num_blocks() {
-            let block = Block::new(block);
-            queue.push_back(block);
-            queue_set.insert(block);
-        }
+
+        queue.push(self.f.entry_block());
+        queue_set.insert(self.f.entry_block());
 
         while !queue.is_empty() {
-            let block = queue.pop_front().unwrap();
+            let block = queue.pop().unwrap();
             queue_set.remove(&block);
             let mut state = self.bb_in.get(&block).cloned().unwrap();
             trace!("analyze: block {} has state {:?}", block.index(), state);
@@ -777,7 +774,7 @@ impl<'a, F: Function> Checker<'a, F> {
                     );
                     self.bb_in.insert(succ, new_state);
                     if !queue_set.contains(&succ) {
-                        queue.push_back(succ);
+                        queue.push(succ);
                         queue_set.insert(succ);
                     }
                 }
