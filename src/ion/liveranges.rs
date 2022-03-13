@@ -368,19 +368,15 @@ impl<'a, F: Function> Env<'a, F> {
             self.liveins[block.index()] = live;
         }
 
-        // Check that there are no liveins to the entry block. (The
-        // client should create a virtual intsruction that defines any
-        // PReg liveins if necessary.)
-        if self.liveins[self.func.entry_block().index()]
-            .iter()
-            .next()
-            .is_some()
-        {
-            trace!(
-                "non-empty liveins to entry block: {:?}",
-                self.liveins[self.func.entry_block().index()]
-            );
-            return Err(RegAllocError::EntryLivein);
+        // Check that there are no liveins to the entry block, except
+        // for pinned vregs. (The client should create a virtual
+        // instruction that defines any other liveins if necessary.)
+        for livein in self.liveins[self.func.entry_block().index()].iter() {
+            let livein = self.vreg_regs[livein];
+            if self.func.is_pinned_vreg(livein).is_none() {
+                trace!("non-pinned-vreg livein to entry block: {}", livein);
+                return Err(RegAllocError::EntryLivein);
+            }
         }
 
         Ok(())
