@@ -486,6 +486,13 @@ impl Operand {
     /// that must be in a register, and that occurs early at the
     /// "before" point, i.e., must not conflict with any input to the
     /// instruction.
+    ///
+    /// Note that the register allocator will ensure that such an
+    /// early-def operand is live throughout the instruction, i.e., also
+    /// at the after-point. Hence it will also avoid conflicts with all
+    /// outputs to the instruction. As such, early defs are appropriate
+    /// for use as "temporary registers" that an instruction can use
+    /// throughout its execution separately from the inputs and outputs.
     #[inline(always)]
     pub fn reg_def_at_start(vreg: VReg) -> Self {
         Operand::new(
