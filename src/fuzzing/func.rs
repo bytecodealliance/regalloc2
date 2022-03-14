@@ -140,6 +140,10 @@ impl Function for Func {
         self.num_vregs
     }
 
+    fn vreg_regclass(&self, _: usize) -> RegClass {
+        RegClass::Int
+    }
+
     fn spillslot_size(&self, regclass: RegClass) -> usize {
         match regclass {
             RegClass::Int => 1,

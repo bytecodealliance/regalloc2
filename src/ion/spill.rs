@@ -27,6 +27,8 @@ impl<'a, F: Function> Env<'a, F> {
             let class = self.spillsets[self.bundles[bundle.index()].spillset.index()].class;
             let hint = self.spillsets[self.bundles[bundle.index()].spillset.index()].reg_hint;
 
+            trace!("bundle {:?} with class {:?} hint {:?}", bundle, class, hint);
+
             // This may be an empty-range bundle whose ranges are not
             // sorted; sort all range-lists again here.
             self.bundles[bundle.index()]

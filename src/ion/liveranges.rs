@@ -14,7 +14,7 @@
 
 use super::{
     CodeRange, Env, InsertMovePrio, LiveBundle, LiveBundleIndex, LiveRange, LiveRangeFlag,
-    LiveRangeIndex, LiveRangeKey, LiveRangeListEntry, LiveRangeSet, PRegData, PRegIndex, RegClass,
+    LiveRangeIndex, LiveRangeKey, LiveRangeListEntry, LiveRangeSet, PRegData, PRegIndex,
     SpillSetIndex, Use, VRegData, VRegIndex, SLOT_NONE,
 };
 use crate::indexset::IndexSet;
@@ -112,7 +112,7 @@ impl<'a, F: Function> Env<'a, F> {
         // Create VRegs from the vreg count.
         for idx in 0..self.func.num_vregs() {
             // We'll fill in the real details when we see the def.
-            let reg = VReg::new(idx, RegClass::Int);
+            let reg = VReg::new(idx, self.func.vreg_regclass(idx));
             self.add_vreg(
                 reg,
                 VRegData {

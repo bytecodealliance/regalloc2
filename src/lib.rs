@@ -935,6 +935,9 @@ pub trait Function {
     /// Get the number of `VReg` in use in this function.
     fn num_vregs(&self) -> usize;
 
+    /// Get the register class of a given VReg index.
+    fn vreg_regclass(&self, idx: usize) -> RegClass;
+
     /// Get the VRegs that are pointer/reference types. This has the
     /// following effects for each such vreg:
     ///

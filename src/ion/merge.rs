@@ -283,6 +283,12 @@ impl<'a, F: Function> Env<'a, F> {
             let ssidx = SpillSetIndex::new(self.spillsets.len());
             let reg = self.vreg_regs[vreg.index()];
             let size = self.func.spillslot_size(reg.class()) as u8;
+            trace!(
+                "creating SpillSet for bundle {:?} vreg {:?} with class {:?}",
+                bundle,
+                reg,
+                reg.class(),
+            );
             self.spillsets.push(SpillSet {
                 vregs: smallvec![vreg],
                 slot: SpillSlotIndex::invalid(),
