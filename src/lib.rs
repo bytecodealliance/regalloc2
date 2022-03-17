@@ -962,9 +962,7 @@ pub trait Function {
     /// The instruction indices imply a program point just *before*
     /// the instruction.
     ///
-    /// Preconditions: we require this slice to be sorted in
-    /// lexicographic order (i.e., first by vreg, then by instruction
-    /// index), and we require the ranges to be non-overlapping.
+    /// Precondition: we require this slice to be sorted in by vreg.
     fn debug_value_labels(&self) -> &[(VReg, Inst, Inst, u32)] {
         &[]
     }
