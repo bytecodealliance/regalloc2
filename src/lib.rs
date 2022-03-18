@@ -977,6 +977,11 @@ pub trait Function {
     /// liverange computation will check that this is the case (that
     /// there are enough remaining allocatable pregs of every class to
     /// hold all Reg-constrained operands).
+    ///
+    /// Pinned vregs are implicitly live-in to the function: that is,
+    /// one can use a pinned vreg without having first defined it, and
+    /// this will take the value that that physical register (to which
+    /// the vreg is pinned) had at function entry.
     fn is_pinned_vreg(&self, _: VReg) -> Option<PReg> {
         None
     }
