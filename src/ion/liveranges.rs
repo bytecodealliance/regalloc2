@@ -943,11 +943,13 @@ impl<'a, F: Function> Env<'a, F> {
                                         OperandKind::Mod => self.cfginfo.block_entry[block.index()],
                                         _ => unreachable!(),
                                     };
-                                    let to = match operand.kind() {
-                                        OperandKind::Def => pos.next(),
-                                        OperandKind::Mod => pos.next().next(), // both Before and After positions
-                                        _ => unreachable!(),
-                                    };
+                                    // We want to we want to span
+                                    // until Before of the next
+                                    // inst. This ensures that early
+                                    // defs used for temps on an
+                                    // instruction are reserved across
+                                    // the whole instruction.
+                                    let to = ProgPoint::before(pos.inst().next());
                                     lr = self.add_liverange_to_vreg(
                                         VRegIndex::new(operand.vreg().vreg()),
                                         CodeRange { from, to },
