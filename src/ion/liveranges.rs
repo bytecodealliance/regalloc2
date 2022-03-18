@@ -452,7 +452,8 @@ impl<'a, F: Function> Env<'a, F> {
 
             // Create vreg data for blockparams.
             for param in self.func.block_params(block) {
-                self.vreg_regs[param.vreg()] = *param;
+                // Make sure the VReg's RegClass is correct.
+                debug_assert_eq!(self.vreg_regs[param.vreg()], *param);
                 self.vregs[param.vreg()].blockparam = block;
             }
 
@@ -499,6 +500,15 @@ impl<'a, F: Function> Env<'a, F> {
                         debug_assert_eq!(src.pos(), OperandPos::Early);
                         debug_assert_eq!(dst.kind(), OperandKind::Def);
                         debug_assert_eq!(dst.pos(), OperandPos::Late);
+
+                        debug_assert_eq!(
+                            src.vreg().class(),
+                            self.vreg_regs[src.vreg().vreg()].class()
+                        );
+                        debug_assert_eq!(
+                            dst.vreg().class(),
+                            self.vreg_regs[dst.vreg().vreg()].class()
+                        );
 
                         let src_pinned = self.func.is_pinned_vreg(src.vreg());
                         let dst_pinned = self.func.is_pinned_vreg(dst.vreg());
@@ -841,7 +851,6 @@ impl<'a, F: Function> Env<'a, F> {
                                 self.ranges[dst_lr.index()].set_flag(LiveRangeFlag::StartsAtDef);
                                 live.set(dst.vreg().vreg(), false);
                                 vreg_ranges[dst.vreg().vreg()] = LiveRangeIndex::invalid();
-                                self.vreg_regs[dst.vreg().vreg()] = dst.vreg();
 
                                 // Handle the use w.r.t. liveranges: make it live
                                 // and create an initial LR back to the start of
@@ -894,6 +903,13 @@ impl<'a, F: Function> Env<'a, F> {
                     for i in 0..self.func.inst_operands(inst).len() {
                         // don't borrow `self`
                         let operand = self.func.inst_operands(inst)[i];
+                        // make sure the RegClass on the VReg matches what we know from the Func
+                        // environment.
+                        debug_assert_eq!(
+                            operand.vreg().class(),
+                            self.vreg_regs[operand.vreg().vreg()].class()
+                        );
+
                         let pos = match (operand.kind(), operand.pos()) {
                             (OperandKind::Mod, _) => ProgPoint::before(inst),
                             (OperandKind::Def, OperandPos::Early) => ProgPoint::before(inst),
