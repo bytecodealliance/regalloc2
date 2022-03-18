@@ -962,7 +962,7 @@ pub trait Function {
     /// The instruction indices imply a program point just *before*
     /// the instruction.
     ///
-    /// Precondition: we require this slice to be sorted in by vreg.
+    /// Precondition: we require this slice to be sorted by vreg.
     fn debug_value_labels(&self) -> &[(VReg, Inst, Inst, u32)] {
         &[]
     }
