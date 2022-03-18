@@ -477,11 +477,12 @@ impl<'a, F: Function> Env<'a, F> {
 
                 // Does the instruction have any input-reusing
                 // outputs? This is important below to establish
-                // proper interference wrt other inputs.
+                // proper interference wrt other inputs. We note the
+                // *vreg* that is reused, not the index.
                 let mut reused_input = None;
                 for op in self.func.inst_operands(inst) {
                     if let OperandConstraint::Reuse(i) = op.constraint() {
-                        reused_input = Some(i);
+                        reused_input = Some(self.func.inst_operands(inst)[i].vreg());
                         break;
                     }
                 }
@@ -900,11 +901,14 @@ impl<'a, F: Function> Env<'a, F> {
                             (OperandKind::Use, OperandPos::Late) => ProgPoint::after(inst),
                             // If there are any reused inputs in this
                             // instruction, and this is *not* the
-                            // reused input, force `pos` to
-                            // `After`. (See note below for why; it's
-                            // very subtle!)
+                            // reused vreg, force `pos` to
+                            // `After`. This ensures that we correctly
+                            // account for the interference between
+                            // the other inputs and the
+                            // input-that-is-reused/output.
                             (OperandKind::Use, OperandPos::Early)
-                                if reused_input.is_some() && reused_input.unwrap() != i =>
+                                if reused_input.is_some()
+                                    && reused_input.unwrap() != operand.vreg() =>
                             {
                                 ProgPoint::after(inst)
                             }
