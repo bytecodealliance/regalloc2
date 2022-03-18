@@ -16,7 +16,6 @@ use super::{
     Env, InsertMovePrio, InsertedMove, LiveRangeFlag, LiveRangeIndex, RedundantMoveEliminator,
     VRegIndex, SLOT_NONE,
 };
-
 use crate::ion::data_structures::{BlockparamIn, BlockparamOut, CodeRange, PosWithPrio};
 use crate::moves::ParallelMoves;
 use crate::{
@@ -179,25 +178,6 @@ impl<'a, F: Function> Env<'a, F> {
         }
 
         let debug_labels = self.func.debug_value_labels();
-        #[cfg(debug_assertions)]
-        {
-            // Check the precondition that the debug-labels list is
-            // sorted, and that ranges are non-overlapping.
-            let mut last = None;
-            for tuple in debug_labels {
-                if let Some(last) = last {
-                    // Precondition 1: sorted.
-                    debug_assert!(last <= tuple);
-                    // Precondition 2: ranges for a given vreg are
-                    // non-overlapping. Note that `from`s are
-                    // inclusive and `to`s are exclusive.
-                    let &(last_vreg, _, last_to, _) = last;
-                    let &(tuple_vreg, tuple_from, _, _) = tuple;
-                    debug_assert!(last_vreg < tuple_vreg || last_to <= tuple_from);
-                }
-                last = Some(tuple);
-            }
-        }
 
         let mut half_moves: Vec<HalfMove> = Vec::with_capacity(6 * self.func.num_insts());
         let mut reuse_input_insts = Vec::with_capacity(self.func.num_insts() / 2);
@@ -522,57 +502,37 @@ impl<'a, F: Function> Env<'a, F> {
                 // giving the allocation location for each label.
                 if !debug_labels.is_empty() {
                     // Do a binary search to find the start of any
-                    // relevant labels. Recall that we require
-                    // debug-label requests to be sorted by vreg then
-                    // by inst-range, with non-overlapping ranges, as
-                    // preconditions (which we verified above).
+                    // labels for this vreg. Recall that we require
+                    // debug-label requests to be sorted by vreg as a
+                    // precondition (which we verified above).
                     let start = debug_labels
-                        .binary_search_by(|&(label_vreg, _label_from, label_to, _label)| {
+                        .binary_search_by(|&(label_vreg, _label_from, _label_to, _label)| {
                             // Search for the point just before the first
                             // tuple that could be for `vreg` overlapping
                             // with `range`. Never return
                             // `Ordering::Equal`; `binary_search_by` in
                             // this case returns the index of the first
                             // entry that is greater as an `Err`.
-                            label_vreg.vreg().cmp(&vreg.index()).then(
-                                if range.from < ProgPoint::before(label_to) {
-                                    std::cmp::Ordering::Less
-                                } else {
-                                    std::cmp::Ordering::Greater
-                                },
-                            )
+                            if label_vreg.vreg() < vreg.index() {
+                                std::cmp::Ordering::Less
+                            } else {
+                                std::cmp::Ordering::Greater
+                            }
                         })
                         .unwrap_err();
 
                     for &(label_vreg, label_from, label_to, label) in &debug_labels[start..] {
                         let label_from = ProgPoint::before(label_from);
                         let label_to = ProgPoint::before(label_to);
-                        if label_to <= range.from {
-                            continue;
-                        }
-                        if label_from >= range.to {
-                            break;
-                        }
+                        let label_range = CodeRange {
+                            from: label_from,
+                            to: label_to,
+                        };
                         if label_vreg.vreg() != vreg.index() {
                             break;
                         }
-                        if label_from == label_to {
+                        if !range.overlaps(&label_range) {
                             continue;
-                        }
-                        debug_assert!(label_from < label_to);
-
-                        #[cfg(debug_assertions)]
-                        {
-                            let label_range = CodeRange {
-                                from: label_from,
-                                to: label_to,
-                            };
-                            debug_assert!(
-                                label_range.overlaps(&range),
-                                "label_range = {:?} range = {:?}",
-                                label_range,
-                                range
-                            );
                         }
 
                         let from = std::cmp::max(label_from, range.from);
