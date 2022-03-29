@@ -57,7 +57,6 @@ impl<'a, F: Function> Env<'a, F> {
             ranges: Vec::with_capacity(4 * n),
             spillsets: Vec::with_capacity(n),
             vregs: Vec::with_capacity(n),
-            vreg_regs: Vec::with_capacity(n),
             pregs: vec![],
             allocation_queue: PrioQueue::new(),
             safepoints: vec![],
