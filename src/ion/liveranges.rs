@@ -119,6 +119,8 @@ impl<'a, F: Function> Env<'a, F> {
                     ranges: smallvec![],
                     blockparam: Block::invalid(),
                     is_ref: false,
+                    // We'll learn the RegClass as we scan the code.
+                    class: None,
                 },
             );
         }
@@ -137,8 +139,8 @@ impl<'a, F: Function> Env<'a, F> {
 
     pub fn add_vreg(&mut self, reg: VReg, data: VRegData) -> VRegIndex {
         let idx = self.vregs.len();
+        debug_assert_eq!(reg.vreg(), idx);
         self.vregs.push(data);
-        self.vreg_regs.push(reg);
         VRegIndex::new(idx)
     }
 
@@ -322,8 +324,9 @@ impl<'a, F: Function> Env<'a, F> {
             // Include outgoing blockparams in the initial live set.
             if self.func.is_branch(insns.last()) {
                 for i in 0..self.func.block_succs(block).len() {
-                    for param in self.func.branch_blockparams(block, insns.last(), i) {
+                    for &param in self.func.branch_blockparams(block, insns.last(), i) {
                         live.set(param.vreg(), true);
+                        self.observe_vreg_class(param);
                     }
                 }
             }
@@ -332,6 +335,8 @@ impl<'a, F: Function> Env<'a, F> {
                 if let Some((src, dst)) = self.func.is_move(inst) {
                     live.set(dst.vreg().vreg(), false);
                     live.set(src.vreg().vreg(), true);
+                    self.observe_vreg_class(src.vreg());
+                    self.observe_vreg_class(dst.vreg());
                 }
 
                 for pos in &[OperandPos::Late, OperandPos::Early] {
@@ -347,12 +352,14 @@ impl<'a, F: Function> Env<'a, F> {
                                     live.set(op.vreg().vreg(), false);
                                 }
                             }
+                            self.observe_vreg_class(op.vreg());
                         }
                     }
                 }
             }
             for &blockparam in self.func.block_params(block) {
                 live.set(blockparam.vreg(), false);
+                self.observe_vreg_class(blockparam);
             }
 
             for &pred in self.func.block_preds(block) {
@@ -372,7 +379,7 @@ impl<'a, F: Function> Env<'a, F> {
         // for pinned vregs. (The client should create a virtual
         // instruction that defines any other liveins if necessary.)
         for livein in self.liveins[self.func.entry_block().index()].iter() {
-            let livein = self.vreg_regs[livein];
+            let livein = self.vreg(VRegIndex::new(livein));
             if self.func.is_pinned_vreg(livein).is_none() {
                 trace!("non-pinned-vreg livein to entry block: {}", livein);
                 return Err(RegAllocError::EntryLivein);
@@ -451,8 +458,7 @@ impl<'a, F: Function> Env<'a, F> {
             }
 
             // Create vreg data for blockparams.
-            for param in self.func.block_params(block) {
-                self.vreg_regs[param.vreg()] = *param;
+            for &param in self.func.block_params(block) {
                 self.vregs[param.vreg()].blockparam = block;
             }
 
@@ -841,7 +847,6 @@ impl<'a, F: Function> Env<'a, F> {
                                 self.ranges[dst_lr.index()].set_flag(LiveRangeFlag::StartsAtDef);
                                 live.set(dst.vreg().vreg(), false);
                                 vreg_ranges[dst.vreg().vreg()] = LiveRangeIndex::invalid();
-                                self.vreg_regs[dst.vreg().vreg()] = dst.vreg();
 
                                 // Handle the use w.r.t. liveranges: make it live
                                 // and create an initial LR back to the start of
@@ -929,9 +934,6 @@ impl<'a, F: Function> Env<'a, F> {
                         match operand.kind() {
                             OperandKind::Def | OperandKind::Mod => {
                                 trace!("Def of {} at {:?}", operand.vreg(), pos);
-
-                                // Fill in vreg's actual data.
-                                self.vreg_regs[operand.vreg().vreg()] = operand.vreg();
 
                                 // Get or create the LiveRange.
                                 let mut lr = vreg_ranges[operand.vreg().vreg()];
@@ -1107,7 +1109,7 @@ impl<'a, F: Function> Env<'a, F> {
                     // Create a virtual use.
                     let pos = ProgPoint::before(self.safepoints[safepoint_idx]);
                     let operand = Operand::new(
-                        self.vreg_regs[vreg.index()],
+                        self.vreg(vreg),
                         OperandConstraint::Stack,
                         OperandKind::Use,
                         OperandPos::Early,

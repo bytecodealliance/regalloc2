@@ -52,11 +52,11 @@ impl<'a, F: Function> Env<'a, F> {
             // Sanity check: both bundles should contain only ranges with appropriate VReg classes.
             for entry in &self.bundles[from.index()].ranges {
                 let vreg = self.ranges[entry.index.index()].vreg;
-                debug_assert_eq!(from_rc, self.vreg_regs[vreg.index()].class());
+                debug_assert_eq!(from_rc, self.vreg(vreg).class());
             }
             for entry in &self.bundles[to.index()].ranges {
                 let vreg = self.ranges[entry.index.index()].vreg;
-                debug_assert_eq!(to_rc, self.vreg_regs[vreg.index()].class());
+                debug_assert_eq!(to_rc, self.vreg(vreg).class());
             }
         }
 
@@ -234,7 +234,7 @@ impl<'a, F: Function> Env<'a, F> {
 
             // If this is a pinned vreg, go ahead and add it to the
             // commitment map, and avoid creating a bundle entirely.
-            if let Some(preg) = self.func.is_pinned_vreg(self.vreg_regs[vreg.index()]) {
+            if let Some(preg) = self.func.is_pinned_vreg(self.vreg(vreg)) {
                 for entry in &self.vregs[vreg.index()].ranges {
                     let key = LiveRangeKey::from_range(&entry.range);
                     self.pregs[preg.index()]
@@ -281,7 +281,7 @@ impl<'a, F: Function> Env<'a, F> {
 
             // Create a spillslot for this bundle.
             let ssidx = SpillSetIndex::new(self.spillsets.len());
-            let reg = self.vreg_regs[vreg.index()];
+            let reg = self.vreg(vreg);
             let size = self.func.spillslot_size(reg.class()) as u8;
             self.spillsets.push(SpillSet {
                 vregs: smallvec![vreg],
@@ -361,8 +361,8 @@ impl<'a, F: Function> Env<'a, F> {
                 dst
             );
 
-            let dst_vreg = self.vreg_regs[self.ranges[dst.index()].vreg.index()];
-            let src_vreg = self.vreg_regs[self.ranges[src.index()].vreg.index()];
+            let dst_vreg = self.vreg(self.ranges[dst.index()].vreg);
+            let src_vreg = self.vreg(self.ranges[src.index()].vreg);
             if self.func.is_pinned_vreg(src_vreg).is_some()
                 && self.func.is_pinned_vreg(dst_vreg).is_some()
             {

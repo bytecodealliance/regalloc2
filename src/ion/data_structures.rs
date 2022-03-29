@@ -259,6 +259,8 @@ pub struct VRegData {
     pub ranges: LiveRangeList,
     pub blockparam: Block,
     pub is_ref: bool,
+    // We don't initially know the RegClass until we observe a use of the VReg.
+    pub class: Option<RegClass>,
 }
 
 #[derive(Clone, Debug)]
@@ -340,7 +342,6 @@ pub struct Env<'a, F: Function> {
     pub bundles: Vec<LiveBundle>,
     pub spillsets: Vec<SpillSet>,
     pub vregs: Vec<VRegData>,
-    pub vreg_regs: Vec<VReg>,
     pub pregs: Vec<PRegData>,
     pub allocation_queue: PrioQueue,
     pub safepoints: Vec<Inst>, // Sorted list of safepoint insts.
@@ -395,6 +396,31 @@ pub struct Env<'a, F: Function> {
     // ProgPoint to insert into the final allocated program listing.
     pub debug_annotations: std::collections::HashMap<ProgPoint, Vec<String>>,
     pub annotations_enabled: bool,
+}
+
+impl<'a, F: Function> Env<'a, F> {
+    /// Get the VReg (with bundled RegClass) from a vreg index.
+    #[inline]
+    pub fn vreg(&self, index: VRegIndex) -> VReg {
+        let class = self.vregs[index.index()]
+            .class
+            .expect("trying to get a VReg before observing its class");
+        VReg::new(index.index(), class)
+    }
+
+    /// Record the class of a VReg. We learn this only when we observe
+    /// the VRegs in use.
+    pub fn observe_vreg_class(&mut self, vreg: VReg) {
+        let old_class = self.vregs[vreg.vreg()].class.replace(vreg.class());
+        // We should never observe two different classes for two
+        // mentions of a VReg in the source program.
+        debug_assert!(old_class == None || old_class == Some(vreg.class()));
+    }
+
+    /// Is this vreg actually used in the source program?
+    pub fn is_vreg_used(&self, index: VRegIndex) -> bool {
+        self.vregs[index.index()].class.is_some()
+    }
 }
 
 #[derive(Clone, Debug)]

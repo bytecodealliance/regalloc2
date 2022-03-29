@@ -188,8 +188,11 @@ impl<'a, F: Function> Env<'a, F> {
         let mut prog_move_dst_idx = 0;
         for vreg in 0..self.vregs.len() {
             let vreg = VRegIndex::new(vreg);
+            if !self.is_vreg_used(vreg) {
+                continue;
+            }
 
-            let pinned_alloc = self.func.is_pinned_vreg(self.vreg_regs[vreg.index()]);
+            let pinned_alloc = self.func.is_pinned_vreg(self.vreg(vreg));
 
             // For each range in each vreg, insert moves or
             // half-moves.  We also scan over `blockparam_ins` and
@@ -283,7 +286,7 @@ impl<'a, F: Function> Env<'a, F> {
                             InsertMovePrio::Regular,
                             prev_alloc,
                             alloc,
-                            Some(self.vreg_regs[vreg.index()]),
+                            Some(self.vreg(vreg)),
                         );
                     }
                 }
@@ -725,7 +728,7 @@ impl<'a, F: Function> Env<'a, F> {
                     prio,
                     src.alloc,
                     dest.alloc,
-                    Some(self.vreg_regs[dest.to_vreg().index()]),
+                    Some(self.vreg(dest.to_vreg())),
                 );
                 last = Some(dest.alloc);
             }
@@ -747,7 +750,7 @@ impl<'a, F: Function> Env<'a, F> {
                 InsertMovePrio::MultiFixedReg,
                 from_alloc,
                 to_alloc,
-                Some(self.vreg_regs[fixup.vreg.index()]),
+                Some(self.vreg(fixup.vreg)),
             );
             self.set_alloc(
                 fixup.pos.inst(),
@@ -877,7 +880,7 @@ impl<'a, F: Function> Env<'a, F> {
                 InsertMovePrio::Regular,
                 from_alloc,
                 to_alloc,
-                Some(self.vreg_regs[to_vreg.index()]),
+                Some(self.vreg(to_vreg)),
             );
         }
 
