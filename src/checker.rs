@@ -43,18 +43,17 @@
 //!
 //! ## Formal Definition
 //!
-//! The analysis lattice is:
+//! The analysis lattice consists of the elements of 𝒫(V), the
+//! powerset (set of all subsets) of V (the set of all virtual
+//! registers). The ⊤ (top) value in the lattice is V itself, and the
+//! ⊥ (bottom) value in the lattice is ∅ (the empty set). The lattice
+//! ordering relation is the subset relation: S ≤ U iff S ⊆ U. These
+//! definitions imply that the lattice meet-function (greatest lower
+//! bound) is set-intersection.
 //!
-//! ```plain
-//!                      Top (V)
-//!                         |
-//!                        𝒫(V)   // the Powerset of the set of virtual regs
-//!                         |
-//!                 Bottom ( ∅ )     // the empty set
-//! ```
-//!
-//! and the lattice ordering relation is the subset relation: S ≤ U
-//! iff S ⊆ U. The lattice meet-function is intersection.
+//! (For efficiency, we represent ⊤ not by actually listing out all
+//! virtual registers, but by representing a special "top" value, but
+//! the semantics are the same.)
 //!
 //! The dataflow analysis state at each program point (each point
 //! before or after an instruction) is:
@@ -178,19 +177,33 @@ pub enum CheckerError {
 /// universe-set as top and empty set as bottom lattice element. The
 /// meet-function is thus set intersection.
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct CheckerValue {
-    /// This value is the "universe set".
-    universe: bool,
-    /// The VRegs that this value is equal to.
-    vregs: FxHashSet<VReg>,
+enum CheckerValue {
+    /// The lattice top-value: this value could be equivalent to any
+    /// vreg (i.e., the universe set).
+    Universe,
+    /// The set of VRegs that this value is equal to.
+    VRegs(FxHashSet<VReg>),
+}
+
+impl CheckerValue {
+    fn vregs(&self) -> Option<&FxHashSet<VReg>> {
+        match self {
+            CheckerValue::Universe => None,
+            CheckerValue::VRegs(vregs) => Some(vregs),
+        }
+    }
+
+    fn vregs_mut(&mut self) -> Option<&mut FxHashSet<VReg>> {
+        match self {
+            CheckerValue::Universe => None,
+            CheckerValue::VRegs(vregs) => Some(vregs),
+        }
+    }
 }
 
 impl Default for CheckerValue {
     fn default() -> CheckerValue {
-        CheckerValue {
-            universe: true,
-            vregs: FxHashSet::default(),
-        }
+        CheckerValue::Universe
     }
 }
 
@@ -199,61 +212,126 @@ impl CheckerValue {
     /// lattice. Returns a boolean value indicating whether `self` was
     /// changed.
     fn meet_with(&mut self, other: &CheckerValue) {
-        if other.universe {
-            // Nothing.
-        } else if self.universe {
-            *self = other.clone();
-        } else {
-            self.vregs.retain(|vreg| other.vregs.contains(vreg));
+        match (self, other) {
+            (_, CheckerValue::Universe) => {
+                // Nothing.
+            }
+            (this @ CheckerValue::Universe, _) => {
+                *this = other.clone();
+            }
+            (CheckerValue::VRegs(my_vregs), CheckerValue::VRegs(other_vregs)) => {
+                my_vregs.retain(|vreg| other_vregs.contains(vreg));
+            }
         }
     }
 
     fn from_reg(reg: VReg) -> CheckerValue {
-        CheckerValue {
-            universe: false,
-            vregs: std::iter::once(reg).collect(),
-        }
+        CheckerValue::VRegs(std::iter::once(reg).collect())
     }
 
     fn remove_vreg(&mut self, reg: VReg) {
-        self.vregs.remove(&reg);
+        match self {
+            CheckerValue::Universe => {
+                panic!("Cannot remove VReg from Universe set (we do not have the full list of vregs available");
+            }
+            CheckerValue::VRegs(vregs) => {
+                vregs.remove(&reg);
+            }
+        }
     }
 
     fn empty() -> CheckerValue {
-        CheckerValue {
-            universe: false,
-            vregs: FxHashSet::default(),
-        }
+        CheckerValue::VRegs(FxHashSet::default())
     }
 }
 
 /// State that steps through program points as we scan over the instruction stream.
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct CheckerState {
-    top: bool,
-    allocations: FxHashMap<Allocation, CheckerValue>,
+enum CheckerState {
+    Top,
+    Allocations(FxHashMap<Allocation, CheckerValue>),
+}
+
+impl CheckerState {
+    fn get_value(&self, alloc: &Allocation) -> Option<&CheckerValue> {
+        match self {
+            CheckerState::Top => None,
+            CheckerState::Allocations(allocs) => allocs.get(alloc),
+        }
+    }
+
+    fn get_values_mut(&mut self) -> impl Iterator<Item = &mut CheckerValue> {
+        match self {
+            CheckerState::Top => panic!("Cannot get mutable values iterator on Top state"),
+            CheckerState::Allocations(allocs) => allocs.values_mut(),
+        }
+    }
+
+    fn get_mappings(&self) -> impl Iterator<Item = (&Allocation, &CheckerValue)> {
+        match self {
+            CheckerState::Top => panic!("Cannot get mappings iterator on Top state"),
+            CheckerState::Allocations(allocs) => allocs.iter(),
+        }
+    }
+
+    fn get_mappings_mut(&mut self) -> impl Iterator<Item = (&Allocation, &mut CheckerValue)> {
+        match self {
+            CheckerState::Top => panic!("Cannot get mutable mappings iterator on Top state"),
+            CheckerState::Allocations(allocs) => allocs.iter_mut(),
+        }
+    }
+
+    /// Transition from a "top" (undefined/unanalyzed) state to an empty set of allocations.
+    fn become_defined(&mut self) {
+        match self {
+            CheckerState::Top => *self = CheckerState::Allocations(FxHashMap::default()),
+            _ => {}
+        }
+    }
+
+    fn set_value(&mut self, alloc: Allocation, value: CheckerValue) {
+        match self {
+            CheckerState::Top => {
+                panic!("Cannot set value on Top state");
+            }
+            CheckerState::Allocations(allocs) => {
+                allocs.insert(alloc, value);
+            }
+        }
+    }
+
+    fn remove_value(&mut self, alloc: &Allocation) {
+        match self {
+            CheckerState::Top => {
+                panic!("Cannot remove value on Top state");
+            }
+            CheckerState::Allocations(allocs) => {
+                allocs.remove(alloc);
+            }
+        }
+    }
 }
 
 impl Default for CheckerState {
     fn default() -> CheckerState {
-        CheckerState {
-            top: true,
-            allocations: FxHashMap::default(),
-        }
+        CheckerState::Top
     }
 }
 
 impl std::fmt::Display for CheckerValue {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        if self.universe {
-            write!(f, "top")
-        } else {
-            write!(f, "{{ ")?;
-            for vreg in &self.vregs {
-                write!(f, "{} ", vreg)?;
+        match self {
+            CheckerValue::Universe => {
+                write!(f, "top")
             }
-            write!(f, "}}")?;
-            Ok(())
+            CheckerValue::VRegs(vregs) => {
+                write!(f, "{{ ")?;
+                for vreg in vregs {
+                    write!(f, "{} ", vreg)?;
+                }
+                write!(f, "}}")?;
+                Ok(())
+            }
         }
     }
 }
@@ -281,13 +359,19 @@ impl CheckerState {
 
     /// Merge this checker state with another at a CFG join-point.
     fn meet_with(&mut self, other: &CheckerState) {
-        if other.top {
-            // Nothing.
-        } else if self.top {
-            *self = other.clone();
-        } else {
-            self.top = false;
-            merge_map(&mut self.allocations, &other.allocations);
+        match (self, other) {
+            (_, CheckerState::Top) => {
+                // Nothing.
+            }
+            (this @ CheckerState::Top, _) => {
+                *this = other.clone();
+            }
+            (
+                CheckerState::Allocations(my_allocations),
+                CheckerState::Allocations(other_allocations),
+            ) => {
+                merge_map(my_allocations, other_allocations);
+            }
         }
     }
 
@@ -303,17 +387,19 @@ impl CheckerState {
             return Err(CheckerError::MissingAllocation { inst, op });
         }
 
-        if val.universe {
-            return Err(CheckerError::UnknownValueInAllocation { inst, op, alloc });
-        }
-
-        if !val.vregs.contains(&op.vreg()) {
-            return Err(CheckerError::IncorrectValuesInAllocation {
-                inst,
-                op,
-                alloc,
-                actual: val.vregs.clone(),
-            });
+        match val {
+            CheckerValue::Universe => {
+                return Err(CheckerError::UnknownValueInAllocation { inst, op, alloc });
+            }
+            CheckerValue::VRegs(vregs) if !vregs.contains(&op.vreg()) => {
+                return Err(CheckerError::IncorrectValuesInAllocation {
+                    inst,
+                    op,
+                    alloc,
+                    actual: vregs.clone(),
+                });
+            }
+            _ => {}
         }
 
         self.check_constraint(inst, op, alloc, allocs)?;
@@ -364,7 +450,7 @@ impl CheckerState {
                         continue;
                     }
 
-                    let val = self.allocations.get(alloc).unwrap_or(&default_val);
+                    let val = self.get_value(alloc).unwrap_or(&default_val);
                     trace!(
                         "checker: checkinst {:?}: op {:?}, alloc {:?}, checker value {:?}",
                         checkinst,
@@ -377,7 +463,7 @@ impl CheckerState {
             }
             &CheckerInst::Safepoint { inst, ref allocs } => {
                 for &alloc in allocs {
-                    let val = self.allocations.get(&alloc).unwrap_or(&default_val);
+                    let val = self.get_value(&alloc).unwrap_or(&default_val);
                     trace!(
                         "checker: checkinst {:?}: safepoint slot {}, checker value {:?}",
                         checkinst,
@@ -386,14 +472,15 @@ impl CheckerState {
                     );
 
                     let reffy = val
-                        .vregs
+                        .vregs()
+                        .expect("checker value should not be Universe set")
                         .iter()
                         .any(|vreg| checker.reftyped_vregs.contains(vreg));
                     if !reffy {
                         return Err(CheckerError::NonRefValuesInStackmap {
                             inst,
                             alloc,
-                            vregs: val.vregs.clone(),
+                            vregs: val.vregs().unwrap().clone(),
                         });
                     }
                 }
@@ -409,11 +496,12 @@ impl CheckerState {
 
     /// Update according to instruction.
     fn update<'a, F: Function>(&mut self, checkinst: &CheckerInst, checker: &Checker<'a, F>) {
-        self.top = false;
+        self.become_defined();
+
         let default_val = Default::default();
         match checkinst {
             &CheckerInst::Move { into, from } => {
-                let val = self.allocations.get(&from).unwrap_or(&default_val).clone();
+                let val = self.get_value(&from).unwrap_or(&default_val).clone();
                 trace!(
                     "checker: checkinst {:?} updating: move {:?} -> {:?} val {:?}",
                     checkinst,
@@ -421,7 +509,7 @@ impl CheckerState {
                     into,
                     val
                 );
-                self.allocations.insert(into, val);
+                self.set_value(into, val);
             }
             &CheckerInst::ParallelMove { ref moves } => {
                 // First, build map of actions for each vreg in an
@@ -445,20 +533,19 @@ impl CheckerState {
                 // first deleting those labels that were updated by
                 // this parallel move, then adding back labels
                 // redefined by the move.
-                for value in self.allocations.values_mut() {
-                    if value.universe {
-                        continue;
-                    }
-                    let mut insertions: SmallVec<[VReg; 2]> = smallvec![];
-                    for &vreg in &value.vregs {
-                        if let Some(additions) = additions.get(&vreg) {
-                            insertions.extend(additions.iter().cloned());
+                for value in self.get_values_mut() {
+                    if let Some(vregs) = value.vregs_mut() {
+                        let mut insertions: SmallVec<[VReg; 2]> = smallvec![];
+                        for &vreg in vregs.iter() {
+                            if let Some(additions) = additions.get(&vreg) {
+                                insertions.extend(additions.iter().cloned());
+                            }
                         }
+                        for &d in &deletions {
+                            vregs.remove(&d);
+                        }
+                        vregs.extend(insertions);
                     }
-                    for &d in &deletions {
-                        value.vregs.remove(&d);
-                    }
-                    value.vregs.extend(insertions);
                 }
             }
             &CheckerInst::Op {
@@ -475,31 +562,31 @@ impl CheckerState {
                     if op.kind() != OperandKind::Def {
                         continue;
                     }
-                    self.allocations
-                        .insert(*alloc, CheckerValue::from_reg(op.vreg()));
-                    for (other_alloc, other_value) in &mut self.allocations {
+                    self.set_value(*alloc, CheckerValue::from_reg(op.vreg()));
+                    for (other_alloc, other_value) in self.get_mappings_mut() {
                         if *alloc != *other_alloc {
                             other_value.remove_vreg(op.vreg());
                         }
                     }
                 }
                 for clobber in clobbers {
-                    self.allocations.remove(&Allocation::reg(*clobber));
+                    self.remove_value(&Allocation::reg(*clobber));
                 }
             }
             &CheckerInst::Safepoint { ref allocs, .. } => {
-                for (alloc, value) in &mut self.allocations {
+                for (alloc, value) in self.get_mappings_mut() {
                     if alloc.is_reg() {
                         continue;
                     }
                     if !allocs.contains(&alloc) {
                         // Remove all reftyped vregs as labels.
                         let new_vregs = value
-                            .vregs
+                            .vregs()
+                            .unwrap()
                             .difference(&checker.reftyped_vregs)
                             .cloned()
                             .collect();
-                        value.vregs = new_vregs;
+                        *value = CheckerValue::VRegs(new_vregs);
                     }
                 }
             }
@@ -817,11 +904,13 @@ impl<'a, F: Function> Checker<'a, F> {
 
         trace!("=== CHECKER RESULT ===");
         fn print_state(state: &CheckerState) {
-            let mut s = vec![];
-            for (alloc, state) in &state.allocations {
-                s.push(format!("{} := {}", alloc, state));
+            if let CheckerState::Allocations(allocs) = state {
+                let mut s = vec![];
+                for (alloc, state) in allocs {
+                    s.push(format!("{} := {}", alloc, state));
+                }
+                trace!("    {{ {} }}", s.join(", "))
             }
-            trace!("    {{ {} }}", s.join(", "))
         }
         for vreg in self.f.reftype_vregs() {
             trace!("  REF: {}", vreg);
