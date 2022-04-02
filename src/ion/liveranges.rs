@@ -176,7 +176,11 @@ impl<'a, F: Function> Env<'a, F> {
     /// Mark `range` as live for the given `vreg`.
     ///
     /// Returns the liverange that contains the given range.
-    pub fn add_liverange_to_vreg(&mut self, vreg: VRegIndex, range: CodeRange) -> LiveRangeIndex {
+    pub fn add_liverange_to_vreg(
+        &mut self,
+        vreg: VRegIndex,
+        mut range: CodeRange,
+    ) -> LiveRangeIndex {
         trace!("add_liverange_to_vreg: vreg {:?} range {:?}", vreg, range);
 
         // Invariant: as we are building liveness information, we
@@ -190,18 +194,30 @@ impl<'a, F: Function> Env<'a, F> {
         // array, then reverse them at the end of
         // `compute_liveness()`.
 
-        debug_assert!(
-            self.vregs[vreg.index()].ranges.is_empty()
-                || range.to
-                    <= self.ranges[self.vregs[vreg.index()]
-                        .ranges
-                        .last()
-                        .unwrap()
-                        .index
-                        .index()]
-                    .range
-                    .from
-        );
+        if !self.vregs[vreg.index()].ranges.is_empty() {
+            let last_range_index = self.vregs[vreg.index()].ranges.last().unwrap().index;
+            let last_range = self.ranges[last_range_index.index()].range;
+            if self.func.allow_multiple_vreg_defs() {
+                if last_range.contains(&range) {
+                    // Special case (may occur when multiple defs of pinned
+                    // physical regs occur): if this new range overlaps the
+                    // existing range, return it.
+                    return last_range_index;
+                }
+                // If this range's end falls in the middle of the last
+                // range, truncate it to be contiguous so we can merge
+                // below.
+                if range.to >= last_range.from && range.to <= last_range.to {
+                    range.to = last_range.from;
+                }
+            }
+            debug_assert!(
+                range.to <= last_range.from,
+                "range {:?}, last_range {:?}",
+                range,
+                last_range
+            );
+        }
 
         if self.vregs[vreg.index()].ranges.is_empty()
             || range.to
