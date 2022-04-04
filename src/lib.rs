@@ -1011,6 +1011,24 @@ pub trait Function {
     fn multi_spillslot_named_by_last_slot(&self) -> bool {
         false
     }
+
+    // -----------
+    // Misc config
+    // -----------
+
+    /// Allow a single instruction to define a vreg multiple times. If
+    /// allowed, the semantics are as if the definition occurs only
+    /// once, and all defs will get the same alloc. This flexibility is
+    /// meant to allow the embedder to more easily aggregate operands
+    /// together in macro/pseudoinstructions, or e.g. add additional
+    /// clobbered vregs without taking care to deduplicate. This may be
+    /// particularly useful when referring to physical registers via
+    /// pinned vregs. It is optional functionality because a strict mode
+    /// (at most one def per vreg) is also useful for finding bugs in
+    /// other applications.
+    fn allow_multiple_vreg_defs(&self) -> bool {
+        false
+    }
 }
 
 /// A position before or after an instruction at which we can make an
