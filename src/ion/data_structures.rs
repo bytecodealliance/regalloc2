@@ -584,6 +584,7 @@ impl PosWithPrio {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
+#[cfg_attr(feature = "enable-serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Stats {
     pub livein_blocks: usize,
     pub livein_iterations: usize,

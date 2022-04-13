@@ -39,6 +39,9 @@ pub mod checker;
 #[cfg(feature = "fuzzing")]
 pub mod fuzzing;
 
+#[cfg(feature = "enable-serde")]
+use serde::{Deserialize, Serialize};
+
 /// Register classes.
 ///
 /// Every value has a "register class", which is like a type at the
@@ -53,6 +56,7 @@ pub mod fuzzing;
 /// operations. If needed, we could adjust bitpacking to allow for
 /// more classes in the future.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "enable-serde", derive(Serialize, Deserialize))]
 pub enum RegClass {
     Int = 0,
     Float = 1,
@@ -73,6 +77,7 @@ pub enum RegClass {
 /// the MSB, or equivalently, declaring that indices 0..=63 are the 64
 /// integer registers and indices 64..=127 are the 64 float registers.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "enable-serde", derive(Serialize, Deserialize))]
 pub struct PReg {
     bits: u8,
 }
@@ -171,6 +176,7 @@ impl std::fmt::Display for PReg {
 /// we need the vreg's live range in order to track the use of that
 /// location.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "enable-serde", derive(Serialize, Deserialize))]
 pub struct VReg {
     bits: u32,
 }
@@ -236,6 +242,7 @@ impl std::fmt::Display for VReg {
 /// and will specify how many spillslots have been used when the
 /// allocation is completed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "enable-serde", derive(Serialize, Deserialize))]
 pub struct SpillSlot {
     bits: u32,
 }
@@ -308,6 +315,7 @@ impl std::fmt::Display for SpillSlot {
 /// is usually a programming error in the client, rather than a
 /// function of bad input).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "enable-serde", derive(Serialize, Deserialize))]
 pub enum OperandConstraint {
     /// Any location is fine (register or stack slot).
     Any,
@@ -336,6 +344,7 @@ impl std::fmt::Display for OperandConstraint {
 /// The "kind" of the operand: whether it reads a vreg (Use), writes a
 /// vreg (Def), or reads and then writes (Mod, for "modify").
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "enable-serde", derive(Serialize, Deserialize))]
 pub enum OperandKind {
     Def = 0,
     Mod = 1,
@@ -361,6 +370,7 @@ pub enum OperandKind {
 /// the use (normally complete at "Early") and the def (normally
 /// starting at "Late"). See `Operand` for more.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "enable-serde", derive(Serialize, Deserialize))]
 pub enum OperandPos {
     Early = 0,
     Late = 1,
@@ -389,6 +399,7 @@ pub enum OperandPos {
 /// that the conflict (overlap) is properly accounted for. See
 /// comments on the constructors below for more.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "enable-serde", derive(Serialize, Deserialize))]
 pub struct Operand {
     /// Bit-pack into 32 bits.
     ///
@@ -686,6 +697,7 @@ impl std::fmt::Display for Operand {
 /// An Allocation represents the end result of regalloc for an
 /// Operand.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "enable-serde", derive(Serialize, Deserialize))]
 pub struct Allocation {
     /// Bit-pack in 32 bits.
     ///
@@ -820,6 +832,7 @@ impl Allocation {
 /// spillslot/stack.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
+#[cfg_attr(feature = "enable-serde", derive(Serialize, Deserialize))]
 pub enum AllocationKind {
     None = 0,
     Reg = 1,
@@ -1042,6 +1055,7 @@ pub trait Function {
 /// describe these two insertion points.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
+#[cfg_attr(feature = "enable-serde", derive(Serialize, Deserialize))]
 pub enum InstPosition {
     Before = 0,
     After = 1,
@@ -1049,6 +1063,7 @@ pub enum InstPosition {
 
 /// A program point: a single point before or after a given instruction.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "enable-serde", derive(Serialize, Deserialize))]
 pub struct ProgPoint {
     bits: u32,
 }
@@ -1140,6 +1155,7 @@ impl ProgPoint {
 
 /// An instruction to insert into the program to perform some data movement.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "enable-serde", derive(Serialize, Deserialize))]
 pub enum Edit {
     /// Move one allocation to another. Each allocation may be a
     /// register or a stack slot (spillslot). However, stack-to-stack
@@ -1196,6 +1212,7 @@ impl<'a> Iterator for OutputIter<'a> {
 /// scratch register for each class, and some other miscellaneous info
 /// as well.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "enable-serde", derive(Serialize, Deserialize))]
 pub struct MachineEnv {
     /// Preferred physical registers for each class. These are the
     /// registers that will be allocated first, if free.
@@ -1231,6 +1248,7 @@ pub struct MachineEnv {
 
 /// The output of the register allocator.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "enable-serde", derive(Serialize, Deserialize))]
 pub struct Output {
     /// How many spillslots are needed in the frame?
     pub num_spillslots: usize,
@@ -1303,6 +1321,7 @@ impl Output {
 
 /// An error that prevents allocation.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "enable-serde", derive(Serialize, Deserialize))]
 pub enum RegAllocError {
     /// Critical edge is not split between given blocks.
     CritEdge(Block, Block),
