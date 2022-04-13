@@ -2,6 +2,10 @@
 macro_rules! define_index {
     ($ix:ident) => {
         #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        #[cfg_attr(
+            feature = "enable-serde",
+            derive(::serde::Serialize, ::serde::Deserialize)
+        )]
         pub struct $ix(pub u32);
         impl $ix {
             #[inline(always)]
