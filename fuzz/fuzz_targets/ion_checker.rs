@@ -42,7 +42,7 @@ fuzz_target!(|testcase: TestCase| {
     let env = regalloc2::fuzzing::func::machine_env();
     let out = regalloc2::fuzzing::ion::run(&func, &env, true).expect("regalloc did not succeed");
 
-    let mut checker = Checker::new(&func);
+    let mut checker = Checker::new(&func, &env);
     checker.prepare(&out);
     checker.run().expect("checker failed");
 });

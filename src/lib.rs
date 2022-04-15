@@ -582,6 +582,32 @@ impl Operand {
         )
     }
 
+    /// Create an `Operand` that designates a use of a vreg and places
+    /// no constraints on its location (i.e., it can be allocated into
+    /// either a register or on the stack).
+    #[inline(always)]
+    pub fn any_use(vreg: VReg) -> Self {
+        Operand::new(
+            vreg,
+            OperandConstraint::Any,
+            OperandKind::Use,
+            OperandPos::Early,
+        )
+    }
+
+    /// Create an `Operand` that designates a def of a vreg and places
+    /// no constraints on its location (i.e., it can be allocated into
+    /// either a register or on the stack).
+    #[inline(always)]
+    pub fn any_def(vreg: VReg) -> Self {
+        Operand::new(
+            vreg,
+            OperandConstraint::Any,
+            OperandKind::Def,
+            OperandPos::Late,
+        )
+    }
+
     /// Get the virtual register designated by an operand. Every
     /// operand must name some virtual register, even if it constrains
     /// the operand to a fixed physical register as well; the vregs
