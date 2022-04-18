@@ -96,8 +96,8 @@
 #![allow(dead_code)]
 
 use crate::{
-    Allocation, AllocationKind, Block, Edit, Function, Inst, InstOrEdit, InstPosition, Operand,
-    OperandConstraint, OperandKind, OperandPos, Output, PReg, RegClass, VReg,
+    Allocation, AllocationKind, Block, Edit, Function, Inst, InstOrEdit, InstPosition, MachineEnv,
+    Operand, OperandConstraint, OperandKind, OperandPos, Output, PReg, VReg,
 };
 use fxhash::{FxHashMap, FxHashSet};
 use smallvec::{smallvec, SmallVec};
@@ -240,8 +240,46 @@ impl CheckerValue {
         }
     }
 
+    fn copy_vreg(&mut self, src: VReg, dst: VReg) {
+        match self {
+            CheckerValue::Universe => {
+                // Nothing.
+            }
+            CheckerValue::VRegs(vregs) => {
+                if vregs.contains(&src) {
+                    vregs.insert(dst);
+                }
+            }
+        }
+    }
+
     fn empty() -> CheckerValue {
         CheckerValue::VRegs(FxHashSet::default())
+    }
+}
+
+fn visit_all_vregs<F: Function, V: FnMut(VReg)>(f: &F, mut v: V) {
+    for block in 0..f.num_blocks() {
+        let block = Block::new(block);
+        for inst in f.block_insns(block).iter() {
+            for op in f.inst_operands(inst) {
+                v(op.vreg());
+            }
+            if let Some((src, dst)) = f.is_move(inst) {
+                v(src.vreg());
+                v(dst.vreg());
+            }
+            if f.is_branch(inst) {
+                for succ_idx in 0..f.block_succs(block).len() {
+                    for &param in f.branch_blockparams(block, inst, succ_idx) {
+                        v(param);
+                    }
+                }
+            }
+        }
+        for &vreg in f.block_params(block) {
+            v(vreg);
+        }
     }
 }
 
@@ -300,6 +338,19 @@ impl CheckerState {
         }
     }
 
+    fn copy_vreg(&mut self, src: VReg, dst: VReg) {
+        match self {
+            CheckerState::Top => {
+                // Nothing.
+            }
+            CheckerState::Allocations(allocs) => {
+                for value in allocs.values_mut() {
+                    value.copy_vreg(src, dst);
+                }
+            }
+        }
+    }
+
     fn remove_value(&mut self, alloc: &Allocation) {
         match self {
             CheckerState::Top => {
@@ -309,6 +360,27 @@ impl CheckerState {
                 allocs.remove(alloc);
             }
         }
+    }
+
+    fn initial_with_pinned_vregs<F: Function>(f: &F) -> CheckerState {
+        // Scan the function, looking for all vregs that are pinned
+        // vregs, gathering them with their PRegs.
+        let mut pinned_vregs: FxHashMap<VReg, PReg> = FxHashMap::default();
+        visit_all_vregs(f, |vreg: VReg| {
+            if let Some(preg) = f.is_pinned_vreg(vreg) {
+                pinned_vregs.insert(vreg, preg);
+            }
+        });
+
+        let mut allocs = FxHashMap::default();
+        for (vreg, preg) in pinned_vregs {
+            allocs.insert(
+                Allocation::reg(preg),
+                CheckerValue::VRegs(std::iter::once(vreg).collect()),
+            );
+        }
+
+        CheckerState::Allocations(allocs)
     }
 }
 
@@ -375,13 +447,14 @@ impl CheckerState {
         }
     }
 
-    fn check_val(
+    fn check_val<'a, F: Function>(
         &self,
         inst: Inst,
         op: Operand,
         alloc: Allocation,
         val: &CheckerValue,
         allocs: &[Allocation],
+        checker: &Checker<'a, F>,
     ) -> Result<(), CheckerError> {
         if alloc == Allocation::none() {
             return Err(CheckerError::MissingAllocation { inst, op });
@@ -402,7 +475,7 @@ impl CheckerState {
             _ => {}
         }
 
-        self.check_constraint(inst, op, alloc, allocs)?;
+        self.check_constraint(inst, op, alloc, allocs, checker)?;
 
         Ok(())
     }
@@ -458,7 +531,7 @@ impl CheckerState {
                         alloc,
                         val
                     );
-                    self.check_val(inst, *op, *alloc, val, allocs)?;
+                    self.check_val(inst, *op, *alloc, val, allocs, checker)?;
                 }
             }
             &CheckerInst::Safepoint { inst, ref allocs } => {
@@ -489,6 +562,25 @@ impl CheckerState {
                 // This doesn't need verification; we just update
                 // according to the move semantics in the step
                 // function below.
+            }
+            &CheckerInst::ProgramMove { inst, src, dst: _ } => {
+                // Validate that the fixed-reg constraint, if any, on
+                // `src` is satisfied.
+                if let OperandConstraint::FixedReg(preg) = src.constraint() {
+                    let alloc = Allocation::reg(preg);
+                    let val = self.get_value(&alloc).unwrap_or(&default_val);
+                    trace!(
+                        "checker: checkinst {:?}: cheker value in {:?} is {:?}",
+                        checkinst,
+                        alloc,
+                        val
+                    );
+                    self.check_val(inst, src, alloc, val, &[alloc], checker)?;
+                }
+                // Note that we don't do anything with `dst`
+                // here. That is implicitly checked whenever `dst` is
+                // used; the `update()` step below adds the symbolic
+                // vreg for `dst` into wherever `src` may be stored.
             }
         }
         Ok(())
@@ -562,12 +654,8 @@ impl CheckerState {
                     if op.kind() != OperandKind::Def {
                         continue;
                     }
+                    self.remove_vreg(op.vreg());
                     self.set_value(*alloc, CheckerValue::from_reg(op.vreg()));
-                    for (other_alloc, other_value) in self.get_mappings_mut() {
-                        if *alloc != *other_alloc {
-                            other_value.remove_vreg(op.vreg());
-                        }
-                    }
                 }
                 for clobber in clobbers {
                     self.remove_value(&Allocation::reg(*clobber));
@@ -590,22 +678,38 @@ impl CheckerState {
                     }
                 }
             }
+            &CheckerInst::ProgramMove { inst: _, src, dst } => {
+                // Remove all earlier instances of `dst`: this vreg is
+                // now stale (it is being overwritten).
+                self.remove_vreg(dst.vreg());
+                // Define `dst` wherever `src` occurs.
+                for (_, value) in self.get_mappings_mut() {
+                    value.copy_vreg(src.vreg(), dst.vreg());
+                }
+            }
         }
     }
 
-    fn check_constraint(
+    fn remove_vreg(&mut self, vreg: VReg) {
+        for (_, value) in self.get_mappings_mut() {
+            value.remove_vreg(vreg);
+        }
+    }
+
+    fn check_constraint<'a, F: Function>(
         &self,
         inst: Inst,
         op: Operand,
         alloc: Allocation,
         allocs: &[Allocation],
+        checker: &Checker<'a, F>,
     ) -> Result<(), CheckerError> {
         match op.constraint() {
             OperandConstraint::Any => {}
             OperandConstraint::Reg => {
-                // Reject pregs that represent a fixed stack slot.
                 if let Some(preg) = alloc.as_reg() {
-                    if preg.class() == RegClass::Int && (0..32).contains(&preg.hw_enc()) {
+                    // Reject pregs that represent a fixed stack slot.
+                    if !checker.machine_env.fixed_stack_slots.contains(&preg) {
                         return Ok(());
                     }
                 }
@@ -615,7 +719,7 @@ impl CheckerState {
                 if alloc.kind() != AllocationKind::Stack {
                     // Accept pregs that represent a fixed stack slot.
                     if let Some(preg) = alloc.as_reg() {
-                        if preg.class() == RegClass::Int && (32..63).contains(&preg.hw_enc()) {
+                        if checker.machine_env.fixed_stack_slots.contains(&preg) {
                             return Ok(());
                         }
                     }
@@ -674,6 +778,23 @@ pub(crate) enum CheckerInst {
     /// A safepoint, with the given Allocations specified as containing
     /// reftyped values. All other reftyped values become invalid.
     Safepoint { inst: Inst, allocs: Vec<Allocation> },
+
+    /// An op with one source operand, and one dest operand, that
+    /// copies any symbolic values from the source to the dest, in
+    /// addition to adding the symbolic value of the dest vreg to the
+    /// set. This "program move" is distinguished from the above
+    /// `Move` by being semantically relevant in the original
+    /// (pre-regalloc) program.
+    ///
+    /// We transform checker values as follows: for any vreg-set that
+    /// contains `dst`'s vreg, we first delete that vreg (because it
+    /// is being redefined). Then, for any vreg-set with `src`
+    /// present, we add `dst`.
+    ProgramMove {
+        inst: Inst,
+        src: Operand,
+        dst: Operand,
+    },
 }
 
 #[derive(Debug)]
@@ -683,6 +804,7 @@ pub struct Checker<'a, F: Function> {
     bb_insts: FxHashMap<Block, Vec<CheckerInst>>,
     edge_insts: FxHashMap<(Block, Block), Vec<CheckerInst>>,
     reftyped_vregs: FxHashSet<VReg>,
+    machine_env: &'a MachineEnv,
 }
 
 impl<'a, F: Function> Checker<'a, F> {
@@ -690,7 +812,7 @@ impl<'a, F: Function> Checker<'a, F> {
     /// info immediately.  The client should call the `add_*()`
     /// methods to add abstract instructions to each BB before
     /// invoking `run()` to check for errors.
-    pub fn new(f: &'a F) -> Checker<'a, F> {
+    pub fn new(f: &'a F, machine_env: &'a MachineEnv) -> Checker<'a, F> {
         let mut bb_in = FxHashMap::default();
         let mut bb_insts = FxHashMap::default();
         let mut edge_insts = FxHashMap::default();
@@ -709,12 +831,15 @@ impl<'a, F: Function> Checker<'a, F> {
             reftyped_vregs.insert(vreg);
         }
 
+        bb_in.insert(f.entry_block(), CheckerState::initial_with_pinned_vregs(f));
+
         Checker {
             f,
             bb_in,
             bb_insts,
             edge_insts,
             reftyped_vregs,
+            machine_env,
         }
     }
 
@@ -763,11 +888,45 @@ impl<'a, F: Function> Checker<'a, F> {
             self.bb_insts.get_mut(&block).unwrap().push(checkinst);
         }
 
+        // If this is a move, handle specially. Note that the
+        // regalloc2-inserted moves are not semantically present in
+        // the original program and so do not modify the sets of
+        // symbolic values at all, but rather just move them around;
+        // but "program moves" *are* present, and have the following
+        // semantics: they define the destination vreg, but also
+        // retain any symbolic values in the source.
+        //
+        // regalloc2 reifies all moves into edits in its unified
+        // move/edit framework, so we don't get allocs for these moves
+        // in the post-regalloc output, and the embedder is not
+        // supposed to emit the moves. But we *do* want to check the
+        // semantic implications, namely definition of new vregs and,
+        // for moves to/from pinned vregs, the implied register
+        // constraints. So we emit `ProgramMove` ops that do just
+        // this.
+        if let Some((src, dst)) = self.f.is_move(inst) {
+            let src_preg = self.f.is_pinned_vreg(src.vreg());
+            let src_op = match src_preg {
+                Some(preg) => Operand::reg_fixed_use(src.vreg(), preg),
+                None => Operand::any_use(src.vreg()),
+            };
+            let dst_preg = self.f.is_pinned_vreg(dst.vreg());
+            let dst_op = match dst_preg {
+                Some(preg) => Operand::reg_fixed_def(dst.vreg(), preg),
+                None => Operand::any_def(dst.vreg()),
+            };
+            let checkinst = CheckerInst::ProgramMove {
+                inst,
+                src: src_op,
+                dst: dst_op,
+            };
+            trace!("checker: adding inst {:?}", checkinst);
+            self.bb_insts.get_mut(&block).unwrap().push(checkinst);
+        }
         // Skip normal checks if this is a branch: the blockparams do
         // not exist in post-regalloc code, and the edge-moves have to
         // be inserted before the branch rather than after.
-        if !self.f.is_branch(inst) {
-            // Instruction itself.
+        else if !self.f.is_branch(inst) {
             let operands: Vec<_> = self.f.inst_operands(inst).iter().cloned().collect();
             let allocs: Vec<_> = out.inst_allocs(inst).iter().cloned().collect();
             let clobbers: Vec<_> = self.f.inst_clobbers(inst).iter().cloned().collect();
@@ -786,7 +945,15 @@ impl<'a, F: Function> Checker<'a, F> {
             for (i, &succ) in self.f.block_succs(block).iter().enumerate() {
                 let args = self.f.branch_blockparams(block, inst, i);
                 let params = self.f.block_params(succ);
-                assert_eq!(args.len(), params.len());
+                assert_eq!(
+                    args.len(),
+                    params.len(),
+                    "block{} has succ block{}; gave {} args for {} params",
+                    block.index(),
+                    succ.index(),
+                    args.len(),
+                    params.len()
+                );
                 if args.len() > 0 {
                     let moves = params.iter().cloned().zip(args.iter().cloned()).collect();
                     self.edge_insts
@@ -946,6 +1113,9 @@ impl<'a, F: Function> Checker<'a, F> {
                             slotargs.push(format!("{}", slot));
                         }
                         trace!("    safepoint: {}", slotargs.join(", "));
+                    }
+                    &CheckerInst::ProgramMove { inst, src, dst } => {
+                        trace!("    inst{}: prog_move {} -> {}", inst.index(), src, dst);
                     }
                     &CheckerInst::ParallelMove { .. } => {
                         panic!("unexpected parallel_move in body (non-edge)")
