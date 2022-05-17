@@ -38,6 +38,7 @@ pub enum RequirementConflictAt {
 }
 
 impl RequirementConflictAt {
+    #[inline(always)]
     pub fn should_trim_edges_around_split(self) -> bool {
         match self {
             RequirementConflictAt::RegToStack(..) | RequirementConflictAt::StackToReg(..) => false,
@@ -45,6 +46,7 @@ impl RequirementConflictAt {
         }
     }
 
+    #[inline(always)]
     pub fn suggested_split_point(self) -> ProgPoint {
         match self {
             RequirementConflictAt::RegToStack(pt)
@@ -83,6 +85,7 @@ impl Requirement {
         }
     }
 
+    #[inline(always)]
     pub fn is_stack(self) -> bool {
         match self {
             Requirement::Stack | Requirement::FixedStack(..) => true,
@@ -91,6 +94,7 @@ impl Requirement {
         }
     }
 
+    #[inline(always)]
     pub fn is_reg(self) -> bool {
         match self {
             Requirement::Register | Requirement::FixedReg(..) => true,
