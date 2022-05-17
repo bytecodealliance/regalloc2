@@ -13,11 +13,46 @@
 //! Requirements computation.
 
 use super::{Env, LiveBundleIndex};
-use crate::{Function, Operand, OperandConstraint, PReg, ProgPoint};
+use crate::{Function, Inst, Operand, OperandConstraint, PReg, ProgPoint};
 
 pub struct RequirementConflict;
 
-pub struct RequirementConflictAt(pub ProgPoint);
+#[derive(Clone, Copy, Debug)]
+pub enum RequirementConflictAt {
+    /// A transition from a stack-constrained to a reg-constrained
+    /// segment. The suggested split point is late, to keep the
+    /// intervening region with the stackslot (which is cheaper).
+    StackToReg(ProgPoint),
+    /// A transition from a reg-constraint to a stack-constrained
+    /// segment. Mirror of above: the suggested split point is early
+    /// (just after the last register use).
+    RegToStack(ProgPoint),
+    /// Any other transition. The suggested split point is late (just
+    /// before the conflicting use), but the split will also trim the
+    /// ends and create a split bundle, so the intervening region will
+    /// not appear with either side. This is probably for the best
+    /// when e.g. the two sides of the split are both constrained to
+    /// different physical registers: the part in the middle should be
+    /// constrained to neither.
+    Other(ProgPoint),
+}
+
+impl RequirementConflictAt {
+    pub fn should_trim_edges_around_split(self) -> bool {
+        match self {
+            RequirementConflictAt::RegToStack(..) | RequirementConflictAt::StackToReg(..) => false,
+            RequirementConflictAt::Other(..) => true,
+        }
+    }
+
+    pub fn suggested_split_point(self) -> ProgPoint {
+        match self {
+            RequirementConflictAt::RegToStack(pt)
+            | RequirementConflictAt::StackToReg(pt)
+            | RequirementConflictAt::Other(pt) => pt,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Requirement {
@@ -47,6 +82,22 @@ impl Requirement {
             _ => Err(RequirementConflict),
         }
     }
+
+    pub fn is_stack(self) -> bool {
+        match self {
+            Requirement::Stack | Requirement::FixedStack(..) => true,
+            Requirement::Register | Requirement::FixedReg(..) => false,
+            Requirement::Any => false,
+        }
+    }
+
+    pub fn is_reg(self) -> bool {
+        match self {
+            Requirement::Register | Requirement::FixedReg(..) => true,
+            Requirement::Stack | Requirement::FixedStack(..) => false,
+            Requirement::Any => false,
+        }
+    }
 }
 
 impl<'a, F: Function> Env<'a, F> {
@@ -71,6 +122,7 @@ impl<'a, F: Function> Env<'a, F> {
         bundle: LiveBundleIndex,
     ) -> Result<Requirement, RequirementConflictAt> {
         let mut req = Requirement::Any;
+        let mut last_pos = ProgPoint::before(Inst::new(0));
         trace!("compute_requirement: {:?}", bundle);
         let ranges = &self.bundles[bundle.index()].ranges;
         for entry in ranges {
@@ -80,8 +132,21 @@ impl<'a, F: Function> Env<'a, F> {
                 let r = self.requirement_from_operand(u.operand);
                 req = req.merge(r).map_err(|_| {
                     trace!("     -> conflict");
-                    RequirementConflictAt(u.pos)
+                    if req.is_stack() && r.is_reg() {
+                        // Suggested split point just before the reg (i.e., late split).
+                        RequirementConflictAt::StackToReg(u.pos)
+                    } else if req.is_reg() && r.is_stack() {
+                        // Suggested split point just after the stack
+                        // (i.e., early split). Note that splitting
+                        // with a use *right* at the beginning is
+                        // interpreted by `split_and_requeue_bundle`
+                        // as splitting off the first use.
+                        RequirementConflictAt::RegToStack(last_pos)
+                    } else {
+                        RequirementConflictAt::Other(u.pos)
+                    }
                 })?;
+                last_pos = u.pos;
                 trace!("     -> req {:?}", req);
             }
         }
