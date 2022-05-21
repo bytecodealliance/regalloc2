@@ -3,10 +3,24 @@
  * exception. See `LICENSE` for details.
  */
 
-use crate::{ion::data_structures::u64_key, Allocation};
+use crate::{ion::data_structures::u64_key, Allocation, PReg};
 use smallvec::{smallvec, SmallVec};
+use std::fmt::Debug;
 
+/// A list of moves to be performed in sequence, with auxiliary data
+/// attached to each.
 pub type MoveVec<T> = SmallVec<[(Allocation, Allocation, T); 16]>;
+
+/// A list of moves to be performance in sequence, like a
+/// `MoveVec<T>`, except that an unchosen scratch space may occur as
+/// well, represented by `Allocation::none()`.
+#[derive(Clone, Debug)]
+pub enum MoveVecWithScratch<T> {
+    /// No scratch was actually used.
+    NoScratch(MoveVec<T>),
+    /// A scratch space was used.
+    Scratch(MoveVec<T>),
+}
 
 /// A `ParallelMoves` represents a list of alloc-to-alloc moves that
 /// must happen in parallel -- i.e., all reads of sources semantically
@@ -16,14 +30,12 @@ pub type MoveVec<T> = SmallVec<[(Allocation, Allocation, T); 16]>;
 /// using a scratch register if one is necessary.
 pub struct ParallelMoves<T: Clone + Copy + Default> {
     parallel_moves: MoveVec<T>,
-    scratch: Allocation,
 }
 
 impl<T: Clone + Copy + Default> ParallelMoves<T> {
-    pub fn new(scratch: Allocation) -> Self {
+    pub fn new() -> Self {
         Self {
             parallel_moves: smallvec![],
-            scratch,
         }
     }
 
@@ -45,10 +57,23 @@ impl<T: Clone + Copy + Default> ParallelMoves<T> {
         false
     }
 
-    pub fn resolve(mut self) -> MoveVec<T> {
+    /// Resolve the parallel-moves problem to a sequence of separate
+    /// moves, such that the combined effect of the sequential moves
+    /// is as-if all of the moves added to this `ParallelMoves`
+    /// resolver happened in parallel.
+    ///
+    /// Sometimes, if there is a cycle, a scratch register is
+    /// necessary to allow the moves to occur sequentially. In this
+    /// case, `Allocation::none()` is returned to represent the
+    /// scratch register. The caller may choose to always hold a
+    /// separate scratch register unused to allow this to be trivially
+    /// rewritten; or may dynamically search for or create a free
+    /// register as needed, if none are
+    /// available.
+    pub fn resolve(mut self) -> MoveVecWithScratch<T> {
         // Easy case: zero or one move. Just return our vec.
         if self.parallel_moves.len() <= 1 {
-            return self.parallel_moves;
+            return MoveVecWithScratch::NoScratch(self.parallel_moves);
         }
 
         // Sort moves by source so that we can efficiently test for
@@ -59,7 +84,7 @@ impl<T: Clone + Copy + Default> ParallelMoves<T> {
         // Do any dests overlap sources? If not, we can also just
         // return the list.
         if !self.sources_overlap_dests() {
-            return self.parallel_moves;
+            return MoveVecWithScratch::NoScratch(self.parallel_moves);
         }
 
         // General case: some moves overwrite dests that other moves
@@ -114,6 +139,7 @@ impl<T: Clone + Copy + Default> ParallelMoves<T> {
         let mut stack: SmallVec<[usize; 16]> = smallvec![];
         let mut visited: SmallVec<[bool; 16]> = smallvec![false; self.parallel_moves.len()];
         let mut onstack: SmallVec<[bool; 16]> = smallvec![false; self.parallel_moves.len()];
+        let mut scratch_used = false;
 
         stack.push(0);
         onstack[0] = true;
@@ -182,7 +208,8 @@ impl<T: Clone + Copy + Default> ParallelMoves<T> {
                         let (mut src, dst, dst_t) = self.parallel_moves[move_idx];
                         if last_dst.is_none() {
                             scratch_src = Some(src);
-                            src = self.scratch;
+                            src = Allocation::none();
+                            scratch_used = true;
                         } else {
                             debug_assert_eq!(last_dst.unwrap(), src);
                         }
@@ -195,13 +222,201 @@ impl<T: Clone + Copy + Default> ParallelMoves<T> {
                         }
                     }
                     if let Some(src) = scratch_src {
-                        ret.push((src, self.scratch, T::default()));
+                        ret.push((src, Allocation::none(), T::default()));
                     }
                 }
             }
         }
 
         ret.reverse();
-        ret
+
+        if scratch_used {
+            MoveVecWithScratch::Scratch(ret)
+        } else {
+            MoveVecWithScratch::NoScratch(ret)
+        }
+    }
+}
+
+impl<T> MoveVecWithScratch<T> {
+    /// Fills in the scratch space, if needed, with the given
+    /// register/allocation and returns a final list of moves. The
+    /// scratch register must not occur anywhere in the parallel-move
+    /// problem given to the resolver that produced this
+    /// `MoveVecWithScratch`.
+    pub fn with_scratch(self, scratch: Allocation) -> MoveVec<T> {
+        match self {
+            MoveVecWithScratch::NoScratch(moves) => moves,
+            MoveVecWithScratch::Scratch(mut moves) => {
+                for (src, dst, _) in &mut moves {
+                    debug_assert!(*src != scratch && *dst != scratch);
+                    if src.is_none() {
+                        *src = scratch;
+                    }
+                    if dst.is_none() {
+                        *dst = scratch;
+                    }
+                }
+                moves
+            }
+        }
+    }
+
+    /// Unwrap without a scratch register.
+    pub fn without_scratch(self) -> Option<MoveVec<T>> {
+        match self {
+            MoveVecWithScratch::NoScratch(moves) => Some(moves),
+            MoveVecWithScratch::Scratch(..) => None,
+        }
+    }
+
+    /// Do we need a scratch register?
+    pub fn needs_scratch(&self) -> bool {
+        match self {
+            MoveVecWithScratch::NoScratch(..) => false,
+            MoveVecWithScratch::Scratch(..) => true,
+        }
+    }
+
+    /// Do any moves go from stack to stack?
+    pub fn stack_to_stack(&self) -> bool {
+        match self {
+            MoveVecWithScratch::NoScratch(moves) | MoveVecWithScratch::Scratch(moves) => moves
+                .iter()
+                .any(|(src, dst, _)| src.is_stack() && dst.is_stack()),
+        }
+    }
+}
+
+/// Final stage of move resolution: finding or using scratch
+/// registers, creating them if necessary by using stackslots, and
+/// ensuring that the final list of moves contains no stack-to-stack
+/// moves.
+///
+/// The resolved list of moves may need one or two scratch registers,
+/// and maybe a stackslot, to ensure these conditions. Our general
+/// strategy is in two steps.
+///
+/// First, we find a scratch register, so we only have to worry about
+/// a list of moves, all with real locations as src and dest. If we're
+/// lucky and there are any registers not allocated at this
+/// program-point, we can use a real register. Otherwise, we use an
+/// extra stackslot. This is fine, because at this step,
+/// stack-to-stack moves are OK.
+///
+/// Then, we resolve stack-to-stack moves into stack-to-reg /
+/// reg-to-stack pairs. For this, we try to allocate a second free
+/// register. If unavailable, we create another scratch stackslot, and
+/// we pick a "victim" register in the appropriate class, and we
+/// resolve into: victim -> extra-stackslot; stack-src -> victim;
+/// victim -> stack-dst; extra-stackslot -> victim.
+///
+/// Sometimes move elision will be able to clean this up a bit. But,
+/// for simplicity reasons, let's keep the concerns separated! So we
+/// always do the full expansion above.
+pub struct MoveAndScratchResolver<GetReg, GetStackSlot>
+where
+    GetReg: FnMut() -> Option<Allocation>,
+    GetStackSlot: FnMut() -> Allocation,
+{
+    /// Scratch register for stack-to-stack move expansion.
+    stack_stack_scratch_reg: Option<Allocation>,
+    /// Stackslot into which we need to save the stack-to-stack
+    /// scratch reg before doing any stack-to-stack moves, if we stole
+    /// the reg.
+    stack_stack_scratch_reg_save: Option<Allocation>,
+    /// Closure that finds us a PReg at the current location.
+    find_free_reg: GetReg,
+    /// Closure that gets us a stackslot, if needed.
+    get_stackslot: GetStackSlot,
+    /// The victim PReg to evict to another stackslot at every
+    /// stack-to-stack move if a free PReg is not otherwise
+    /// available. Provided by caller and statically chosen. This is a
+    /// very last-ditch option, so static choice is OK.
+    victim: PReg,
+}
+
+impl<GetReg, GetStackSlot> MoveAndScratchResolver<GetReg, GetStackSlot>
+where
+    GetReg: FnMut() -> Option<Allocation>,
+    GetStackSlot: FnMut() -> Allocation,
+{
+    pub fn new(find_free_reg: GetReg, get_stackslot: GetStackSlot, victim: PReg) -> Self {
+        Self {
+            stack_stack_scratch_reg: None,
+            stack_stack_scratch_reg_save: None,
+            find_free_reg,
+            get_stackslot,
+            victim,
+        }
+    }
+
+    pub fn compute<T: Debug + Copy>(mut self, moves: MoveVecWithScratch<T>) -> MoveVec<T> {
+        // First, do we have a vec with no stack-to-stack moves or use
+        // of a scratch register? Fast return if so.
+        if !moves.needs_scratch() && !moves.stack_to_stack() {
+            return moves.without_scratch().unwrap();
+        }
+
+        let mut result = smallvec![];
+
+        // Now, find a scratch allocation in order to resolve cycles.
+        let scratch = (self.find_free_reg)().unwrap_or_else(|| (self.get_stackslot)());
+        log::trace!("scratch resolver: scratch alloc {:?}", scratch);
+
+        let moves = moves.with_scratch(scratch);
+        for &(src, dst, data) in &moves {
+            // Do we have a stack-to-stack move? If so, resolve.
+            if src.is_stack() && dst.is_stack() {
+                log::trace!("scratch resolver: stack to stack: {:?} -> {:?}", src, dst);
+                // Lazily allocate a stack-to-stack scratch.
+                if self.stack_stack_scratch_reg.is_none() {
+                    if let Some(reg) = (self.find_free_reg)() {
+                        log::trace!(
+                            "scratch resolver: have free stack-to-stack scratch preg: {:?}",
+                            reg
+                        );
+                        self.stack_stack_scratch_reg = Some(reg);
+                    } else {
+                        self.stack_stack_scratch_reg = Some(Allocation::reg(self.victim));
+                        self.stack_stack_scratch_reg_save = Some((self.get_stackslot)());
+                        log::trace!("scratch resolver: stack-to-stack using victim {:?} with save stackslot {:?}",
+                                    self.stack_stack_scratch_reg,
+                                    self.stack_stack_scratch_reg_save);
+                    }
+                }
+
+                // If we have a "victimless scratch", then do a
+                // stack-to-scratch / scratch-to-stack sequence.
+                if self.stack_stack_scratch_reg_save.is_none() {
+                    result.push((src, self.stack_stack_scratch_reg.unwrap(), data));
+                    result.push((self.stack_stack_scratch_reg.unwrap(), dst, data));
+                }
+                // Otherwise, save the current value in the
+                // stack-to-stack scratch reg (which is our victim) to
+                // the extra stackslot, then do the stack-to-scratch /
+                // scratch-to-stack sequence, then restore it.
+                else {
+                    result.push((
+                        self.stack_stack_scratch_reg.unwrap(),
+                        self.stack_stack_scratch_reg_save.unwrap(),
+                        data,
+                    ));
+                    result.push((src, self.stack_stack_scratch_reg.unwrap(), data));
+                    result.push((self.stack_stack_scratch_reg.unwrap(), dst, data));
+                    result.push((
+                        self.stack_stack_scratch_reg_save.unwrap(),
+                        self.stack_stack_scratch_reg.unwrap(),
+                        data,
+                    ));
+                }
+            } else {
+                // Normal move.
+                result.push((src, dst, data));
+            }
+        }
+
+        log::trace!("scratch resolver: got {:?}", result);
+        result
     }
 }
