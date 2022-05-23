@@ -16,12 +16,16 @@ use super::{
     Env, InsertMovePrio, InsertedMove, LiveRangeFlag, LiveRangeIndex, RedundantMoveEliminator,
     VRegIndex, SLOT_NONE,
 };
-use crate::ion::data_structures::{BlockparamIn, BlockparamOut, CodeRange, PosWithPrio};
-use crate::moves::ParallelMoves;
+use crate::ion::data_structures::{
+    BlockparamIn, BlockparamOut, CodeRange, LiveRangeKey, PosWithPrio,
+};
+use crate::ion::reg_traversal::RegTraversalIter;
+use crate::moves::{MoveAndScratchResolver, ParallelMoves};
 use crate::{
     Allocation, Block, Edit, Function, Inst, InstPosition, OperandConstraint, OperandKind,
-    OperandPos, PReg, ProgPoint, RegClass, VReg,
+    OperandPos, PReg, ProgPoint, RegClass, SpillSlot, VReg,
 };
+use fxhash::FxHashMap;
 use smallvec::{smallvec, SmallVec};
 use std::fmt::Debug;
 
@@ -965,8 +969,7 @@ impl<'a, F: Function> Env<'a, F> {
             // have two separate ParallelMove instances. They need to
             // be separate because moves between the two classes are
             // impossible. (We could enhance ParallelMoves to
-            // understand register classes and take multiple scratch
-            // regs, but this seems simpler.)
+            // understand register classes, but this seems simpler.)
             let mut int_moves: SmallVec<[InsertedMove; 8]> = smallvec![];
             let mut float_moves: SmallVec<[InsertedMove; 8]> = smallvec![];
 
@@ -993,8 +996,7 @@ impl<'a, F: Function> Env<'a, F> {
                 // All moves in `moves` semantically happen in
                 // parallel. Let's resolve these to a sequence of moves
                 // that can be done one at a time.
-                let scratch = self.env.scratch_by_class[regclass as u8 as usize];
-                let mut parallel_moves = ParallelMoves::new(Allocation::reg(scratch));
+                let mut parallel_moves = ParallelMoves::new();
                 trace!(
                     "parallel moves at pos {:?} prio {:?}",
                     pos_prio.pos,
@@ -1008,59 +1010,79 @@ impl<'a, F: Function> Env<'a, F> {
                 }
 
                 let resolved = parallel_moves.resolve();
-
-                // If (i) the scratch register is used, and (ii) a
-                // stack-to-stack move exists, then we need to
-                // allocate an additional scratch spillslot to which
-                // we can temporarily spill the scratch reg when we
-                // lower the stack-to-stack move to a
-                // stack-to-scratch-to-stack sequence.
-                let scratch_used = resolved.iter().any(|&(src, dst, _)| {
-                    src == Allocation::reg(scratch) || dst == Allocation::reg(scratch)
+                let mut scratch_iter = RegTraversalIter::new(
+                    self.env,
+                    regclass,
+                    PReg::invalid(),
+                    PReg::invalid(),
+                    0,
+                    None,
+                );
+                let key = LiveRangeKey::from_range(&CodeRange {
+                    from: pos_prio.pos,
+                    to: pos_prio.pos.next(),
                 });
-                let stack_stack_move = resolved.iter().any(|&(src, dst, _)| {
-                    self.allocation_is_stack(src) && self.allocation_is_stack(dst)
-                });
-                let extra_slot = if scratch_used && stack_stack_move {
-                    if self.extra_spillslot[regclass as u8 as usize].is_none() {
-                        let slot = self.allocate_spillslot(regclass);
-                        self.extra_spillslot[regclass as u8 as usize] = Some(slot);
+                let get_reg = || {
+                    while let Some(preg) = scratch_iter.next() {
+                        if !self.pregs[preg.index()]
+                            .allocations
+                            .btree
+                            .contains_key(&key)
+                        {
+                            let alloc = Allocation::reg(preg);
+                            if moves
+                                .iter()
+                                .any(|m| m.from_alloc == alloc || m.to_alloc == alloc)
+                            {
+                                // Skip pregs used by moves in this
+                                // parallel move set, even if not
+                                // marked used at progpoint: edge move
+                                // liveranges meet but don't overlap
+                                // so otherwise we may incorrectly
+                                // overwrite a source reg.
+                                continue;
+                            }
+                            return Some(alloc);
+                        }
                     }
-                    self.extra_spillslot[regclass as u8 as usize]
-                } else {
                     None
                 };
+                let mut stackslot_idx = 0;
+                let get_stackslot = || {
+                    let idx = stackslot_idx;
+                    stackslot_idx += 1;
+                    // We can't borrow `self` as mutable, so we create
+                    // these placeholders then allocate the actual
+                    // slots if needed with `self.allocate_spillslot`
+                    // below.
+                    Allocation::stack(SpillSlot::new(SpillSlot::MAX - idx, regclass))
+                };
+                let preferred_victim = self.preferred_victim_by_class[regclass as usize];
 
-                let mut scratch_used_yet = false;
+                let scratch_resolver =
+                    MoveAndScratchResolver::new(get_reg, get_stackslot, preferred_victim);
+
+                let resolved = scratch_resolver.compute(resolved);
+
+                let mut rewrites = FxHashMap::default();
+                for i in 0..stackslot_idx {
+                    if i >= self.extra_spillslots_by_class[regclass as usize].len() {
+                        let slot = self.allocate_spillslot(regclass);
+                        self.extra_spillslots_by_class[regclass as usize].push(slot);
+                    }
+                    rewrites.insert(
+                        Allocation::stack(SpillSlot::new(SpillSlot::MAX - i, regclass)),
+                        self.extra_spillslots_by_class[regclass as usize][i],
+                    );
+                }
+
                 for (src, dst, to_vreg) in resolved {
+                    let src = rewrites.get(&src).cloned().unwrap_or(src);
+                    let dst = rewrites.get(&dst).cloned().unwrap_or(dst);
                     trace!("  resolved: {} -> {} ({:?})", src, dst, to_vreg);
                     let action = redundant_moves.process_move(src, dst, to_vreg);
                     if !action.elide {
-                        if dst == Allocation::reg(scratch) {
-                            scratch_used_yet = true;
-                        }
-                        if self.allocation_is_stack(src) && self.allocation_is_stack(dst) {
-                            if !scratch_used_yet {
-                                self.add_move_edit(pos_prio, src, Allocation::reg(scratch));
-                                self.add_move_edit(pos_prio, Allocation::reg(scratch), dst);
-                            } else {
-                                debug_assert!(extra_slot.is_some());
-                                self.add_move_edit(
-                                    pos_prio,
-                                    Allocation::reg(scratch),
-                                    extra_slot.unwrap(),
-                                );
-                                self.add_move_edit(pos_prio, src, Allocation::reg(scratch));
-                                self.add_move_edit(pos_prio, Allocation::reg(scratch), dst);
-                                self.add_move_edit(
-                                    pos_prio,
-                                    extra_slot.unwrap(),
-                                    Allocation::reg(scratch),
-                                );
-                            }
-                        } else {
-                            self.add_move_edit(pos_prio, src, dst);
-                        }
+                        self.add_move_edit(pos_prio, src, dst);
                     } else {
                         trace!("    -> redundant move elided");
                     }
@@ -1081,7 +1103,7 @@ impl<'a, F: Function> Env<'a, F> {
                 let &(pos_prio, ref edit) = &self.edits[i];
                 match edit {
                     &Edit::Move { from, to } => {
-                        self.annotate(pos_prio.pos, format!("move {} -> {})", from, to));
+                        self.annotate(pos_prio.pos, format!("move {} -> {}", from, to));
                     }
                 }
             }

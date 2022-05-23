@@ -625,18 +625,15 @@ impl std::fmt::Debug for Func {
 }
 
 pub fn machine_env() -> MachineEnv {
-    // Reg 63 is the scratch reg.
     fn regs(r: std::ops::Range<usize>) -> Vec<PReg> {
         r.map(|i| PReg::new(i, RegClass::Int)).collect()
     }
     let preferred_regs_by_class: [Vec<PReg>; 2] = [regs(0..24), vec![]];
     let non_preferred_regs_by_class: [Vec<PReg>; 2] = [regs(24..32), vec![]];
-    let scratch_by_class: [PReg; 2] = [PReg::new(63, RegClass::Int), PReg::new(0, RegClass::Float)];
-    let fixed_stack_slots = regs(32..63);
+    let fixed_stack_slots = regs(32..64);
     MachineEnv {
         preferred_regs_by_class,
         non_preferred_regs_by_class,
-        scratch_by_class,
         fixed_stack_slots,
     }
 }

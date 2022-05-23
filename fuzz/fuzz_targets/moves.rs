@@ -7,30 +7,56 @@
 use libfuzzer_sys::arbitrary::{Arbitrary, Result, Unstructured};
 use libfuzzer_sys::fuzz_target;
 
-use regalloc2::fuzzing::moves::ParallelMoves;
-use regalloc2::{Allocation, PReg, RegClass};
-use std::collections::HashSet;
+use regalloc2::fuzzing::moves::{MoveAndScratchResolver, ParallelMoves};
+use regalloc2::{Allocation, PReg, RegClass, SpillSlot};
+use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Debug)]
 struct TestCase {
     moves: Vec<(Allocation, Allocation)>,
+    available_pregs: Vec<Allocation>,
 }
 
 impl Arbitrary for TestCase {
     fn arbitrary(u: &mut Unstructured) -> Result<Self> {
-        let mut ret = TestCase { moves: vec![] };
+        let mut ret = TestCase {
+            moves: vec![],
+            available_pregs: vec![],
+        };
         let mut written = HashSet::new();
+        // An arbitrary sequence of moves between registers 0 to 29
+        // inclusive.
         while bool::arbitrary(u)? {
-            let reg1 = u.int_in_range(0..=30)?;
-            let reg2 = u.int_in_range(0..=30)?;
-            if written.contains(&reg2) {
+            let src = if bool::arbitrary(u)? {
+                let reg = u.int_in_range(0..=29)?;
+                Allocation::reg(PReg::new(reg, RegClass::Int))
+            } else {
+                let slot = u.int_in_range(0..=31)?;
+                Allocation::stack(SpillSlot::new(slot, RegClass::Int))
+            };
+            let dst = if bool::arbitrary(u)? {
+                let reg = u.int_in_range(0..=29)?;
+                Allocation::reg(PReg::new(reg, RegClass::Int))
+            } else {
+                let slot = u.int_in_range(0..=31)?;
+                Allocation::stack(SpillSlot::new(slot, RegClass::Int))
+            };
+
+            // Stop if we are going to write a reg more than once:
+            // that creates an invalid parallel move set.
+            if written.contains(&dst) {
                 break;
             }
-            written.insert(reg2);
-            ret.moves.push((
-                Allocation::reg(PReg::new(reg1, RegClass::Int)),
-                Allocation::reg(PReg::new(reg2, RegClass::Int)),
-            ));
+            written.insert(dst);
+
+            ret.moves.push((src, dst));
+        }
+
+        // We might have some unallocated registers free for scratch
+        // space...
+        for i in u.int_in_range(0..=2) {
+            let reg = PReg::new(30 + i, RegClass::Int);
+            ret.available_pregs.push(Allocation::reg(reg));
         }
         Ok(ret)
     }
@@ -38,44 +64,64 @@ impl Arbitrary for TestCase {
 
 fuzz_target!(|testcase: TestCase| {
     let _ = env_logger::try_init();
-    let scratch = Allocation::reg(PReg::new(31, RegClass::Int));
-    let mut par = ParallelMoves::new(scratch);
+    let mut par = ParallelMoves::new();
     for &(src, dst) in &testcase.moves {
         par.add(src, dst, ());
     }
+
     let moves = par.resolve();
+    log::trace!("raw resolved moves: {:?}", moves);
+
+    // Resolve uses of scratch reg and stack-to-stack moves with the
+    // scratch resolver.
+    let mut avail = testcase.available_pregs.clone();
+    let get_reg = || avail.pop();
+    let mut next_slot = 32;
+    let get_stackslot = || {
+        let slot = next_slot;
+        next_slot += 1;
+        Allocation::stack(SpillSlot::new(slot, RegClass::Int))
+    };
+    let preferred_victim = PReg::new(0, RegClass::Int);
+    let scratch_resolver = MoveAndScratchResolver::new(get_reg, get_stackslot, preferred_victim);
+    let moves = scratch_resolver.compute(moves);
+    log::trace!("resolved moves: {:?}", moves);
 
     // Compute the final source reg for each dest reg in the original
     // parallel-move set.
-    let mut final_src_per_dest: Vec<Option<usize>> = vec![None; 32];
+    let mut final_src_per_dest: HashMap<Allocation, Allocation> = HashMap::new();
     for &(src, dst) in &testcase.moves {
-        if let (Some(preg_src), Some(preg_dst)) = (src.as_reg(), dst.as_reg()) {
-            final_src_per_dest[preg_dst.hw_enc()] = Some(preg_src.hw_enc());
-        }
+        final_src_per_dest.insert(dst, src);
     }
+    log::trace!("expected final state: {:?}", final_src_per_dest);
 
     // Simulate the sequence of moves.
-    let mut regfile: Vec<Option<usize>> = vec![None; 32];
-    for i in 0..32 {
-        regfile[i] = Some(i);
-    }
+    let mut locations: HashMap<Allocation, Allocation> = HashMap::new();
     for (src, dst, _) in moves {
-        if let (Some(preg_src), Some(preg_dst)) = (src.as_reg(), dst.as_reg()) {
-            let data = regfile[preg_src.hw_enc()];
-            regfile[preg_dst.hw_enc()] = data;
-        } else {
-            panic!("Bad allocation in move list");
+        if src.is_stack() && dst.is_stack() {
+            panic!("Stack-to-stack move!");
         }
+
+        let data = locations.get(&src).cloned().unwrap_or(src);
+        locations.insert(dst, data);
     }
+    log::trace!("simulated final state: {:?}", locations);
 
     // Assert that the expected register-moves occurred.
-    // N.B.: range up to 31 (not 32) to skip scratch register.
-    for i in 0..31 {
-        if let Some(orig_src) = final_src_per_dest[i] {
-            assert_eq!(regfile[i], Some(orig_src));
+    for (reg, data) in locations {
+        if let Some(&expected_data) = final_src_per_dest.get(&reg) {
+            assert_eq!(expected_data, data);
         } else {
-            // Should be untouched.
-            assert_eq!(regfile[i], Some(i));
+            if data != reg {
+                // If not just the original value, then this location
+                // has been modified, but it was not part of the
+                // original parallel move. It must have been an
+                // available preg or a scratch stackslot.
+                assert!(
+                    testcase.available_pregs.contains(&reg)
+                        || (reg.is_stack() && reg.as_stack().unwrap().index() >= 32)
+                );
+            }
         }
     }
 });

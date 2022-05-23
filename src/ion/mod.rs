@@ -31,6 +31,7 @@ use liveranges::*;
 pub(crate) mod merge;
 pub(crate) mod process;
 use process::*;
+use smallvec::smallvec;
 pub(crate) mod dump;
 pub(crate) mod moves;
 pub(crate) mod spill;
@@ -66,7 +67,8 @@ impl<'a, F: Function> Env<'a, F> {
             slots_by_size: vec![],
             allocated_bundle_count: 0,
 
-            extra_spillslot: vec![None, None],
+            extra_spillslots_by_class: [smallvec![], smallvec![]],
+            preferred_victim_by_class: [PReg::invalid(), PReg::invalid()],
 
             prog_move_srcs: Vec::with_capacity(n / 2),
             prog_move_dsts: Vec::with_capacity(n / 2),
