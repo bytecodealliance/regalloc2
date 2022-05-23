@@ -68,8 +68,7 @@ impl<T: Clone + Copy + Default> ParallelMoves<T> {
     /// scratch register. The caller may choose to always hold a
     /// separate scratch register unused to allow this to be trivially
     /// rewritten; or may dynamically search for or create a free
-    /// register as needed, if none are
-    /// available.
+    /// register as needed, if none are available.
     pub fn resolve(mut self) -> MoveVecWithScratch<T> {
         // Easy case: zero or one move. Just return our vec.
         if self.parallel_moves.len() <= 1 {
@@ -249,7 +248,14 @@ impl<T> MoveVecWithScratch<T> {
             MoveVecWithScratch::NoScratch(moves) => moves,
             MoveVecWithScratch::Scratch(mut moves) => {
                 for (src, dst, _) in &mut moves {
-                    debug_assert!(*src != scratch && *dst != scratch);
+                    debug_assert!(
+                        *src != scratch && *dst != scratch,
+                        "Scratch register should not also be an actual source or dest of moves"
+                    );
+                    debug_assert!(
+                        !(src.is_none() && dst.is_none()),
+                        "Move resolution should not have produced a scratch-to-scratch move"
+                    );
                     if src.is_none() {
                         *src = scratch;
                     }
