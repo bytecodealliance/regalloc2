@@ -18,7 +18,9 @@ use super::{
     SpillSetIndex, Use, VRegData, VRegIndex, SLOT_NONE,
 };
 use crate::indexset::IndexSet;
-use crate::ion::data_structures::{BlockparamIn, BlockparamOut, MultiFixedRegFixup};
+use crate::ion::data_structures::{
+    BlockparamIn, BlockparamOut, FixedRegFixupLevel, MultiFixedRegFixup,
+};
 use crate::{
     Allocation, Block, Function, Inst, InstPosition, Operand, OperandConstraint, OperandKind,
     OperandPos, PReg, ProgPoint, RegAllocError, VReg,
@@ -564,7 +566,7 @@ impl<'a, F: Function> Env<'a, F> {
 
                                 self.insert_move(
                                     ProgPoint::before(inst),
-                                    InsertMovePrio::MultiFixedReg,
+                                    InsertMovePrio::MultiFixedRegInitial,
                                     Allocation::reg(src_preg),
                                     Allocation::reg(dst_preg),
                                     Some(dst.vreg()),
@@ -712,7 +714,7 @@ impl<'a, F: Function> Env<'a, F> {
                                         );
                                         self.insert_move(
                                             ProgPoint::before(inst.next()),
-                                            InsertMovePrio::MultiFixedReg,
+                                            InsertMovePrio::MultiFixedRegInitial,
                                             Allocation::reg(preg),
                                             Allocation::reg(preg),
                                             Some(src.vreg()),
@@ -1010,6 +1012,7 @@ impl<'a, F: Function> Env<'a, F> {
                                             to_slot: i as u8,
                                             to_preg: PRegIndex::new(preg.index()),
                                             vreg: VRegIndex::new(operand.vreg().vreg()),
+                                            level: FixedRegFixupLevel::Initial,
                                         });
                                         operand = Operand::new(
                                             operand.vreg(),
@@ -1364,6 +1367,7 @@ impl<'a, F: Function> Env<'a, F> {
                                 to_slot: u.slot,
                                 to_preg: preg_idx,
                                 vreg: vreg_idx,
+                                level: FixedRegFixupLevel::Secondary,
                             });
                             u.operand = Operand::new(
                                 u.operand.vreg(),

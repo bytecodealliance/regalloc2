@@ -274,8 +274,18 @@ pub struct MultiFixedRegFixup {
     pub pos: ProgPoint,
     pub from_slot: u8,
     pub to_slot: u8,
+    pub level: FixedRegFixupLevel,
     pub to_preg: PRegIndex,
     pub vreg: VRegIndex,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FixedRegFixupLevel {
+    /// A fixup copy for the initial fixed reg; must come first.
+    Initial,
+    /// A fixup copy from the first fixed reg to other fixed regs for
+    /// the same vreg; must come second.
+    Secondary,
 }
 
 /// The field order is significant: these are sorted so that a
@@ -564,7 +574,8 @@ pub enum InsertMovePrio {
     BlockParam,
     Regular,
     PostRegular,
-    MultiFixedReg,
+    MultiFixedRegInitial,
+    MultiFixedRegSecondary,
     ReusedInput,
     OutEdgeMoves,
 }
