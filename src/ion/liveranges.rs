@@ -991,6 +991,13 @@ impl<'a, F: Function> Env<'a, F> {
                                     // rewrite here without the
                                     // constraint. See #53.
                                     //
+                                    // Note that we need to create a
+                                    // reservation in the allocation
+                                    // map for the given preg, because
+                                    // it still must not be used by
+                                    // some other vreg at the
+                                    // use-site.
+                                    //
                                     // Note that we handle multiple
                                     // conflicting constraints for the
                                     // same vreg in a separate pass
@@ -1010,6 +1017,16 @@ impl<'a, F: Function> Env<'a, F> {
                                             operand.kind(),
                                             operand.pos(),
                                         );
+
+                                        let range = CodeRange {
+                                            from: pos,
+                                            to: pos.next(),
+                                        };
+                                        let lrkey = LiveRangeKey::from_range(&range);
+                                        self.pregs[preg.index()]
+                                            .allocations
+                                            .btree
+                                            .insert(lrkey, LiveRangeIndex::invalid());
                                     }
                                 }
                             }
