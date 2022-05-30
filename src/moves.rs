@@ -368,17 +368,17 @@ where
 
         // Now, find a scratch allocation in order to resolve cycles.
         let scratch = (self.find_free_reg)().unwrap_or_else(|| (self.get_stackslot)());
-        log::trace!("scratch resolver: scratch alloc {:?}", scratch);
+        trace!("scratch resolver: scratch alloc {:?}", scratch);
 
         let moves = moves.with_scratch(scratch);
         for &(src, dst, data) in &moves {
             // Do we have a stack-to-stack move? If so, resolve.
             if src.is_stack() && dst.is_stack() {
-                log::trace!("scratch resolver: stack to stack: {:?} -> {:?}", src, dst);
+                trace!("scratch resolver: stack to stack: {:?} -> {:?}", src, dst);
                 // Lazily allocate a stack-to-stack scratch.
                 if self.stack_stack_scratch_reg.is_none() {
                     if let Some(reg) = (self.find_free_reg)() {
-                        log::trace!(
+                        trace!(
                             "scratch resolver: have free stack-to-stack scratch preg: {:?}",
                             reg
                         );
@@ -386,7 +386,7 @@ where
                     } else {
                         self.stack_stack_scratch_reg = Some(Allocation::reg(self.victim));
                         self.stack_stack_scratch_reg_save = Some((self.get_stackslot)());
-                        log::trace!("scratch resolver: stack-to-stack using victim {:?} with save stackslot {:?}",
+                        trace!("scratch resolver: stack-to-stack using victim {:?} with save stackslot {:?}",
                                     self.stack_stack_scratch_reg,
                                     self.stack_stack_scratch_reg_save);
                     }
@@ -422,7 +422,7 @@ where
             }
         }
 
-        log::trace!("scratch resolver: got {:?}", result);
+        trace!("scratch resolver: got {:?}", result);
         result
     }
 }
