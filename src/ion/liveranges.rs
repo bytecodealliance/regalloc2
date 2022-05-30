@@ -918,10 +918,17 @@ impl<'a, F: Function> Env<'a, F> {
                 }
 
                 // Process defs and uses.
+
+                // Track fixed PRegs at After; we need to avoid
+                // creating fixed constraints at Before with the same
+                // regs if the corresponding vreg is live
+                // downward. (See #53.)
+                let mut fixed_after_pregs: SmallVec<[PReg; 4]> = smallvec![];
+
                 for &cur_pos in &[InstPosition::After, InstPosition::Before] {
                     for i in 0..self.func.inst_operands(inst).len() {
                         // don't borrow `self`
-                        let operand = self.func.inst_operands(inst)[i];
+                        let mut operand = self.func.inst_operands(inst)[i];
                         let pos = match (operand.kind(), operand.pos()) {
                             (OperandKind::Mod, _) => ProgPoint::before(inst),
                             (OperandKind::Def, OperandPos::Early) => ProgPoint::before(inst),
@@ -953,6 +960,60 @@ impl<'a, F: Function> Env<'a, F> {
                             pos,
                             operand
                         );
+
+                        if let OperandConstraint::FixedReg(preg) = operand.constraint() {
+                            match operand.pos() {
+                                OperandPos::Late => {
+                                    // See note in fuzzing/func.rs: we
+                                    // can't allow this, because there
+                                    // would be no way to move a value
+                                    // into place for a late use
+                                    // *after* the early point
+                                    // (i.e. in the middle of the
+                                    // instruction).
+                                    assert!(operand.kind() == OperandKind::Def,
+                                            "Invalid operand: fixed constraint on Use/Mod at Late point");
+
+                                    fixed_after_pregs.push(preg);
+                                }
+                                OperandPos::Early => {
+                                    assert!(operand.kind() == OperandKind::Use,
+                                            "Invalid operand: fixed constraint on Def/Mod at Early position");
+
+                                    // If we have a constraint at the
+                                    // Early point for a fixed preg,
+                                    // and this preg is also
+                                    // constrained with a *separate*
+                                    // def at Late, and *if* the vreg
+                                    // is live downward, we have to
+                                    // use the multi-fixed-reg
+                                    // mechanism for a fixup and
+                                    // rewrite here without the
+                                    // constraint. See #53.
+                                    //
+                                    // Note that we handle multiple
+                                    // conflicting constraints for the
+                                    // same vreg in a separate pass
+                                    // (see `fixup_multi_fixed_vregs`
+                                    // below).
+                                    if fixed_after_pregs.contains(&preg) {
+                                        self.multi_fixed_reg_fixups.push(MultiFixedRegFixup {
+                                            pos,
+                                            from_slot: i as u8,
+                                            to_slot: i as u8,
+                                            to_preg: PRegIndex::new(preg.index()),
+                                            vreg: VRegIndex::new(operand.vreg().vreg()),
+                                        });
+                                        operand = Operand::new(
+                                            operand.vreg(),
+                                            OperandConstraint::Any,
+                                            operand.kind(),
+                                            operand.pos(),
+                                        );
+                                    }
+                                }
+                            }
+                        }
 
                         match operand.kind() {
                             OperandKind::Def | OperandKind::Mod => {
