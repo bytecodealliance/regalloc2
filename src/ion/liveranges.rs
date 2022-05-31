@@ -18,12 +18,14 @@ use super::{
     SpillSetIndex, Use, VRegData, VRegIndex, SLOT_NONE,
 };
 use crate::indexset::IndexSet;
-use crate::ion::data_structures::{BlockparamIn, BlockparamOut, MultiFixedRegFixup};
+use crate::ion::data_structures::{
+    BlockparamIn, BlockparamOut, FixedRegFixupLevel, MultiFixedRegFixup,
+};
 use crate::{
     Allocation, Block, Function, Inst, InstPosition, Operand, OperandConstraint, OperandKind,
     OperandPos, PReg, ProgPoint, RegAllocError, VReg,
 };
-use fxhash::FxHashSet;
+use fxhash::{FxHashMap, FxHashSet};
 use slice_group_by::GroupByMut;
 use smallvec::{smallvec, SmallVec};
 use std::collections::{HashSet, VecDeque};
@@ -564,7 +566,7 @@ impl<'a, F: Function> Env<'a, F> {
 
                                 self.insert_move(
                                     ProgPoint::before(inst),
-                                    InsertMovePrio::MultiFixedReg,
+                                    InsertMovePrio::MultiFixedRegInitial,
                                     Allocation::reg(src_preg),
                                     Allocation::reg(dst_preg),
                                     Some(dst.vreg()),
@@ -712,7 +714,7 @@ impl<'a, F: Function> Env<'a, F> {
                                         );
                                         self.insert_move(
                                             ProgPoint::before(inst.next()),
-                                            InsertMovePrio::MultiFixedReg,
+                                            InsertMovePrio::MultiFixedRegInitial,
                                             Allocation::reg(preg),
                                             Allocation::reg(preg),
                                             Some(src.vreg()),
@@ -917,11 +919,110 @@ impl<'a, F: Function> Env<'a, F> {
                     continue;
                 }
 
+                // Preprocess defs and uses. Specifically, if there
+                // are any fixed-reg-constrained defs at Late position
+                // and fixed-reg-constrained uses at Early position
+                // with the same preg, we need to (i) add a fixup move
+                // for the use, (ii) rewrite the use to have an Any
+                // constraint, and (ii) move the def to Early position
+                // to reserve the register for the whole instruction.
+                let mut operand_rewrites: FxHashMap<usize, Operand> = FxHashMap::default();
+                let mut late_def_fixed: SmallVec<[(PReg, Operand, usize); 2]> = smallvec![];
+                for (i, &operand) in self.func.inst_operands(inst).iter().enumerate() {
+                    if let OperandConstraint::FixedReg(preg) = operand.constraint() {
+                        match operand.pos() {
+                            OperandPos::Late => {
+                                // See note in fuzzing/func.rs: we
+                                // can't allow this, because there
+                                // would be no way to move a value
+                                // into place for a late use *after*
+                                // the early point (i.e. in the middle
+                                // of the instruction).
+                                assert!(
+                                    operand.kind() == OperandKind::Def,
+                                    "Invalid operand: fixed constraint on Use/Mod at Late point"
+                                );
+
+                                late_def_fixed.push((preg, operand, i));
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                for (i, &operand) in self.func.inst_operands(inst).iter().enumerate() {
+                    if let OperandConstraint::FixedReg(preg) = operand.constraint() {
+                        match operand.pos() {
+                            OperandPos::Early => {
+                                assert!(operand.kind() == OperandKind::Use,
+                                            "Invalid operand: fixed constraint on Def/Mod at Early position");
+
+                                // If we have a constraint at the
+                                // Early point for a fixed preg, and
+                                // this preg is also constrained with
+                                // a *separate* def at Late, and *if*
+                                // the vreg is live downward, we have
+                                // to use the multi-fixed-reg
+                                // mechanism for a fixup and rewrite
+                                // here without the constraint. See
+                                // #53.
+                                //
+                                // We adjust the def liverange and Use
+                                // to an "early" position to reserve
+                                // the register, it still must not be
+                                // used by some other vreg at the
+                                // use-site.
+                                //
+                                // Note that we handle multiple
+                                // conflicting constraints for the
+                                // same vreg in a separate pass (see
+                                // `fixup_multi_fixed_vregs` below).
+                                if let Some((_, def_op, def_slot)) = late_def_fixed
+                                    .iter()
+                                    .find(|(def_preg, _, _)| *def_preg == preg)
+                                {
+                                    let pos = ProgPoint::before(inst);
+                                    self.multi_fixed_reg_fixups.push(MultiFixedRegFixup {
+                                        pos,
+                                        from_slot: i as u8,
+                                        to_slot: i as u8,
+                                        to_preg: PRegIndex::new(preg.index()),
+                                        vreg: VRegIndex::new(operand.vreg().vreg()),
+                                        level: FixedRegFixupLevel::Initial,
+                                    });
+
+                                    operand_rewrites.insert(
+                                        i,
+                                        Operand::new(
+                                            operand.vreg(),
+                                            OperandConstraint::Any,
+                                            operand.kind(),
+                                            operand.pos(),
+                                        ),
+                                    );
+                                    operand_rewrites.insert(
+                                        *def_slot,
+                                        Operand::new(
+                                            def_op.vreg(),
+                                            def_op.constraint(),
+                                            def_op.kind(),
+                                            OperandPos::Early,
+                                        ),
+                                    );
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+
                 // Process defs and uses.
                 for &cur_pos in &[InstPosition::After, InstPosition::Before] {
                     for i in 0..self.func.inst_operands(inst).len() {
                         // don't borrow `self`
-                        let operand = self.func.inst_operands(inst)[i];
+                        let operand = operand_rewrites
+                            .get(&i)
+                            .cloned()
+                            .unwrap_or(self.func.inst_operands(inst)[i]);
                         let pos = match (operand.kind(), operand.pos()) {
                             (OperandKind::Mod, _) => ProgPoint::before(inst),
                             (OperandKind::Def, OperandPos::Early) => ProgPoint::before(inst),
@@ -1286,6 +1387,7 @@ impl<'a, F: Function> Env<'a, F> {
                                 to_slot: u.slot,
                                 to_preg: preg_idx,
                                 vreg: vreg_idx,
+                                level: FixedRegFixupLevel::Secondary,
                             });
                             u.operand = Operand::new(
                                 u.operand.vreg(),

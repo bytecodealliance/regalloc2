@@ -17,7 +17,7 @@ use super::{
     VRegIndex, SLOT_NONE,
 };
 use crate::ion::data_structures::{
-    BlockparamIn, BlockparamOut, CodeRange, LiveRangeKey, PosWithPrio,
+    BlockparamIn, BlockparamOut, CodeRange, FixedRegFixupLevel, LiveRangeKey, PosWithPrio,
 };
 use crate::ion::reg_traversal::RegTraversalIter;
 use crate::moves::{MoveAndScratchResolver, ParallelMoves};
@@ -749,9 +749,13 @@ impl<'a, F: Function> Env<'a, F> {
                 to_alloc,
                 fixup.vreg.index(),
             );
+            let prio = match fixup.level {
+                FixedRegFixupLevel::Initial => InsertMovePrio::MultiFixedRegInitial,
+                FixedRegFixupLevel::Secondary => InsertMovePrio::MultiFixedRegSecondary,
+            };
             self.insert_move(
                 fixup.pos,
-                InsertMovePrio::MultiFixedReg,
+                prio,
                 from_alloc,
                 to_alloc,
                 Some(self.vreg(fixup.vreg)),

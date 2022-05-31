@@ -590,18 +590,24 @@ impl CheckerState {
     fn update<'a, F: Function>(&mut self, checkinst: &CheckerInst, checker: &Checker<'a, F>) {
         self.become_defined();
 
-        let default_val = Default::default();
         match checkinst {
             &CheckerInst::Move { into, from } => {
-                let val = self.get_value(&from).unwrap_or(&default_val).clone();
-                trace!(
-                    "checker: checkinst {:?} updating: move {:?} -> {:?} val {:?}",
-                    checkinst,
-                    from,
-                    into,
-                    val
-                );
-                self.set_value(into, val);
+                // Value may not be present if this move is part of
+                // the parallel move resolver's fallback sequence that
+                // saves a victim register elsewhere. (In other words,
+                // that sequence saves an undefined value and restores
+                // it, so has no effect.) The checker needs to avoid
+                // putting Universe lattice values into the map.
+                if let Some(val) = self.get_value(&from).cloned() {
+                    trace!(
+                        "checker: checkinst {:?} updating: move {:?} -> {:?} val {:?}",
+                        checkinst,
+                        from,
+                        into,
+                        val
+                    );
+                    self.set_value(into, val);
+                }
             }
             &CheckerInst::ParallelMove { ref moves } => {
                 // First, build map of actions for each vreg in an
