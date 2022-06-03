@@ -439,13 +439,25 @@ pub struct SpillSlotData {
     pub ranges: LiveRangeSet,
     pub class: RegClass,
     pub alloc: Allocation,
-    pub next_spillslot: SpillSlotIndex,
 }
 
 #[derive(Clone, Debug)]
 pub struct SpillSlotList {
-    pub first_spillslot: SpillSlotIndex,
-    pub last_spillslot: SpillSlotIndex,
+    pub slots: SmallVec<[SpillSlotIndex; 32]>,
+    pub probe_start: usize,
+}
+
+impl SpillSlotList {
+    /// Get the next spillslot index in probing order, wrapping around
+    /// at the end of the slots list.
+    pub(crate) fn next_index(&self, index: usize) -> usize {
+        debug_assert!(index < self.slots.len());
+        if index == self.slots.len() - 1 {
+            0
+        } else {
+            index + 1
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
