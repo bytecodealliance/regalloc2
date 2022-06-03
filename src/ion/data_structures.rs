@@ -447,6 +447,19 @@ pub struct SpillSlotList {
     pub probe_start: usize,
 }
 
+impl SpillSlotList {
+    /// Get the next spillslot index in probing order, wrapping around
+    /// at the end of the slots list.
+    pub(crate) fn next_index(&self, index: usize) -> usize {
+        debug_assert!(index < self.slots.len());
+        if index == self.slots.len() - 1 {
+            0
+        } else {
+            index + 1
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct PrioQueue {
     pub heap: std::collections::BinaryHeap<PrioQueueEntry>,

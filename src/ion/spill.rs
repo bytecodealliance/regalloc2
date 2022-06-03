@@ -133,7 +133,16 @@ impl<'a, F: Function> Env<'a, F> {
             // Try a few existing spillslots.
             let mut i = self.slots_by_size[size].probe_start;
             let mut success = false;
+            // Never probe the same element more than once: limit the
+            // attempt count to the number of slots in existence.
             for _attempt in 0..std::cmp::min(self.slots_by_size[size].slots.len(), MAX_ATTEMPTS) {
+                // Note: this indexing of `slots` is always valid
+                // because either the `slots` list is empty and the
+                // iteration limit above consequently means we don't
+                // run this loop at all, or else `probe_start` is
+                // in-bounds (because it is made so below when we add
+                // a slot, and it always takes on the last index `i`
+                // after this loop).
                 let spillslot = self.slots_by_size[size].slots[i];
 
                 if self.spillslot_can_fit_spillset(spillslot, spillset) {
@@ -143,10 +152,7 @@ impl<'a, F: Function> Env<'a, F> {
                     break;
                 }
 
-                i += 1;
-                if i == self.slots_by_size[size].slots.len() {
-                    i = 0;
-                }
+                i = self.slots_by_size[size].next_index(i);
             }
 
             if !success {
