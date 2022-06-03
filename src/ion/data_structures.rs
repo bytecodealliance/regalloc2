@@ -439,13 +439,12 @@ pub struct SpillSlotData {
     pub ranges: LiveRangeSet,
     pub class: RegClass,
     pub alloc: Allocation,
-    pub next_spillslot: SpillSlotIndex,
 }
 
 #[derive(Clone, Debug)]
 pub struct SpillSlotList {
-    pub first_spillslot: SpillSlotIndex,
-    pub last_spillslot: SpillSlotIndex,
+    pub slots: SmallVec<[SpillSlotIndex; 32]>,
+    pub probe_start: usize,
 }
 
 #[derive(Clone, Debug)]

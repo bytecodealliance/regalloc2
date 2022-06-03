@@ -17,6 +17,7 @@ use super::{
     SpillSetIndex, SpillSlotData, SpillSlotIndex, SpillSlotList,
 };
 use crate::{Allocation, Function, SpillSlot};
+use smallvec::smallvec;
 
 impl<'a, F: Function> Env<'a, F> {
     pub fn try_allocating_regs_for_spilled_bundles(&mut self) {
@@ -110,6 +111,8 @@ impl<'a, F: Function> Env<'a, F> {
     }
 
     pub fn allocate_spillslots(&mut self) {
+        const MAX_ATTEMPTS: usize = 10;
+
         for spillset in 0..self.spillsets.len() {
             trace!("allocate spillslot: {}", spillset);
             let spillset = SpillSetIndex::new(spillset);
@@ -122,70 +125,40 @@ impl<'a, F: Function> Env<'a, F> {
                 self.slots_by_size.resize(
                     size + 1,
                     SpillSlotList {
-                        first_spillslot: SpillSlotIndex::invalid(),
-                        last_spillslot: SpillSlotIndex::invalid(),
+                        slots: smallvec![],
+                        probe_start: 0,
                     },
                 );
             }
             // Try a few existing spillslots.
-            let mut spillslot_iter = self.slots_by_size[size].first_spillslot;
-            let mut first_slot = SpillSlotIndex::invalid();
-            let mut prev = SpillSlotIndex::invalid();
+            let mut i = self.slots_by_size[size].probe_start;
             let mut success = false;
-            for _attempt in 0..10 {
-                if spillslot_iter.is_invalid() {
-                    break;
-                }
-                if spillslot_iter == first_slot {
-                    // We've started looking at slots we placed at the end; end search.
-                    break;
-                }
-                if first_slot.is_invalid() {
-                    first_slot = spillslot_iter;
-                }
+            for _attempt in 0..std::cmp::min(self.slots_by_size[size].slots.len(), MAX_ATTEMPTS) {
+                let spillslot = self.slots_by_size[size].slots[i];
 
-                if self.spillslot_can_fit_spillset(spillslot_iter, spillset) {
-                    self.allocate_spillset_to_spillslot(spillset, spillslot_iter);
+                if self.spillslot_can_fit_spillset(spillslot, spillset) {
+                    self.allocate_spillset_to_spillslot(spillset, spillslot);
                     success = true;
+                    self.slots_by_size[size].probe_start = i;
                     break;
                 }
-                // Remove the slot and place it at the end of the respective list.
-                let next = self.spillslots[spillslot_iter.index()].next_spillslot;
-                if prev.is_valid() {
-                    self.spillslots[prev.index()].next_spillslot = next;
-                } else {
-                    self.slots_by_size[size].first_spillslot = next;
-                }
-                if !next.is_valid() {
-                    self.slots_by_size[size].last_spillslot = prev;
-                }
 
-                let last = self.slots_by_size[size].last_spillslot;
-                if last.is_valid() {
-                    self.spillslots[last.index()].next_spillslot = spillslot_iter;
-                } else {
-                    self.slots_by_size[size].first_spillslot = spillslot_iter;
+                i += 1;
+                if i == self.slots_by_size[size].slots.len() {
+                    i = 0;
                 }
-                self.slots_by_size[size].last_spillslot = spillslot_iter;
-
-                prev = spillslot_iter;
-                spillslot_iter = next;
             }
 
             if !success {
                 // Allocate a new spillslot.
                 let spillslot = SpillSlotIndex::new(self.spillslots.len());
-                let next = self.slots_by_size[size].first_spillslot;
                 self.spillslots.push(SpillSlotData {
                     ranges: LiveRangeSet::new(),
-                    next_spillslot: next,
                     alloc: Allocation::none(),
                     class: self.spillsets[spillset.index()].class,
                 });
-                self.slots_by_size[size].first_spillslot = spillslot;
-                if !next.is_valid() {
-                    self.slots_by_size[size].last_spillslot = spillslot;
-                }
+                self.slots_by_size[size].slots.push(spillslot);
+                self.slots_by_size[size].probe_start = self.slots_by_size[size].slots.len() - 1;
 
                 self.allocate_spillset_to_spillslot(spillset, spillslot);
             }
