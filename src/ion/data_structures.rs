@@ -252,7 +252,10 @@ pub struct SpillSet {
     pub spill_bundle: LiveBundleIndex,
     pub required: bool,
     pub size: u8,
+    pub splits: u8,
 }
+
+pub(crate) const MAX_SPLITS_PER_SPILLSET: u8 = 10;
 
 #[derive(Clone, Debug)]
 pub struct VRegData {

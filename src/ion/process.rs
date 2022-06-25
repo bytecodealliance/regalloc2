@@ -15,18 +15,18 @@
 use super::{
     spill_weight_from_constraint, Env, LiveBundleIndex, LiveBundleVec, LiveRangeFlag,
     LiveRangeIndex, LiveRangeKey, LiveRangeList, LiveRangeListEntry, PRegIndex, RegTraversalIter,
-    Requirement, SpillWeight, UseList,
+    Requirement, SpillWeight, UseList, VRegIndex,
 };
 use crate::{
     ion::data_structures::{
-        CodeRange, BUNDLE_MAX_NORMAL_SPILL_WEIGHT, MINIMAL_BUNDLE_SPILL_WEIGHT,
-        MINIMAL_FIXED_BUNDLE_SPILL_WEIGHT,
+        CodeRange, BUNDLE_MAX_NORMAL_SPILL_WEIGHT, MAX_SPLITS_PER_SPILLSET,
+        MINIMAL_BUNDLE_SPILL_WEIGHT, MINIMAL_FIXED_BUNDLE_SPILL_WEIGHT,
     },
     Allocation, Function, Inst, InstPosition, OperandConstraint, OperandKind, PReg, ProgPoint,
     RegAllocError,
 };
 use fxhash::FxHashSet;
-use smallvec::smallvec;
+use smallvec::{smallvec, SmallVec};
 use std::fmt::Debug;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -410,6 +410,15 @@ impl<'a, F: Function> Env<'a, F> {
 
         let spillset = self.bundles[bundle.index()].spillset;
 
+        // Have we reached the maximum split count? If so, fall back
+        // to a "minimal bundles and spill bundle" setup for this
+        // bundle.
+        if self.spillsets[spillset.index()].splits >= MAX_SPLITS_PER_SPILLSET {
+            self.split_into_minimal_bundles(bundle, reg_hint);
+            return;
+        }
+        self.spillsets[spillset.index()].splits += 1;
+
         debug_assert!(!self.bundles[bundle.index()].ranges.is_empty());
         // Split point *at* start is OK; this means we peel off
         // exactly one use to create a minimal bundle.
@@ -511,6 +520,7 @@ impl<'a, F: Function> Env<'a, F> {
         self.bundles[bundle.index()]
             .ranges
             .truncate(last_lr_in_old_bundle_idx + 1);
+        self.bundles[bundle.index()].ranges.shrink_to_fit();
 
         // If the first entry in `new_lr_list` is a LR that is split
         // down the middle, replace it with a new LR and chop off the
@@ -537,6 +547,7 @@ impl<'a, F: Function> Env<'a, F> {
                 .collect();
             self.ranges[new_lr.index()].uses = rest_uses;
             self.ranges[orig_lr.index()].uses.truncate(first_use);
+            self.ranges[orig_lr.index()].uses.shrink_to_fit();
             self.recompute_range_properties(orig_lr);
             self.recompute_range_properties(new_lr);
             new_lr_list[0].index = new_lr;
@@ -725,6 +736,221 @@ impl<'a, F: Function> Env<'a, F> {
             let prio = self.bundles[new_bundle.index()].prio;
             self.allocation_queue
                 .insert(new_bundle, prio as usize, reg_hint);
+        }
+    }
+
+    /// Splits the given bundle into minimal bundles per Use, falling
+    /// back onto the spill bundle. This must work for any bundle no
+    /// matter how many conflicts.
+    pub fn split_into_minimal_bundles(&mut self, bundle: LiveBundleIndex, reg_hint: PReg) {
+        let mut removed_lrs: FxHashSet<LiveRangeIndex> = FxHashSet::default();
+        let mut removed_lrs_vregs: FxHashSet<VRegIndex> = FxHashSet::default();
+        let mut new_lrs: SmallVec<[(VRegIndex, LiveRangeIndex); 16]> = smallvec![];
+        let mut new_bundles: SmallVec<[LiveBundleIndex; 16]> = smallvec![];
+
+        let spill = self
+            .get_or_create_spill_bundle(bundle, /* create_if_absent = */ true)
+            .unwrap();
+
+        trace!(
+            "Splitting bundle {:?} into minimal bundles with reg hint {}",
+            bundle,
+            reg_hint
+        );
+
+        let mut last_lr: Option<LiveRangeIndex> = None;
+        let mut last_bundle: Option<LiveBundleIndex> = None;
+        let mut last_inst: Option<Inst> = None;
+        let mut last_vreg: Option<VRegIndex> = None;
+
+        for entry_idx in 0..self.bundles[bundle.index()].ranges.len() {
+            // Iterate manually; don't borrow `self`.
+            let entry = self.bundles[bundle.index()].ranges[entry_idx];
+
+            removed_lrs.insert(entry.index);
+            let vreg = self.ranges[entry.index.index()].vreg;
+            removed_lrs_vregs.insert(vreg);
+            trace!(" -> removing old LR {:?} for vreg {:?}", entry.index, vreg);
+
+            let mut last_live_pos = entry.range.from;
+            for use_idx in 0..self.ranges[entry.index.index()].uses.len() {
+                let u = self.ranges[entry.index.index()].uses[use_idx];
+                trace!("   -> use {:?} (last_live_pos {:?})", u, last_live_pos);
+
+                // If we just created a LR for this inst at the last
+                // pos, add this use to the same LR.
+                if Some(u.pos.inst()) == last_inst && Some(vreg) == last_vreg {
+                    self.ranges[last_lr.unwrap().index()].uses.push(u);
+                    trace!("    -> appended to last LR {:?}", last_lr.unwrap());
+                    continue;
+                }
+
+                // If the last bundle was at the same inst, add a new
+                // LR to the same bundle; otherwise, create a LR and a
+                // new bundle.
+                if Some(u.pos.inst()) == last_inst {
+                    let cr = CodeRange {
+                        from: u.pos,
+                        to: ProgPoint::before(u.pos.inst().next()),
+                    };
+                    let lr = self.create_liverange(cr);
+                    new_lrs.push((vreg, lr));
+                    self.ranges[lr.index()].uses.push(u);
+                    self.ranges[lr.index()].vreg = vreg;
+
+                    trace!(
+                        "    -> created new LR {:?} but adding to existing bundle {:?}",
+                        lr,
+                        last_bundle.unwrap()
+                    );
+                    // Edit the previous LR to end mid-inst.
+                    self.bundles[last_bundle.unwrap().index()]
+                        .ranges
+                        .last_mut()
+                        .unwrap()
+                        .range
+                        .to = u.pos;
+                    self.ranges[last_lr.unwrap().index()].range.to = u.pos;
+                    // Add this LR to the bundle.
+                    self.bundles[last_bundle.unwrap().index()]
+                        .ranges
+                        .push(LiveRangeListEntry {
+                            range: cr,
+                            index: lr,
+                        });
+                    self.ranges[lr.index()].bundle = last_bundle.unwrap();
+                    last_live_pos = ProgPoint::before(u.pos.inst().next());
+                    continue;
+                }
+
+                // Otherwise, create a new LR.
+                let pos = ProgPoint::before(u.pos.inst());
+                let cr = CodeRange {
+                    from: pos,
+                    to: ProgPoint::before(u.pos.inst().next()),
+                };
+                let lr = self.create_liverange(cr);
+                new_lrs.push((vreg, lr));
+                self.ranges[lr.index()].uses.push(u);
+                self.ranges[lr.index()].vreg = vreg;
+
+                // Create a new bundle that contains only this LR.
+                let new_bundle = self.create_bundle();
+                self.ranges[lr.index()].bundle = new_bundle;
+                self.bundles[new_bundle.index()].spillset = self.bundles[bundle.index()].spillset;
+                self.bundles[new_bundle.index()]
+                    .ranges
+                    .push(LiveRangeListEntry {
+                        range: cr,
+                        index: lr,
+                    });
+                new_bundles.push(new_bundle);
+
+                // If this use was a Def, set the StartsAtDef flag for
+                // the new LR. (N.B.: *not* Mod, only Def, because Mod
+                // needs an input. This flag specifically indicates
+                // that the LR does not require the value to be moved
+                // into location at start because it (re)defines the
+                // value.)
+                if u.operand.kind() == OperandKind::Def {
+                    self.ranges[lr.index()].set_flag(LiveRangeFlag::StartsAtDef);
+                }
+
+                trace!(
+                    "    -> created new LR {:?} range {:?} with new bundle {:?} for this use",
+                    lr,
+                    cr,
+                    new_bundle
+                );
+
+                // If there was any intervening range in the LR not
+                // covered by the minimal new LR above, add it to the
+                // spillset.
+                if pos > last_live_pos {
+                    let cr = CodeRange {
+                        from: last_live_pos,
+                        to: pos,
+                    };
+                    let spill_lr = self.create_liverange(cr);
+                    self.ranges[spill_lr.index()].vreg = vreg;
+                    self.ranges[spill_lr.index()].bundle = spill;
+                    new_lrs.push((vreg, spill_lr));
+                    self.bundles[spill.index()].ranges.push(LiveRangeListEntry {
+                        range: cr,
+                        index: spill_lr,
+                    });
+                    self.ranges[spill_lr.index()].bundle = spill;
+                    trace!(
+                        "    -> put intervening range {:?} in new LR {:?} in spill bundle {:?}",
+                        cr,
+                        spill_lr,
+                        spill
+                    );
+                }
+                last_live_pos = ProgPoint::before(u.pos.inst().next());
+
+                last_lr = Some(lr);
+                last_bundle = Some(new_bundle);
+                last_inst = Some(u.pos.inst());
+                last_vreg = Some(vreg);
+            }
+
+            // Clear the use-list from the original LR.
+            self.ranges[entry.index.index()].uses.clear();
+            self.ranges[entry.index.index()].uses.shrink_to_fit();
+
+            // If there is space from the last use to the end of the
+            // LR, put that in the spill bundle too.
+            if entry.range.to > last_live_pos {
+                let cr = CodeRange {
+                    from: last_live_pos,
+                    to: entry.range.to,
+                };
+                let spill_lr = self.create_liverange(cr);
+                self.ranges[spill_lr.index()].vreg = vreg;
+                self.ranges[spill_lr.index()].bundle = spill;
+                new_lrs.push((vreg, spill_lr));
+                self.bundles[spill.index()].ranges.push(LiveRangeListEntry {
+                    range: cr,
+                    index: spill_lr,
+                });
+                self.ranges[spill_lr.index()].bundle = spill;
+                trace!(
+                    "    -> put trailing range {:?} in new LR {:?} in spill bundle {:?}",
+                    cr,
+                    spill_lr,
+                    spill
+                );
+            }
+        }
+
+        // Clear the LR list in the original bundle.
+        self.bundles[bundle.index()].ranges.clear();
+        self.bundles[bundle.index()].ranges.shrink_to_fit();
+
+        // Remove all of the removed LRs from respective vregs' lists.
+        for vreg in removed_lrs_vregs {
+            self.vregs[vreg.index()]
+                .ranges
+                .retain(|entry| !removed_lrs.contains(&entry.index));
+        }
+
+        // Add the new LRs to their respective vreg lists.
+        for (vreg, lr) in new_lrs {
+            let range = self.ranges[lr.index()].range;
+            let entry = LiveRangeListEntry { range, index: lr };
+            self.vregs[vreg.index()].ranges.push(entry);
+        }
+
+        // Recompute bundle properties for all new bundles and enqueue
+        // them.
+        for bundle in new_bundles {
+            if self.bundles[bundle.index()].ranges.len() > 0 {
+                self.recompute_bundle_properties(bundle);
+                let prio = self.bundles[bundle.index()].prio;
+                self.allocation_queue
+                    .insert(bundle, prio as usize, reg_hint);
+            }
         }
     }
 
