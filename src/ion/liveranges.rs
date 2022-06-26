@@ -491,9 +491,7 @@ impl<'a, F: Function> Env<'a, F> {
             // operands and clobbers.
             for inst in insns.rev().iter() {
                 // Mark clobbers with CodeRanges on PRegs.
-                for i in 0..self.func.inst_clobbers(inst).len() {
-                    // don't borrow `self`
-                    let clobber = self.func.inst_clobbers(inst)[i];
+                for clobber in self.func.inst_clobbers(inst) {
                     // Clobber range is at After point only: an
                     // instruction can still take an input in a reg
                     // that it later clobbers. (In other words, the

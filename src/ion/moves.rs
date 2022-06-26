@@ -950,7 +950,7 @@ impl<'a, F: Function> Env<'a, F> {
                     }
                 }
                 for reg in this.func.inst_clobbers(inst) {
-                    redundant_moves.clear_alloc(Allocation::reg(*reg));
+                    redundant_moves.clear_alloc(Allocation::reg(reg));
                 }
             }
         }

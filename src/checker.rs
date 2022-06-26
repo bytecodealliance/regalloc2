@@ -935,7 +935,7 @@ impl<'a, F: Function> Checker<'a, F> {
         else if !self.f.is_branch(inst) {
             let operands: Vec<_> = self.f.inst_operands(inst).iter().cloned().collect();
             let allocs: Vec<_> = out.inst_allocs(inst).iter().cloned().collect();
-            let clobbers: Vec<_> = self.f.inst_clobbers(inst).iter().cloned().collect();
+            let clobbers: Vec<_> = self.f.inst_clobbers(inst).into_iter().collect();
             let checkinst = CheckerInst::Op {
                 inst,
                 operands,
