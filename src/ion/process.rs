@@ -412,7 +412,8 @@ impl<'a, F: Function> Env<'a, F> {
 
         // Have we reached the maximum split count? If so, fall back
         // to a "minimal bundles and spill bundle" setup for this
-        // bundle.
+        // bundle. See the doc-comment on
+        // `split_into_minimal_bundles()` above for more.
         if self.spillsets[spillset.index()].splits >= MAX_SPLITS_PER_SPILLSET {
             self.split_into_minimal_bundles(bundle, reg_hint);
             return;
@@ -742,6 +743,33 @@ impl<'a, F: Function> Env<'a, F> {
     /// Splits the given bundle into minimal bundles per Use, falling
     /// back onto the spill bundle. This must work for any bundle no
     /// matter how many conflicts.
+    ///
+    /// This is meant to solve a quadratic-cost problem that exists
+    /// with "normal" splitting as implemented above. With that
+    /// procedure, , splitting a bundle produces two
+    /// halves. Furthermore, it has cost linear in the length of the
+    /// bundle, because the resulting half-bundles have their
+    /// requirements recomputed with a new scan, and because we copy
+    /// half the use-list over to the tail end sub-bundle.
+    ///
+    /// This works fine when a bundle has a handful of splits overall,
+    /// but not when an input has a systematic pattern of conflicts
+    /// that will require O(|bundle|) splits (e.g., every Use is
+    /// constrained to a different fixed register than the last
+    /// one). In such a case, we get quadratic behavior.
+    ///
+    /// This method implements a direct split into minimal bundles
+    /// along the whole length of the bundle, putting the regions
+    /// without uses in the spill bundle. We do this once the number
+    /// of splits in an original bundle (tracked by spillset) reaches
+    /// a pre-determined limit.
+    ///
+    /// This basically approximates what a non-splitting allocator
+    /// would do: it "spills" the whole bundle to possibly a
+    /// stackslot, or a second-chance register allocation at best, via
+    /// the spill bundle; and then does minimal reservations of
+    /// registers just at uses/defs and moves the "spilled" value
+    /// into/out of them immediately.
     pub fn split_into_minimal_bundles(&mut self, bundle: LiveBundleIndex, reg_hint: PReg) {
         let mut removed_lrs: FxHashSet<LiveRangeIndex> = FxHashSet::default();
         let mut removed_lrs_vregs: FxHashSet<VRegIndex> = FxHashSet::default();
@@ -896,8 +924,7 @@ impl<'a, F: Function> Env<'a, F> {
             }
 
             // Clear the use-list from the original LR.
-            self.ranges[entry.index.index()].uses.clear();
-            self.ranges[entry.index.index()].uses.shrink_to_fit();
+            self.ranges[entry.index.index()].uses = Default::default();
 
             // If there is space from the last use to the end of the
             // LR, put that in the spill bundle too.
