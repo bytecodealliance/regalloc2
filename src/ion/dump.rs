@@ -95,7 +95,7 @@ impl<'a, F: Function> Env<'a, F> {
                 let clobbers = self
                     .func
                     .inst_clobbers(inst)
-                    .iter()
+                    .into_iter()
                     .map(|preg| format!("{}", preg))
                     .collect::<Vec<_>>();
                 let allocs = (0..ops.len())

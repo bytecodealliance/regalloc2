@@ -5,7 +5,7 @@
 
 use crate::{
     domtree, postorder, Allocation, Block, Function, Inst, InstRange, MachineEnv, Operand,
-    OperandConstraint, OperandKind, OperandPos, PReg, RegClass, VReg,
+    OperandConstraint, OperandKind, OperandPos, PReg, PRegSet, RegClass, VReg,
 };
 
 use arbitrary::Result as ArbitraryResult;
@@ -132,8 +132,12 @@ impl Function for Func {
         &self.insts[insn.index()].operands[..]
     }
 
-    fn inst_clobbers(&self, insn: Inst) -> &[PReg] {
-        &self.insts[insn.index()].clobbers[..]
+    fn inst_clobbers(&self, insn: Inst) -> PRegSet {
+        let mut set = PRegSet::default();
+        for &preg in &self.insts[insn.index()].clobbers {
+            set = set.with(preg);
+        }
+        set
     }
 
     fn num_vregs(&self) -> usize {

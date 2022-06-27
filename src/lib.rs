@@ -123,13 +123,13 @@ impl PReg {
     /// all physical registers. Allows one to maintain an array of data for
     /// all PRegs and index it efficiently.
     #[inline(always)]
-    pub fn index(self) -> usize {
+    pub const fn index(self) -> usize {
         self.bits as usize
     }
 
     /// Construct a PReg from the value returned from `.index()`.
     #[inline(always)]
-    pub fn from_index(index: usize) -> Self {
+    pub const fn from_index(index: usize) -> Self {
         PReg {
             bits: (index & (Self::NUM_INDEX - 1)) as u8,
         }
@@ -162,6 +162,78 @@ impl std::fmt::Display for PReg {
             RegClass::Float => "f",
         };
         write!(f, "p{}{}", self.hw_enc(), class)
+    }
+}
+
+/// A physical register set. Used to represent clobbers
+/// efficiently.
+///
+/// The set is `Copy` and is guaranteed to have constant, and small,
+/// size, as it is based on a bitset internally.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[cfg_attr(feature = "enable-serde", derive(Serialize, Deserialize))]
+pub struct PRegSet {
+    bits: u128,
+}
+
+impl PRegSet {
+    /// Create an empty set.
+    pub const fn empty() -> Self {
+        Self { bits: 0 }
+    }
+
+    /// Add a physical register (PReg) to the set, returning the new value.
+    pub const fn with(self, reg: PReg) -> Self {
+        let bit = reg.index();
+        debug_assert!(bit < 128);
+        Self {
+            bits: self.bits | (1u128 << bit),
+        }
+    }
+
+    /// Add a physical register (PReg) to the set.
+    pub fn add(&mut self, reg: PReg) {
+        let bit = reg.index();
+        debug_assert!(bit < 128);
+        self.bits |= 1u128 << bit;
+    }
+
+    /// Remove a physical register (PReg) from the set.
+    pub fn remove(&mut self, reg: PReg) {
+        let bit = reg.index();
+        debug_assert!(bit < 128);
+        self.bits &= !(1u128 << bit);
+    }
+
+    /// Add all of the registers in one set to this one, mutating in
+    /// place.
+    pub fn union_from(&mut self, other: PRegSet) {
+        self.bits |= other.bits;
+    }
+}
+
+impl IntoIterator for PRegSet {
+    type Item = PReg;
+    type IntoIter = PRegSetIter;
+    fn into_iter(self) -> PRegSetIter {
+        PRegSetIter { bits: self.bits }
+    }
+}
+
+pub struct PRegSetIter {
+    bits: u128,
+}
+
+impl Iterator for PRegSetIter {
+    type Item = PReg;
+    fn next(&mut self) -> Option<PReg> {
+        if self.bits == 0 {
+            None
+        } else {
+            let index = self.bits.trailing_zeros();
+            self.bits &= !(1u128 << index);
+            Some(PReg::from_index(index as usize))
+        }
     }
 }
 
@@ -198,7 +270,7 @@ impl VReg {
     }
 
     #[inline(always)]
-    pub fn vreg(self) -> usize {
+    pub const fn vreg(self) -> usize {
         let vreg = (self.bits >> 1) as usize;
         vreg
     }
@@ -972,7 +1044,14 @@ pub trait Function {
     /// fixed physical registers written by an instruction but not
     /// used as a vreg output, or fixed physical registers used as
     /// temps within an instruction out of necessity.
-    fn inst_clobbers(&self, insn: Inst) -> &[PReg];
+    ///
+    /// Note that it is legal for a register to be both a clobber and
+    /// an actual def (via pinned vreg or via operand constrained to
+    /// the reg). This is for convenience: e.g., a call instruction
+    /// might have a constant clobber set determined by the ABI, but
+    /// some of those clobbered registers are sometimes return
+    /// value(s).
+    fn inst_clobbers(&self, insn: Inst) -> PRegSet;
 
     /// Get the number of `VReg` in use in this function.
     fn num_vregs(&self) -> usize;
