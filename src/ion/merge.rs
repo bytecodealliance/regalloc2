@@ -291,6 +291,7 @@ impl<'a, F: Function> Env<'a, F> {
                 class: reg.class(),
                 reg_hint: PReg::invalid(),
                 spill_bundle: LiveBundleIndex::invalid(),
+                splits: 0,
             });
             self.bundles[bundle.index()].spillset = ssidx;
         }

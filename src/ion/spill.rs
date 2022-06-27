@@ -25,6 +25,10 @@ impl<'a, F: Function> Env<'a, F> {
         for i in 0..self.spilled_bundles.len() {
             let bundle = self.spilled_bundles[i]; // don't borrow self
 
+            if self.bundles[bundle.index()].ranges.is_empty() {
+                continue;
+            }
+
             let class = self.spillsets[self.bundles[bundle.index()].spillset.index()].class;
             let hint = self.spillsets[self.bundles[bundle.index()].spillset.index()].reg_hint;
 
