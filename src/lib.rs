@@ -165,21 +165,24 @@ impl std::fmt::Display for PReg {
     }
 }
 
-/// A physical register mask: a set of physical registers. Used to
-/// represent clobbers efficiently.
+/// A physical register set. Used to represent clobbers
+/// efficiently.
+///
+/// The set is `Copy` and is guaranteed to have constant, and small,
+/// size, as it is based on a bitset internally.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 #[cfg_attr(feature = "enable-serde", derive(Serialize, Deserialize))]
-pub struct PRegMask {
+pub struct PRegSet {
     bits: u128,
 }
 
-impl PRegMask {
-    /// Create an empty mask.
+impl PRegSet {
+    /// Create an empty set.
     pub const fn empty() -> Self {
         Self { bits: 0 }
     }
 
-    /// Add a physical register (PReg) to the mask, returning the new value.
+    /// Add a physical register (PReg) to the set, returning the new value.
     pub const fn with(self, reg: PReg) -> Self {
         let bit = reg.index();
         debug_assert!(bit < 128);
@@ -188,40 +191,40 @@ impl PRegMask {
         }
     }
 
-    /// Add a physical register (PReg) to the mask.
+    /// Add a physical register (PReg) to the set.
     pub fn add(&mut self, reg: PReg) {
         let bit = reg.index();
         debug_assert!(bit < 128);
         self.bits |= 1u128 << bit;
     }
 
-    /// Remove a physical register (PReg) from the mask.
+    /// Remove a physical register (PReg) from the set.
     pub fn remove(&mut self, reg: PReg) {
         let bit = reg.index();
         debug_assert!(bit < 128);
         self.bits &= !(1u128 << bit);
     }
 
-    /// Add all of the registers in one clobber mask to this one,
-    /// mutating in place.
-    pub fn add_all(&mut self, other: PRegMask) {
+    /// Add all of the registers in one set to this one, mutating in
+    /// place.
+    pub fn union_from(&mut self, other: PRegSet) {
         self.bits |= other.bits;
     }
 }
 
-impl IntoIterator for PRegMask {
+impl IntoIterator for PRegSet {
     type Item = PReg;
-    type IntoIter = PRegMaskIter;
-    fn into_iter(self) -> PRegMaskIter {
-        PRegMaskIter { bits: self.bits }
+    type IntoIter = PRegSetIter;
+    fn into_iter(self) -> PRegSetIter {
+        PRegSetIter { bits: self.bits }
     }
 }
 
-pub struct PRegMaskIter {
+pub struct PRegSetIter {
     bits: u128,
 }
 
-impl Iterator for PRegMaskIter {
+impl Iterator for PRegSetIter {
     type Item = PReg;
     fn next(&mut self) -> Option<PReg> {
         if self.bits == 0 {
@@ -1045,10 +1048,10 @@ pub trait Function {
     /// Note that it is legal for a register to be both a clobber and
     /// an actual def (via pinned vreg or via operand constrained to
     /// the reg). This is for convenience: e.g., a call instruction
-    /// might have a constant clobber mask determined by the ABI, but
+    /// might have a constant clobber set determined by the ABI, but
     /// some of those clobbered registers are sometimes return
     /// value(s).
-    fn inst_clobbers(&self, insn: Inst) -> PRegMask;
+    fn inst_clobbers(&self, insn: Inst) -> PRegSet;
 
     /// Get the number of `VReg` in use in this function.
     fn num_vregs(&self) -> usize;
