@@ -589,7 +589,7 @@ impl<'a, F: Function> Env<'a, F> {
                                             src.vreg(),
                                             OperandKind::Def,
                                             OperandPos::Late,
-                                            ProgPoint::after(inst),
+                                            ProgPoint::before(inst),
                                         )
                                     } else {
                                         // Dest is pinned: this is a use on the src with a pinned preg.
@@ -681,18 +681,22 @@ impl<'a, F: Function> Env<'a, F> {
                                     if live.get(pinned_vreg.vreg()) {
                                         let pinned_lr = vreg_ranges[pinned_vreg.vreg()];
                                         let orig_start = self.ranges[pinned_lr.index()].range.from;
+                                        // Following instruction start
+                                        // (so we don't transition in
+                                        // middle of inst).
+                                        let new_start = ProgPoint::before(progpoint.inst().next());
                                         trace!(
                                             " -> live with LR {:?}; truncating to start at {:?}",
                                             pinned_lr,
-                                            progpoint.next()
+                                            new_start,
                                         );
-                                        self.ranges[pinned_lr.index()].range.from =
-                                            progpoint.next();
+                                        self.ranges[pinned_lr.index()].range.from = new_start;
+
                                         let new_lr = self.add_liverange_to_vreg(
                                             VRegIndex::new(pinned_vreg.vreg()),
                                             CodeRange {
                                                 from: orig_start,
-                                                to: progpoint.prev(),
+                                                to: progpoint,
                                             },
                                         );
                                         vreg_ranges[pinned_vreg.vreg()] = new_lr;
@@ -725,7 +729,7 @@ impl<'a, F: Function> Env<'a, F> {
                                                 VRegIndex::new(pinned_vreg.vreg()),
                                                 CodeRange {
                                                     from: self.cfginfo.block_entry[block.index()],
-                                                    to: ProgPoint::before(inst),
+                                                    to: progpoint,
                                                 },
                                             );
                                             vreg_ranges[pinned_vreg.vreg()] = new_lr;
