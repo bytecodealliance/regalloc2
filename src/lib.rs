@@ -22,6 +22,12 @@ macro_rules! trace {
     };
 }
 
+macro_rules! trace_enabled {
+    () => {
+        cfg!(feature = "trace-log")
+    };
+}
+
 pub(crate) mod cfg;
 pub(crate) mod domtree;
 pub mod indexset;

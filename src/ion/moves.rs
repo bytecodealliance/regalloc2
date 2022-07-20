@@ -435,19 +435,17 @@ impl<'a, F: Function> Env<'a, F> {
                                     alloc,
                                 );
                                 #[cfg(debug_assertions)]
-                                {
-                                    if log::log_enabled!(log::Level::Trace) {
-                                        self.annotate(
-                                            self.cfginfo.block_entry[block.index()],
-                                            format!(
-                                                "blockparam-in: block{} to block{}:into v{} in {}",
-                                                from_block.index(),
-                                                to_block.index(),
-                                                to_vreg.index(),
-                                                alloc
-                                            ),
-                                        );
-                                    }
+                                if self.annotations_enabled {
+                                    self.annotate(
+                                        self.cfginfo.block_entry[block.index()],
+                                        format!(
+                                            "blockparam-in: block{} to block{}:into v{} in {}",
+                                            from_block.index(),
+                                            to_block.index(),
+                                            to_vreg.index(),
+                                            alloc
+                                        ),
+                                    );
                                 }
                             }
                             blockparam_in_idx += 1;
@@ -831,16 +829,11 @@ impl<'a, F: Function> Env<'a, F> {
                     );
                     if input_alloc != output_alloc {
                         #[cfg(debug_assertions)]
-                        {
-                            if log::log_enabled!(log::Level::Trace) {
-                                self.annotate(
-                                    ProgPoint::before(inst),
-                                    format!(
-                                        " reuse-input-copy: {} -> {}",
-                                        input_alloc, output_alloc
-                                    ),
-                                );
-                            }
+                        if self.annotations_enabled {
+                            self.annotate(
+                                ProgPoint::before(inst),
+                                format!(" reuse-input-copy: {} -> {}", input_alloc, output_alloc),
+                            );
                         }
                         let input_operand = self.func.inst_operands(inst)[input_idx];
                         self.insert_move(
