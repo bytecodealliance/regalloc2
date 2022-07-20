@@ -97,7 +97,7 @@ impl<'a, F: Function> Env<'a, F> {
         self.fixup_multi_fixed_vregs();
         self.merge_vreg_bundles();
         self.queue_bundles();
-        if log::log_enabled!(log::Level::Trace) {
+        if trace_enabled!() {
             self.dump_state();
         }
         Ok(())
