@@ -10,6 +10,30 @@ use crate::cfg::CFGInfo;
 use crate::{Block, Function, Inst, OperandKind, RegAllocError};
 
 pub fn validate_ssa<F: Function>(f: &F, cfginfo: &CFGInfo) -> Result<(), RegAllocError> {
+    // For each vreg, the instruction that defines it, if any.
+    let mut vreg_def_inst = vec![Inst::invalid(); f.num_vregs()];
+    // For each vreg, the block that defines it as a blockparam, if
+    // any. (Every vreg must have a valid entry in either
+    // `vreg_def_inst` or `vreg_def_blockparam`.)
+    let mut vreg_def_blockparam = vec![(Block::invalid(), 0); f.num_vregs()];
+
+    for block in 0..f.num_blocks() {
+        let block = Block::new(block);
+        for (i, param) in f.block_params(block).iter().enumerate() {
+            vreg_def_blockparam[param.vreg()] = (block, i as u32);
+        }
+        for inst in f.block_insns(block).iter() {
+            for operand in f.inst_operands(inst) {
+                match operand.kind() {
+                    OperandKind::Def => {
+                        vreg_def_inst[operand.vreg().vreg()] = inst;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
     // Walk the blocks in arbitrary order. Check, for every use, that
     // the def is either in the same block in an earlier inst, or is
     // defined (by inst or blockparam) in some other block that
@@ -29,10 +53,10 @@ pub fn validate_ssa<F: Function>(f: &F, cfginfo: &CFGInfo) -> Result<(), RegAllo
             for operand in operands {
                 match operand.kind() {
                     OperandKind::Use => {
-                        let def_block = if cfginfo.vreg_def_inst[operand.vreg().vreg()].is_valid() {
-                            cfginfo.insn_block[cfginfo.vreg_def_inst[operand.vreg().vreg()].index()]
+                        let def_block = if vreg_def_inst[operand.vreg().vreg()].is_valid() {
+                            cfginfo.insn_block[vreg_def_inst[operand.vreg().vreg()].index()]
                         } else {
-                            cfginfo.vreg_def_blockparam[operand.vreg().vreg()].0
+                            vreg_def_blockparam[operand.vreg().vreg()].0
                         };
                         if def_block.is_invalid() {
                             return Err(RegAllocError::SSA(operand.vreg(), iix));
