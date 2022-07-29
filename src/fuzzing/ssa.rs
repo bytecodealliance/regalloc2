@@ -6,70 +6,70 @@
 //! SSA-related utilities.
 
 use crate::cfg::CFGInfo;
-
 use crate::{Block, Function, Inst, OperandKind, RegAllocError};
+use std::collections::HashMap;
 
 pub fn validate_ssa<F: Function>(f: &F, cfginfo: &CFGInfo) -> Result<(), RegAllocError> {
-    // For each vreg, the instruction that defines it, if any.
-    let mut vreg_def_inst = vec![Inst::invalid(); f.num_vregs()];
-    // For each vreg, the block that defines it as a blockparam, if
-    // any. (Every vreg must have a valid entry in either
-    // `vreg_def_inst` or `vreg_def_blockparam`.)
-    let mut vreg_def_blockparam = vec![(Block::invalid(), 0); f.num_vregs()];
-
-    for block in 0..f.num_blocks() {
-        let block = Block::new(block);
-        for (i, param) in f.block_params(block).iter().enumerate() {
-            vreg_def_blockparam[param.vreg()] = (block, i as u32);
-        }
-        for inst in f.block_insns(block).iter() {
-            for operand in f.inst_operands(inst) {
-                match operand.kind() {
-                    OperandKind::Def => {
-                        vreg_def_inst[operand.vreg().vreg()] = inst;
-                    }
-                    _ => {}
-                }
+    // Breadth-first traversal of the dominance tree, without recursion (to avoid stack overflow in
+    // case of a deep dominance tree) and in O(num_blocks) time. Note that if any blocks are
+    // unreachable from the entry block, they will not be validated.
+    let blocks = {
+        let mut blocks = Vec::with_capacity(f.num_blocks());
+        // First invert the dominance tree so we know, for each block, all the blocks that it
+        // immediately dominates.
+        let mut domtree = HashMap::new();
+        for (child, &parent) in cfginfo.domtree.iter().enumerate() {
+            if !parent.is_invalid() {
+                let child = Block::new(child);
+                domtree.entry(parent).or_insert_with(Vec::new).push(child);
             }
         }
-    }
 
-    // Walk the blocks in arbitrary order. Check, for every use, that
-    // the def is either in the same block in an earlier inst, or is
-    // defined (by inst or blockparam) in some other block that
-    // dominates this one. Also check that for every block param and
-    // inst def, that this is the only def.
-    let mut defined = vec![false; f.num_vregs()];
-    for block in 0..f.num_blocks() {
-        let block = Block::new(block);
+        // Then concatenate those lists of immediately-dominated blocks in order.
+        blocks.push(f.entry_block());
+        for i in 0.. {
+            if let Some(parent) = blocks.get(i) {
+                if let Some(mut children) = domtree.remove(parent) {
+                    blocks.append(&mut children);
+                }
+            } else {
+                break;
+            }
+        }
+        blocks
+    };
+
+    // Visit each block once, only after its dominators have been visited. Check, for every use,
+    // that the def is either in the same block in an earlier inst, or is defined (by inst or
+    // blockparam) in some other block that dominates this one. Also check that for every block
+    // param and inst def, that this is the only def.
+    let mut defined_in = vec![Block::invalid(); f.num_vregs()];
+    for block in blocks {
         for blockparam in f.block_params(block) {
-            if defined[blockparam.vreg()] {
+            let def_block = &mut defined_in[blockparam.vreg()];
+            if !def_block.is_invalid() {
                 return Err(RegAllocError::SSA(*blockparam, Inst::invalid()));
             }
-            defined[blockparam.vreg()] = true;
+            *def_block = block;
         }
         for iix in f.block_insns(block).iter() {
             let operands = f.inst_operands(iix);
             for operand in operands {
+                let def_block = &mut defined_in[operand.vreg().vreg()];
                 match operand.kind() {
                     OperandKind::Use => {
-                        let def_block = if vreg_def_inst[operand.vreg().vreg()].is_valid() {
-                            cfginfo.insn_block[vreg_def_inst[operand.vreg().vreg()].index()]
-                        } else {
-                            vreg_def_blockparam[operand.vreg().vreg()].0
-                        };
                         if def_block.is_invalid() {
                             return Err(RegAllocError::SSA(operand.vreg(), iix));
                         }
-                        if !cfginfo.dominates(def_block, block) {
+                        if !cfginfo.dominates(*def_block, block) {
                             return Err(RegAllocError::SSA(operand.vreg(), iix));
                         }
                     }
                     OperandKind::Def => {
-                        if defined[operand.vreg().vreg()] {
+                        if !def_block.is_invalid() {
                             return Err(RegAllocError::SSA(operand.vreg(), iix));
                         }
-                        defined[operand.vreg().vreg()] = true;
+                        *def_block = block;
                     }
                     OperandKind::Mod => {
                         // Mod (modify) operands are not used in SSA,
