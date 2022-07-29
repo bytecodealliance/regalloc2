@@ -52,6 +52,8 @@ pub fn validate_ssa<F: Function>(f: &F, cfginfo: &CFGInfo) -> Result<(), RegAllo
             }
             *def_block = block;
         }
+
+        let mut saw_branch = false;
         for iix in f.block_insns(block).iter() {
             let operands = f.inst_operands(iix);
             for operand in operands {
@@ -79,35 +81,28 @@ pub fn validate_ssa<F: Function>(f: &F, cfginfo: &CFGInfo) -> Result<(), RegAllo
                     }
                 }
             }
-        }
-    }
 
-    // Check that the length of branch args matches the sum of the
-    // number of blockparams in their succs, and that the end of every
-    // block ends in this branch or in a ret, and that there are no
-    // other branches or rets in the middle of the block.
-    for block in 0..f.num_blocks() {
-        let block = Block::new(block);
-        let insns = f.block_insns(block);
-        for insn in insns.iter() {
-            if insn == insns.last() {
-                if !(f.is_branch(insn) || f.is_ret(insn)) {
-                    return Err(RegAllocError::BB(block));
-                }
-                if f.is_branch(insn) {
-                    for (i, &succ) in f.block_succs(block).iter().enumerate() {
-                        let blockparams_in = f.block_params(succ);
-                        let blockparams_out = f.branch_blockparams(block, insn, i);
-                        if blockparams_in.len() != blockparams_out.len() {
-                            return Err(RegAllocError::Branch(insn));
-                        }
+            // Check that the length of branch args matches the sum of the number of blockparams in
+            // their succs, and that the end of every block ends in this branch or in a ret, and
+            // that there are no other branches or rets in the middle of the block.
+            if saw_branch {
+                return Err(RegAllocError::BB(block));
+            }
+            if f.is_branch(iix) {
+                for (i, &succ) in f.block_succs(block).iter().enumerate() {
+                    let blockparams_in = f.block_params(succ);
+                    let blockparams_out = f.branch_blockparams(block, iix, i);
+                    if blockparams_in.len() != blockparams_out.len() {
+                        return Err(RegAllocError::Branch(iix));
                     }
                 }
-            } else {
-                if f.is_branch(insn) || f.is_ret(insn) {
-                    return Err(RegAllocError::BB(block));
-                }
+                saw_branch = true;
+            } else if f.is_ret(iix) {
+                saw_branch = true;
             }
+        }
+        if !saw_branch {
+            return Err(RegAllocError::BB(block));
         }
     }
 
