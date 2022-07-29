@@ -5,7 +5,7 @@
 
 //! Lightweight CFG analyses.
 
-use crate::{domtree, postorder, Block, Function, Inst, OperandKind, ProgPoint, RegAllocError};
+use crate::{domtree, postorder, Block, Function, Inst, ProgPoint, RegAllocError};
 use smallvec::{smallvec, SmallVec};
 
 #[derive(Clone, Debug)]
@@ -16,12 +16,6 @@ pub struct CFGInfo {
     pub domtree: Vec<Block>,
     /// For each instruction, the block it belongs to.
     pub insn_block: Vec<Block>,
-    /// For each vreg, the instruction that defines it, if any.
-    pub vreg_def_inst: Vec<Inst>,
-    /// For each vreg, the block that defines it as a blockparam, if
-    /// any. (Every vreg must have a valid entry in either
-    /// `vreg_def_inst` or `vreg_def_blockparam`.)
-    pub vreg_def_blockparam: Vec<(Block, u32)>,
     /// For each block, the first instruction.
     pub block_entry: Vec<ProgPoint>,
     /// For each block, the last instruction.
@@ -48,8 +42,6 @@ impl CFGInfo {
             f.entry_block(),
         );
         let mut insn_block = vec![Block::invalid(); f.num_insts()];
-        let mut vreg_def_inst = vec![Inst::invalid(); f.num_vregs()];
-        let mut vreg_def_blockparam = vec![(Block::invalid(), 0); f.num_vregs()];
         let mut block_entry = vec![ProgPoint::before(Inst::invalid()); f.num_blocks()];
         let mut block_exit = vec![ProgPoint::before(Inst::invalid()); f.num_blocks()];
         let mut backedge_in = vec![0; f.num_blocks()];
@@ -57,19 +49,8 @@ impl CFGInfo {
 
         for block in 0..f.num_blocks() {
             let block = Block::new(block);
-            for (i, param) in f.block_params(block).iter().enumerate() {
-                vreg_def_blockparam[param.vreg()] = (block, i as u32);
-            }
             for inst in f.block_insns(block).iter() {
                 insn_block[inst.index()] = block;
-                for operand in f.inst_operands(inst) {
-                    match operand.kind() {
-                        OperandKind::Def => {
-                            vreg_def_inst[operand.vreg().vreg()] = inst;
-                        }
-                        _ => {}
-                    }
-                }
             }
             block_entry[block.index()] = ProgPoint::before(f.block_insns(block).first());
             block_exit[block.index()] = ProgPoint::after(f.block_insns(block).last());
@@ -139,8 +120,6 @@ impl CFGInfo {
             postorder,
             domtree,
             insn_block,
-            vreg_def_inst,
-            vreg_def_blockparam,
             block_entry,
             block_exit,
             approx_loop_depth,

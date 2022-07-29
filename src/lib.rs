@@ -34,7 +34,6 @@ pub mod indexset;
 pub(crate) mod ion;
 pub(crate) mod moves;
 pub(crate) mod postorder;
-pub(crate) mod ssa;
 
 #[macro_use]
 mod index;

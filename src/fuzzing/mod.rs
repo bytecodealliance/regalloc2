@@ -6,6 +6,7 @@
 //! Utilities for fuzzing.
 
 pub mod func;
+pub mod ssa;
 
 // Re-exports for fuzz targets.
 
@@ -20,9 +21,6 @@ pub mod moves {
 }
 pub mod cfg {
     pub use crate::cfg::*;
-}
-pub mod ssa {
-    pub use crate::ssa::*;
 }
 pub mod ion {
     pub use crate::ion::*;
