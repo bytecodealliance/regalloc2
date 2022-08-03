@@ -61,7 +61,10 @@ pub fn validate_ssa<F: Function>(f: &F, cfginfo: &CFGInfo) -> Result<(), RegAllo
                             return Err(RegAllocError::SSA(operand.vreg(), iix));
                         }
                     }
-                    OperandKind::Def => {}
+                    OperandKind::Def => {
+                        // Check all the uses in this instruction
+                        // first, before recording its defs below.
+                    }
                     OperandKind::Mod => {
                         // Mod (modify) operands are not used in SSA,
                         // but can be used by non-SSA code (e.g. with
@@ -70,9 +73,9 @@ pub fn validate_ssa<F: Function>(f: &F, cfginfo: &CFGInfo) -> Result<(), RegAllo
                     }
                 }
             }
-            // In SSA form, an instruction can't use a VReg that it also defines. So first check
-            // above that all uses are already defined, and only afterward record here which VRegs
-            // this instruction defines.
+            // In SSA form, an instruction can't use a VReg that it
+            // also defines. So only record this instruction's defs
+            // after its uses have been checked.
             for operand in operands {
                 if let OperandKind::Def = operand.kind() {
                     local.insert(operand.vreg());
