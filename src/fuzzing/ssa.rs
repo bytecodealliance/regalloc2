@@ -5,30 +5,31 @@
 
 //! SSA-related utilities.
 
-use crate::cfg::CFGInfo;
+use std::collections::HashSet;
 
-use crate::{Block, Function, Inst, OperandKind, RegAllocError};
+use crate::cfg::CFGInfo;
+use crate::{Block, Function, Inst, OperandKind, RegAllocError, VReg};
 
 pub fn validate_ssa<F: Function>(f: &F, cfginfo: &CFGInfo) -> Result<(), RegAllocError> {
-    // For each vreg, the instruction that defines it, if any.
-    let mut vreg_def_inst = vec![Inst::invalid(); f.num_vregs()];
-    // For each vreg, the block that defines it as a blockparam, if
-    // any. (Every vreg must have a valid entry in either
-    // `vreg_def_inst` or `vreg_def_blockparam`.)
-    let mut vreg_def_blockparam = vec![(Block::invalid(), 0); f.num_vregs()];
-
+    // For every block param and inst def, check that this is the only def.
+    let mut defined_in = vec![Block::invalid(); f.num_vregs()];
     for block in 0..f.num_blocks() {
         let block = Block::new(block);
-        for (i, param) in f.block_params(block).iter().enumerate() {
-            vreg_def_blockparam[param.vreg()] = (block, i as u32);
+        let mut def = |vreg: VReg, inst| {
+            if defined_in[vreg.vreg()].is_valid() {
+                Err(RegAllocError::SSA(vreg, inst))
+            } else {
+                defined_in[vreg.vreg()] = block;
+                Ok(())
+            }
+        };
+        for &param in f.block_params(block) {
+            def(param, Inst::invalid())?;
         }
         for inst in f.block_insns(block).iter() {
             for operand in f.inst_operands(inst) {
-                match operand.kind() {
-                    OperandKind::Def => {
-                        vreg_def_inst[operand.vreg().vreg()] = inst;
-                    }
-                    _ => {}
+                if let OperandKind::Def = operand.kind() {
+                    def(operand.vreg(), inst)?;
                 }
             }
         }
@@ -37,39 +38,32 @@ pub fn validate_ssa<F: Function>(f: &F, cfginfo: &CFGInfo) -> Result<(), RegAllo
     // Walk the blocks in arbitrary order. Check, for every use, that
     // the def is either in the same block in an earlier inst, or is
     // defined (by inst or blockparam) in some other block that
-    // dominates this one. Also check that for every block param and
-    // inst def, that this is the only def.
-    let mut defined = vec![false; f.num_vregs()];
+    // dominates this one.
+    let mut local = HashSet::new();
     for block in 0..f.num_blocks() {
         let block = Block::new(block);
-        for blockparam in f.block_params(block) {
-            if defined[blockparam.vreg()] {
-                return Err(RegAllocError::SSA(*blockparam, Inst::invalid()));
-            }
-            defined[blockparam.vreg()] = true;
-        }
+        local.clear();
+        local.extend(f.block_params(block));
+
         for iix in f.block_insns(block).iter() {
             let operands = f.inst_operands(iix);
             for operand in operands {
                 match operand.kind() {
                     OperandKind::Use => {
-                        let def_block = if vreg_def_inst[operand.vreg().vreg()].is_valid() {
-                            cfginfo.insn_block[vreg_def_inst[operand.vreg().vreg()].index()]
-                        } else {
-                            vreg_def_blockparam[operand.vreg().vreg()].0
-                        };
-                        if def_block.is_invalid() {
-                            return Err(RegAllocError::SSA(operand.vreg(), iix));
-                        }
-                        if !cfginfo.dominates(def_block, block) {
+                        let def_block = defined_in[operand.vreg().vreg()];
+                        let okay = def_block.is_valid()
+                            && if def_block == block {
+                                local.contains(&operand.vreg())
+                            } else {
+                                cfginfo.dominates(def_block, block)
+                            };
+                        if !okay {
                             return Err(RegAllocError::SSA(operand.vreg(), iix));
                         }
                     }
                     OperandKind::Def => {
-                        if defined[operand.vreg().vreg()] {
-                            return Err(RegAllocError::SSA(operand.vreg(), iix));
-                        }
-                        defined[operand.vreg().vreg()] = true;
+                        // Check all the uses in this instruction
+                        // first, before recording its defs below.
                     }
                     OperandKind::Mod => {
                         // Mod (modify) operands are not used in SSA,
@@ -77,6 +71,14 @@ pub fn validate_ssa<F: Function>(f: &F, cfginfo: &CFGInfo) -> Result<(), RegAllo
                         // the regalloc.rs compatibility shim).
                         return Err(RegAllocError::SSA(operand.vreg(), iix));
                     }
+                }
+            }
+            // In SSA form, an instruction can't use a VReg that it
+            // also defines. So only record this instruction's defs
+            // after its uses have been checked.
+            for operand in operands {
+                if let OperandKind::Def = operand.kind() {
+                    local.insert(operand.vreg());
                 }
             }
         }
