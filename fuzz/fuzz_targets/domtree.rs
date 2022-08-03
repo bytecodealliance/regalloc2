@@ -4,14 +4,10 @@
  */
 
 #![no_main]
-use libfuzzer_sys::arbitrary::{Arbitrary, Result, Unstructured};
-use libfuzzer_sys::fuzz_target;
+use regalloc2::fuzzing::arbitrary::{Arbitrary, Result, Unstructured};
+use regalloc2::fuzzing::{domtree, fuzz_target, postorder};
+use regalloc2::Block;
 use std::collections::HashSet;
-
-use regalloc2::{
-    fuzzing::{domtree, postorder},
-    Block,
-};
 
 #[derive(Clone, Debug)]
 struct CFG {
@@ -20,7 +16,7 @@ struct CFG {
     succs: Vec<Vec<Block>>,
 }
 
-impl Arbitrary for CFG {
+impl Arbitrary<'_> for CFG {
     fn arbitrary(u: &mut Unstructured) -> Result<CFG> {
         let num_blocks = u.int_in_range(1..=1000)?;
         let mut succs = vec![];
@@ -111,7 +107,7 @@ struct TestCase {
     path: Path,
 }
 
-impl Arbitrary for TestCase {
+impl Arbitrary<'_> for TestCase {
     fn arbitrary(u: &mut Unstructured) -> Result<TestCase> {
         let cfg = CFG::arbitrary(u)?;
         let path = Path::choose_from_cfg(&cfg, u)?;

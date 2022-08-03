@@ -28,3 +28,5 @@ pub mod ion {
 pub mod checker {
     pub use crate::checker::*;
 }
+
+pub use libfuzzer_sys::{arbitrary, fuzz_target};

@@ -4,18 +4,17 @@
  */
 
 #![no_main]
-use libfuzzer_sys::arbitrary::{Arbitrary, Result, Unstructured};
-use libfuzzer_sys::fuzz_target;
-
+use regalloc2::fuzzing::arbitrary::{Arbitrary, Result, Unstructured};
 use regalloc2::fuzzing::checker::Checker;
 use regalloc2::fuzzing::func::{Func, Options};
+use regalloc2::fuzzing::fuzz_target;
 
 #[derive(Clone, Debug)]
 struct TestCase {
     func: Func,
 }
 
-impl Arbitrary for TestCase {
+impl Arbitrary<'_> for TestCase {
     fn arbitrary(u: &mut Unstructured) -> Result<TestCase> {
         Ok(TestCase {
             func: Func::arbitrary_with_options(

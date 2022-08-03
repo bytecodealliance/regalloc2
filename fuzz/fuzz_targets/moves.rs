@@ -4,9 +4,8 @@
  */
 
 #![no_main]
-use libfuzzer_sys::arbitrary::{Arbitrary, Result, Unstructured};
-use libfuzzer_sys::fuzz_target;
-
+use regalloc2::fuzzing::arbitrary::{Arbitrary, Result, Unstructured};
+use regalloc2::fuzzing::fuzz_target;
 use regalloc2::fuzzing::moves::{MoveAndScratchResolver, ParallelMoves};
 use regalloc2::{Allocation, PReg, RegClass, SpillSlot};
 use std::collections::{HashMap, HashSet};
@@ -17,7 +16,7 @@ struct TestCase {
     available_pregs: Vec<Allocation>,
 }
 
-impl Arbitrary for TestCase {
+impl Arbitrary<'_> for TestCase {
     fn arbitrary(u: &mut Unstructured) -> Result<Self> {
         let mut ret = TestCase {
             moves: vec![],
