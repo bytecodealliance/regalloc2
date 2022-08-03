@@ -20,8 +20,7 @@ slice-group-by = "0.3.0"
 serde = { version = "1.0.136", features = ["derive"], optional = true }
 
 # The below are only needed for fuzzing.
-# Keep this in sync with libfuzzer_sys's crate version:
-arbitrary = { version = "^0.4.6", optional = true }
+libfuzzer-sys = { version = "0.4.2", optional = true }
 
 # When testing regalloc2 by itself, enable debug assertions and overflow checks
 [profile.release]
@@ -39,7 +38,7 @@ checker = []
 trace-log = []
 
 # Exposes the internal API for fuzzing.
-fuzzing = ["arbitrary", "checker", "trace-log"]
+fuzzing = ["libfuzzer-sys", "checker", "trace-log"]
 
 # Enables serde for exposed types.
 enable-serde = ["serde"]

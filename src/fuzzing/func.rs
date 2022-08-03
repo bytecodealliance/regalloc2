@@ -8,8 +8,8 @@ use crate::{
     OperandConstraint, OperandKind, OperandPos, PReg, PRegSet, RegClass, VReg,
 };
 
-use arbitrary::Result as ArbitraryResult;
-use arbitrary::{Arbitrary, Unstructured};
+use super::arbitrary::Result as ArbitraryResult;
+use super::arbitrary::{Arbitrary, Unstructured};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InstOpcode {
@@ -235,7 +235,7 @@ impl FuncBuilder {
     }
 }
 
-impl Arbitrary for OperandConstraint {
+impl Arbitrary<'_> for OperandConstraint {
     fn arbitrary(u: &mut Unstructured) -> ArbitraryResult<Self> {
         Ok(*u.choose(&[OperandConstraint::Any, OperandConstraint::Reg])?)
     }
@@ -293,7 +293,7 @@ impl std::default::Default for Options {
     }
 }
 
-impl Arbitrary for Func {
+impl Arbitrary<'_> for Func {
     fn arbitrary(u: &mut Unstructured) -> ArbitraryResult<Func> {
         Func::arbitrary_with_options(u, &Options::default())
     }
