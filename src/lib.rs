@@ -1320,7 +1320,7 @@ impl<'a> Iterator for OutputIter<'a> {
     }
 }
 
-/// A machine envrionment tells the register allocator which registers
+/// A machine environment tells the register allocator which registers
 /// are available to allocate and what register may be used as a
 /// scratch register for each class, and some other miscellaneous info
 /// as well.
