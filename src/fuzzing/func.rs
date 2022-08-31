@@ -388,7 +388,10 @@ impl Func {
                 if bool::arbitrary(u)? {
                     let assumed_end_inst = 10 * num_blocks;
                     let mut start = u.int_in_range::<usize>(0..=assumed_end_inst)?;
-                    while start < assumed_end_inst {
+                    for _ in 0..10 {
+                        if start >= assumed_end_inst {
+                            break;
+                        }
                         let end = u.int_in_range::<usize>(start..=assumed_end_inst)?;
                         let label = u.int_in_range::<u32>(0..=100)?;
                         builder.f.debug_value_labels.push((
