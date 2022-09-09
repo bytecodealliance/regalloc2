@@ -55,6 +55,7 @@ impl<'a, F: Function> Env<'a, F> {
                         safepoint_idx += 1;
                         continue;
                     }
+
                     trace!("    -> covers safepoint {:?}", safepoints[safepoint_idx]);
 
                     self.safepoint_slots

@@ -794,6 +794,7 @@ impl<'a, F: Function> Env<'a, F> {
         for entry_idx in 0..self.bundles[bundle.index()].ranges.len() {
             // Iterate manually; don't borrow `self`.
             let entry = self.bundles[bundle.index()].ranges[entry_idx];
+            let lr_to = entry.range.to;
 
             removed_lrs.insert(entry.index);
             let vreg = self.ranges[entry.index.index()].vreg;
@@ -813,14 +814,17 @@ impl<'a, F: Function> Env<'a, F> {
                     continue;
                 }
 
+                // The minimal bundle runs through the whole inst
+                // (up to the Before of the next inst), *unless*
+                // the original LR was only over the Before (up to
+                // the After) of this inst.
+                let to = std::cmp::min(ProgPoint::before(u.pos.inst().next()), lr_to);
+
                 // If the last bundle was at the same inst, add a new
                 // LR to the same bundle; otherwise, create a LR and a
                 // new bundle.
                 if Some(u.pos.inst()) == last_inst {
-                    let cr = CodeRange {
-                        from: u.pos,
-                        to: ProgPoint::before(u.pos.inst().next()),
-                    };
+                    let cr = CodeRange { from: u.pos, to };
                     let lr = self.create_liverange(cr);
                     new_lrs.push((vreg, lr));
                     self.ranges[lr.index()].uses.push(u);
@@ -853,10 +857,7 @@ impl<'a, F: Function> Env<'a, F> {
 
                 // Otherwise, create a new LR.
                 let pos = ProgPoint::before(u.pos.inst());
-                let cr = CodeRange {
-                    from: pos,
-                    to: ProgPoint::before(u.pos.inst().next()),
-                };
+                let cr = CodeRange { from: pos, to };
                 let lr = self.create_liverange(cr);
                 new_lrs.push((vreg, lr));
                 self.ranges[lr.index()].uses.push(u);

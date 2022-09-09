@@ -935,11 +935,8 @@ impl<'a, F: Function> Env<'a, F> {
                 // constraint, and (ii) move the def to Early position
                 // to reserve the register for the whole instruction.
                 let mut operand_rewrites: FxHashMap<usize, Operand> = FxHashMap::default();
-                let mut late_def_fixed: SmallVec<[(PReg, Operand, usize); 2]> = smallvec![];
-                for (i, &operand) in self.func.inst_operands(inst).iter().enumerate() {
-                    if operand.as_fixed_nonallocatable().is_some() {
-                        continue;
-                    }
+                let mut late_def_fixed: SmallVec<[PReg; 8]> = smallvec![];
+                for &operand in self.func.inst_operands(inst) {
                     if let OperandConstraint::FixedReg(preg) = operand.constraint() {
                         match operand.pos() {
                             OperandPos::Late => {
@@ -954,7 +951,7 @@ impl<'a, F: Function> Env<'a, F> {
                                     "Invalid operand: fixed constraint on Use/Mod at Late point"
                                 );
 
-                                late_def_fixed.push((preg, operand, i));
+                                late_def_fixed.push(preg);
                             }
                             _ => {}
                         }
@@ -966,19 +963,19 @@ impl<'a, F: Function> Env<'a, F> {
                     }
                     if let OperandConstraint::FixedReg(preg) = operand.constraint() {
                         match operand.pos() {
-                            OperandPos::Early => {
+                            OperandPos::Early if live.get(operand.vreg().vreg()) => {
                                 assert!(operand.kind() == OperandKind::Use,
                                             "Invalid operand: fixed constraint on Def/Mod at Early position");
 
                                 // If we have a constraint at the
                                 // Early point for a fixed preg, and
                                 // this preg is also constrained with
-                                // a *separate* def at Late, and *if*
-                                // the vreg is live downward, we have
-                                // to use the multi-fixed-reg
-                                // mechanism for a fixup and rewrite
-                                // here without the constraint. See
-                                // #53.
+                                // a *separate* def at Late or is
+                                // clobbered, and *if* the vreg is
+                                // live downward, we have to use the
+                                // multi-fixed-reg mechanism for a
+                                // fixup and rewrite here without the
+                                // constraint. See #53.
                                 //
                                 // We adjust the def liverange and Use
                                 // to an "early" position to reserve
@@ -990,10 +987,7 @@ impl<'a, F: Function> Env<'a, F> {
                                 // conflicting constraints for the
                                 // same vreg in a separate pass (see
                                 // `fixup_multi_fixed_vregs` below).
-                                if let Some((_, def_op, def_slot)) = late_def_fixed
-                                    .iter()
-                                    .find(|(def_preg, _, _)| *def_preg == preg)
-                                {
+                                if late_def_fixed.contains(&preg) {
                                     let pos = ProgPoint::before(inst);
                                     self.multi_fixed_reg_fixups.push(MultiFixedRegFixup {
                                         pos,
@@ -1004,6 +998,17 @@ impl<'a, F: Function> Env<'a, F> {
                                         level: FixedRegFixupLevel::Initial,
                                     });
 
+                                    // We need to insert a reservation
+                                    // at the before-point to reserve
+                                    // the reg for the use too.
+                                    let range = CodeRange {
+                                        from: ProgPoint::before(inst),
+                                        to: ProgPoint::after(inst),
+                                    };
+                                    self.add_liverange_to_preg(range, preg);
+
+                                    // Remove the fixed-preg
+                                    // constraint from the Use.
                                     operand_rewrites.insert(
                                         i,
                                         Operand::new(
@@ -1013,13 +1018,33 @@ impl<'a, F: Function> Env<'a, F> {
                                             operand.pos(),
                                         ),
                                     );
+                                } else if self.func.inst_clobbers(inst).contains(preg) {
+                                    let pos = ProgPoint::before(inst);
+
+                                    // We need to insert a clobber at
+                                    // the before-point to reserve the
+                                    // reg for the use too.
+                                    let range = CodeRange {
+                                        from: ProgPoint::before(inst),
+                                        to: ProgPoint::after(inst),
+                                    };
+                                    self.add_liverange_to_preg(range, preg);
+
+                                    self.multi_fixed_reg_fixups.push(MultiFixedRegFixup {
+                                        pos,
+                                        from_slot: i as u8,
+                                        to_slot: i as u8,
+                                        to_preg: PRegIndex::new(preg.index()),
+                                        vreg: VRegIndex::new(operand.vreg().vreg()),
+                                        level: FixedRegFixupLevel::Initial,
+                                    });
                                     operand_rewrites.insert(
-                                        *def_slot,
+                                        i,
                                         Operand::new(
-                                            def_op.vreg(),
-                                            def_op.constraint(),
-                                            def_op.kind(),
-                                            OperandPos::Early,
+                                            operand.vreg(),
+                                            OperandConstraint::Any,
+                                            operand.kind(),
+                                            operand.pos(),
                                         ),
                                     );
                                 }
@@ -1310,7 +1335,7 @@ impl<'a, F: Function> Env<'a, F> {
         // have to split the multiple uses at the same progpoint into
         // different bundles, which breaks invariants related to
         // disjoint ranges and bundles).
-        let mut extra_clobbers: SmallVec<[(PReg, Inst); 8]> = smallvec![];
+        let mut extra_clobbers: SmallVec<[(PReg, ProgPoint); 8]> = smallvec![];
         for vreg in 0..self.vregs.len() {
             for range_idx in 0..self.vregs[vreg].ranges.len() {
                 let entry = self.vregs[vreg].ranges[range_idx];
@@ -1419,15 +1444,15 @@ impl<'a, F: Function> Env<'a, F> {
                                 u.operand.pos(),
                             );
                             trace!(" -> extra clobber {} at inst{}", preg, u.pos.inst().index());
-                            extra_clobbers.push((preg, u.pos.inst()));
+                            extra_clobbers.push((preg, u.pos));
                         }
                     }
                 }
 
-                for &(clobber, inst) in &extra_clobbers {
+                for &(clobber, pos) in &extra_clobbers {
                     let range = CodeRange {
-                        from: ProgPoint::before(inst),
-                        to: ProgPoint::before(inst.next()),
+                        from: pos,
+                        to: pos.next(),
                     };
                     self.add_liverange_to_preg(range, clobber);
                 }
