@@ -295,21 +295,22 @@ impl<'a, F: Function> Env<'a, F> {
                     }
                 }
 
-                // The block-to-block edge-move logic is not
-                // applicable to pinned vregs, which are always in one
-                // PReg (so never need moves within their own vreg
-                // ranges).
-                if pinned_alloc.is_none() {
-                    // Scan over blocks whose ends are covered by this
-                    // range. For each, for each successor that is not
-                    // already in this range (hence guaranteed to have the
-                    // same allocation) and if the vreg is live, add a
-                    // Source half-move.
-                    let mut block = self.cfginfo.insn_block[range.from.inst().index()];
-                    while block.is_valid() && block.index() < self.func.num_blocks() {
-                        if range.to < self.cfginfo.block_exit[block.index()].next() {
-                            break;
-                        }
+                // Scan over blocks whose ends are covered by this
+                // range. For each, for each successor that is not
+                // already in this range (hence guaranteed to have the
+                // same allocation) and if the vreg is live, add a
+                // Source half-move.
+                let mut block = self.cfginfo.insn_block[range.from.inst().index()];
+                while block.is_valid() && block.index() < self.func.num_blocks() {
+                    if range.to < self.cfginfo.block_exit[block.index()].next() {
+                        break;
+                    }
+
+                    // The block-to-block edge-move logic is not
+                    // applicable to pinned vregs, which are always in one
+                    // PReg (so never need moves within their own vreg
+                    // ranges).
+                    if pinned_alloc.is_none() {
                         trace!("examining block with end in range: block{}", block.index());
                         for &succ in self.func.block_succs(block) {
                             trace!(
@@ -329,159 +330,159 @@ impl<'a, F: Function> Env<'a, F> {
                                 });
                             }
                         }
-
-                        // Scan forward in `blockparam_outs`, adding all
-                        // half-moves for outgoing values to blockparams
-                        // in succs.
-                        trace!(
-                            "scanning blockparam_outs for v{} block{}: blockparam_out_idx = {}",
-                            vreg.index(),
-                            block.index(),
-                            blockparam_out_idx,
-                        );
-                        while blockparam_out_idx < self.blockparam_outs.len() {
-                            let BlockparamOut {
-                                from_vreg,
-                                from_block,
-                                to_block,
-                                to_vreg,
-                            } = self.blockparam_outs[blockparam_out_idx];
-                            if (from_vreg, from_block) > (vreg, block) {
-                                break;
-                            }
-                            if (from_vreg, from_block) == (vreg, block) {
-                                trace!(
-                                    " -> found: from v{} block{} to v{} block{}",
-                                    from_vreg.index(),
-                                    from_block.index(),
-                                    to_vreg.index(),
-                                    to_vreg.index()
-                                );
-                                half_moves.push(HalfMove {
-                                    key: half_move_key(
-                                        from_block,
-                                        to_block,
-                                        to_vreg,
-                                        HalfMoveKind::Source,
-                                    ),
-                                    alloc,
-                                });
-
-                                if self.annotations_enabled {
-                                    self.annotate(
-                                        self.cfginfo.block_exit[block.index()],
-                                        format!(
-                                            "blockparam-out: block{} to block{}: v{} to v{} in {}",
-                                            from_block.index(),
-                                            to_block.index(),
-                                            from_vreg.index(),
-                                            to_vreg.index(),
-                                            alloc
-                                        ),
-                                    );
-                                }
-                            }
-
-                            blockparam_out_idx += 1;
-                        }
-
-                        block = block.next();
                     }
 
-                    // Scan over blocks whose beginnings are covered by
-                    // this range and for which the vreg is live at the
-                    // start of the block. For each, for each predecessor,
-                    // add a Dest half-move.
-                    let mut block = self.cfginfo.insn_block[range.from.inst().index()];
-                    if self.cfginfo.block_entry[block.index()] < range.from {
-                        block = block.next();
-                    }
-                    while block.is_valid() && block.index() < self.func.num_blocks() {
-                        if self.cfginfo.block_entry[block.index()] >= range.to {
+                    // Scan forward in `blockparam_outs`, adding all
+                    // half-moves for outgoing values to blockparams
+                    // in succs.
+                    trace!(
+                        "scanning blockparam_outs for v{} block{}: blockparam_out_idx = {}",
+                        vreg.index(),
+                        block.index(),
+                        blockparam_out_idx,
+                    );
+                    while blockparam_out_idx < self.blockparam_outs.len() {
+                        let BlockparamOut {
+                            from_vreg,
+                            from_block,
+                            to_block,
+                            to_vreg,
+                        } = self.blockparam_outs[blockparam_out_idx];
+                        if (from_vreg, from_block) > (vreg, block) {
                             break;
                         }
-
-                        // Add half-moves for blockparam inputs.
-                        trace!(
-                            "scanning blockparam_ins at vreg {} block {}: blockparam_in_idx = {}",
-                            vreg.index(),
-                            block.index(),
-                            blockparam_in_idx
-                        );
-                        while blockparam_in_idx < self.blockparam_ins.len() {
-                            let BlockparamIn {
-                                from_block,
-                                to_block,
-                                to_vreg,
-                            } = self.blockparam_ins[blockparam_in_idx];
-                            if (to_vreg, to_block) > (vreg, block) {
-                                break;
-                            }
-                            if (to_vreg, to_block) == (vreg, block) {
-                                half_moves.push(HalfMove {
-                                    key: half_move_key(
-                                        from_block,
-                                        to_block,
-                                        to_vreg,
-                                        HalfMoveKind::Dest,
-                                    ),
-                                    alloc,
-                                });
-                                trace!(
-                                    "match: blockparam_in: v{} in block{} from block{} into {}",
-                                    to_vreg.index(),
-                                    to_block.index(),
-                                    from_block.index(),
-                                    alloc,
-                                );
-                                #[cfg(debug_assertions)]
-                                if self.annotations_enabled {
-                                    self.annotate(
-                                        self.cfginfo.block_entry[block.index()],
-                                        format!(
-                                            "blockparam-in: block{} to block{}:into v{} in {}",
-                                            from_block.index(),
-                                            to_block.index(),
-                                            to_vreg.index(),
-                                            alloc
-                                        ),
-                                    );
-                                }
-                            }
-                            blockparam_in_idx += 1;
-                        }
-
-                        if !self.is_live_in(block, vreg) {
-                            block = block.next();
-                            continue;
-                        }
-
-                        trace!(
-                            "scanning preds at vreg {} block {} for ends outside the range",
-                            vreg.index(),
-                            block.index()
-                        );
-
-                        // Now find any preds whose ends are not in the
-                        // same range, and insert appropriate moves.
-                        for &pred in self.func.block_preds(block) {
+                        if (from_vreg, from_block) == (vreg, block) {
                             trace!(
-                                "pred block {} has exit {:?}",
-                                pred.index(),
-                                self.cfginfo.block_exit[pred.index()]
+                                " -> found: from v{} block{} to v{} block{}",
+                                from_vreg.index(),
+                                from_block.index(),
+                                to_vreg.index(),
+                                to_vreg.index()
                             );
-                            if range.contains_point(self.cfginfo.block_exit[pred.index()]) {
-                                continue;
-                            }
-                            trace!(" -> requires half-move");
                             half_moves.push(HalfMove {
-                                key: half_move_key(pred, block, vreg, HalfMoveKind::Dest),
+                                key: half_move_key(
+                                    from_block,
+                                    to_block,
+                                    to_vreg,
+                                    HalfMoveKind::Source,
+                                ),
                                 alloc,
                             });
+
+                            if self.annotations_enabled {
+                                self.annotate(
+                                    self.cfginfo.block_exit[block.index()],
+                                    format!(
+                                        "blockparam-out: block{} to block{}: v{} to v{} in {}",
+                                        from_block.index(),
+                                        to_block.index(),
+                                        from_vreg.index(),
+                                        to_vreg.index(),
+                                        alloc
+                                    ),
+                                );
+                            }
                         }
 
-                        block = block.next();
+                        blockparam_out_idx += 1;
                     }
+
+                    block = block.next();
+                }
+
+                // Scan over blocks whose beginnings are covered by
+                // this range and for which the vreg is live at the
+                // start of the block. For each, for each predecessor,
+                // add a Dest half-move.
+                let mut block = self.cfginfo.insn_block[range.from.inst().index()];
+                if self.cfginfo.block_entry[block.index()] < range.from {
+                    block = block.next();
+                }
+                while block.is_valid() && block.index() < self.func.num_blocks() {
+                    if self.cfginfo.block_entry[block.index()] >= range.to {
+                        break;
+                    }
+
+                    // Add half-moves for blockparam inputs.
+                    trace!(
+                        "scanning blockparam_ins at vreg {} block {}: blockparam_in_idx = {}",
+                        vreg.index(),
+                        block.index(),
+                        blockparam_in_idx
+                    );
+                    while blockparam_in_idx < self.blockparam_ins.len() {
+                        let BlockparamIn {
+                            from_block,
+                            to_block,
+                            to_vreg,
+                        } = self.blockparam_ins[blockparam_in_idx];
+                        if (to_vreg, to_block) > (vreg, block) {
+                            break;
+                        }
+                        if (to_vreg, to_block) == (vreg, block) {
+                            half_moves.push(HalfMove {
+                                key: half_move_key(
+                                    from_block,
+                                    to_block,
+                                    to_vreg,
+                                    HalfMoveKind::Dest,
+                                ),
+                                alloc,
+                            });
+                            trace!(
+                                "match: blockparam_in: v{} in block{} from block{} into {}",
+                                to_vreg.index(),
+                                to_block.index(),
+                                from_block.index(),
+                                alloc,
+                            );
+                            #[cfg(debug_assertions)]
+                            if self.annotations_enabled {
+                                self.annotate(
+                                    self.cfginfo.block_entry[block.index()],
+                                    format!(
+                                        "blockparam-in: block{} to block{}:into v{} in {}",
+                                        from_block.index(),
+                                        to_block.index(),
+                                        to_vreg.index(),
+                                        alloc
+                                    ),
+                                );
+                            }
+                        }
+                        blockparam_in_idx += 1;
+                    }
+
+                    if !self.is_live_in(block, vreg) {
+                        block = block.next();
+                        continue;
+                    }
+
+                    trace!(
+                        "scanning preds at vreg {} block {} for ends outside the range",
+                        vreg.index(),
+                        block.index()
+                    );
+
+                    // Now find any preds whose ends are not in the
+                    // same range, and insert appropriate moves.
+                    for &pred in self.func.block_preds(block) {
+                        trace!(
+                            "pred block {} has exit {:?}",
+                            pred.index(),
+                            self.cfginfo.block_exit[pred.index()]
+                        );
+                        if range.contains_point(self.cfginfo.block_exit[pred.index()]) {
+                            continue;
+                        }
+                        trace!(" -> requires half-move");
+                        half_moves.push(HalfMove {
+                            key: half_move_key(pred, block, vreg, HalfMoveKind::Dest),
+                            alloc,
+                        });
+                    }
+
+                    block = block.next();
                 }
 
                 // Scan over def/uses and apply allocations.
