@@ -332,6 +332,12 @@ impl<'a, F: Function> Env<'a, F> {
             let BlockparamOut {
                 from_vreg, to_vreg, ..
             } = self.blockparam_outs[i];
+            if self.func.is_pinned_vreg(self.vreg(from_vreg)).is_some()
+                || self.func.is_pinned_vreg(self.vreg(to_vreg)).is_some()
+            {
+                continue;
+            }
+
             trace!(
                 "trying to merge blockparam v{} with input v{}",
                 to_vreg.index(),
