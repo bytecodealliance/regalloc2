@@ -95,14 +95,7 @@ impl PReg {
     /// Create a new PReg. The `hw_enc` range is 6 bits.
     #[inline(always)]
     pub const fn new(hw_enc: usize, class: RegClass) -> Self {
-        // We don't have const panics yet (rust-lang/rust#85194) so we
-        // need to use a little indexing trick here. We unfortunately
-        // can't use the `static-assertions` crate because we need
-        // this to work both for const `hw_enc` and for runtime
-        // values.
-        const HW_ENC_MUST_BE_IN_BOUNDS: &[bool; PReg::MAX + 1] = &[true; PReg::MAX + 1];
-        let _ = HW_ENC_MUST_BE_IN_BOUNDS[hw_enc];
-
+        debug_assert!(hw_enc <= PReg::MAX);
         PReg {
             bits: ((class as u8) << Self::MAX_BITS) | (hw_enc as u8),
         }
@@ -110,13 +103,13 @@ impl PReg {
 
     /// The physical register number, as encoded by the ISA for the particular register class.
     #[inline(always)]
-    pub fn hw_enc(self) -> usize {
+    pub const fn hw_enc(self) -> usize {
         self.bits as usize & Self::MAX
     }
 
     /// The register class.
     #[inline(always)]
-    pub fn class(self) -> RegClass {
+    pub const fn class(self) -> RegClass {
         if self.bits & (1 << Self::MAX_BITS) == 0 {
             RegClass::Int
         } else {
@@ -143,7 +136,7 @@ impl PReg {
     /// Return the "invalid PReg", which can be used to initialize
     /// data structures.
     #[inline(always)]
-    pub fn invalid() -> Self {
+    pub const fn invalid() -> Self {
         PReg::new(Self::MAX, RegClass::Int)
     }
 }
@@ -264,11 +257,7 @@ impl VReg {
 
     #[inline(always)]
     pub const fn new(virt_reg: usize, class: RegClass) -> Self {
-        // See comment in `PReg::new()`: we are emulating a const
-        // assert here until const panics are stable.
-        const VIRT_REG_MUST_BE_IN_BOUNDS: &[bool; VReg::MAX + 1] = &[true; VReg::MAX + 1];
-        let _ = VIRT_REG_MUST_BE_IN_BOUNDS[virt_reg];
-
+        debug_assert!(virt_reg <= VReg::MAX);
         VReg {
             bits: ((virt_reg as u32) << 1) | (class as u8 as u32),
         }
@@ -281,7 +270,7 @@ impl VReg {
     }
 
     #[inline(always)]
-    pub fn class(self) -> RegClass {
+    pub const fn class(self) -> RegClass {
         match self.bits & 1 {
             0 => RegClass::Int,
             1 => RegClass::Float,
@@ -290,7 +279,7 @@ impl VReg {
     }
 
     #[inline(always)]
-    pub fn invalid() -> Self {
+    pub const fn invalid() -> Self {
         VReg::new(Self::MAX, RegClass::Int)
     }
 }
