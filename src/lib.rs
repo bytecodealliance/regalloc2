@@ -180,6 +180,13 @@ impl PRegSet {
         Self { bits: 0 }
     }
 
+    /// Returns whether the given register is part of the set.
+    pub fn contains(&self, reg: PReg) -> bool {
+        let bit = reg.index();
+        debug_assert!(bit < 128);
+        self.bits & 1u128 << bit != 0
+    }
+
     /// Add a physical register (PReg) to the set, returning the new value.
     pub const fn with(self, reg: PReg) -> Self {
         let bit = reg.index();
