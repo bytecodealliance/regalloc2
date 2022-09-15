@@ -988,6 +988,15 @@ impl<'a, F: Function> Env<'a, F> {
                                 // same vreg in a separate pass (see
                                 // `fixup_multi_fixed_vregs` below).
                                 if late_def_fixed.contains(&preg) {
+                                    log::trace!(
+                                        concat!(
+                                            "-> operand {:?} is fixed to preg {:?}, ",
+                                            "is downward live, and there is also a ",
+                                            "def at this preg"
+                                        ),
+                                        operand,
+                                        preg
+                                    );
                                     let pos = ProgPoint::before(inst);
                                     self.multi_fixed_reg_fixups.push(MultiFixedRegFixup {
                                         pos,

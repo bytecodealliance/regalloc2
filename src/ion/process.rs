@@ -262,6 +262,7 @@ impl<'a, F: Function> Env<'a, F> {
 
         let minimal;
         let mut fixed = false;
+        let mut fixed_def = false;
         let mut stack = false;
         let bundledata = &self.bundles[bundle.index()];
         let first_range = bundledata.ranges[0].index;
@@ -277,11 +278,15 @@ impl<'a, F: Function> Env<'a, F> {
             for u in &first_range_data.uses {
                 trace!("  -> use: {:?}", u);
                 if let OperandConstraint::FixedReg(_) = u.operand.constraint() {
-                    trace!("  -> fixed use at {:?}: {:?}", u.pos, u.operand);
+                    trace!("  -> fixed operand at {:?}: {:?}", u.pos, u.operand);
                     fixed = true;
+                    if u.operand.kind() == OperandKind::Def {
+                        trace!("  -> is fixed def");
+                        fixed_def = true;
+                    }
                 }
                 if let OperandConstraint::Stack = u.operand.constraint() {
-                    trace!("  -> stack use at {:?}: {:?}", u.pos, u.operand);
+                    trace!("  -> stack operand at {:?}: {:?}", u.pos, u.operand);
                     stack = true;
                 }
                 if stack && fixed {
@@ -340,6 +345,7 @@ impl<'a, F: Function> Env<'a, F> {
             spill_weight,
             minimal,
             fixed,
+            fixed_def,
             stack,
         );
     }

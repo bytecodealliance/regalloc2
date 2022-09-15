@@ -16,7 +16,9 @@ use super::{
     Env, LiveBundleIndex, LiveRangeIndex, LiveRangeKey, SpillSet, SpillSetIndex, SpillSlotIndex,
     VRegIndex,
 };
-use crate::{ion::data_structures::BlockparamOut, Function, Inst, OperandConstraint, PReg};
+use crate::{
+    ion::data_structures::BlockparamOut, Function, Inst, OperandConstraint, OperandKind, PReg,
+};
 use smallvec::smallvec;
 
 impl<'a, F: Function> Env<'a, F> {
@@ -91,6 +93,17 @@ impl<'a, F: Function> Env<'a, F> {
                 );
                 return false;
             }
+        }
+
+        // Avoid merging if either side has a fixed-reg def: this can
+        // result in an impossible-to-solve allocation problem if
+        // there is a fixed-reg use in the same reg on the same
+        // instruction.
+        if self.bundles[from.index()].cached_fixed_def()
+            || self.bundles[to.index()].cached_fixed_def()
+        {
+            trace!(" -> one bundle has a fixed def; aborting merge");
+            return false;
         }
 
         // Check for a requirements conflict.
@@ -258,22 +271,29 @@ impl<'a, F: Function> Env<'a, F> {
             }
 
             let mut fixed = false;
+            let mut fixed_def = false;
             let mut stack = false;
             for entry in &self.bundles[bundle.index()].ranges {
                 for u in &self.ranges[entry.index.index()].uses {
                     if let OperandConstraint::FixedReg(_) = u.operand.constraint() {
                         fixed = true;
+                        if u.operand.kind() == OperandKind::Def {
+                            fixed_def = true;
+                        }
                     }
                     if let OperandConstraint::Stack = u.operand.constraint() {
                         stack = true;
                     }
-                    if fixed && stack {
+                    if fixed && stack && fixed_def {
                         break;
                     }
                 }
             }
             if fixed {
                 self.bundles[bundle.index()].set_cached_fixed();
+            }
+            if fixed_def {
+                self.bundles[bundle.index()].set_cached_fixed_def();
             }
             if stack {
                 self.bundles[bundle.index()].set_cached_stack();
