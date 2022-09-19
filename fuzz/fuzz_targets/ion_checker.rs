@@ -22,6 +22,7 @@ impl Arbitrary<'_> for TestCase {
                 &Options {
                     reused_inputs: true,
                     fixed_regs: true,
+                    fixed_nonallocatable: true,
                     clobbers: true,
                     control_flow: true,
                     reducible: false,

@@ -677,6 +677,19 @@ impl Operand {
         )
     }
 
+    /// Create an `Operand` that always results in an assignment to the
+    /// given fixed `preg`, *without* tracking liveranges in that
+    /// `preg`. Must only be used for non-allocatable registers.
+    #[inline(always)]
+    pub fn fixed_nonallocatable(preg: PReg) -> Self {
+        Operand::new(
+            VReg::new(VReg::MAX, preg.class()),
+            OperandConstraint::FixedReg(preg),
+            OperandKind::Use,
+            OperandPos::Early,
+        )
+    }
+
     /// Get the virtual register designated by an operand. Every
     /// operand must name some virtual register, even if it constrains
     /// the operand to a fixed physical register as well; the vregs
@@ -741,6 +754,17 @@ impl Operand {
                 2 => OperandConstraint::Stack,
                 _ => unreachable!(),
             }
+        }
+    }
+
+    /// If this operand is for a fixed non-allocatable register (see
+    /// [`Operand::fixed`]), then returns the physical register that it will
+    /// be assigned to.
+    #[inline(always)]
+    pub fn as_fixed_nonallocatable(self) -> Option<PReg> {
+        match self.constraint() {
+            OperandConstraint::FixedReg(preg) if self.vreg().vreg() == VReg::MAX => Some(preg),
+            _ => None,
         }
     }
 

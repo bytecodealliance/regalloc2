@@ -460,19 +460,21 @@ impl CheckerState {
             return Err(CheckerError::MissingAllocation { inst, op });
         }
 
-        match val {
-            CheckerValue::Universe => {
-                return Err(CheckerError::UnknownValueInAllocation { inst, op, alloc });
+        if op.as_fixed_nonallocatable().is_none() {
+            match val {
+                CheckerValue::Universe => {
+                    return Err(CheckerError::UnknownValueInAllocation { inst, op, alloc });
+                }
+                CheckerValue::VRegs(vregs) if !vregs.contains(&op.vreg()) => {
+                    return Err(CheckerError::IncorrectValuesInAllocation {
+                        inst,
+                        op,
+                        alloc,
+                        actual: vregs.clone(),
+                    });
+                }
+                _ => {}
             }
-            CheckerValue::VRegs(vregs) if !vregs.contains(&op.vreg()) => {
-                return Err(CheckerError::IncorrectValuesInAllocation {
-                    inst,
-                    op,
-                    alloc,
-                    actual: vregs.clone(),
-                });
-            }
-            _ => {}
         }
 
         self.check_constraint(inst, op, alloc, allocs, checker)?;

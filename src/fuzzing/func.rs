@@ -270,6 +270,7 @@ fn choose_dominating_block(
 pub struct Options {
     pub reused_inputs: bool,
     pub fixed_regs: bool,
+    pub fixed_nonallocatable: bool,
     pub clobbers: bool,
     pub control_flow: bool,
     pub reducible: bool,
@@ -283,6 +284,7 @@ impl std::default::Default for Options {
         Options {
             reused_inputs: false,
             fixed_regs: false,
+            fixed_nonallocatable: false,
             clobbers: false,
             control_flow: true,
             reducible: false,
@@ -536,6 +538,8 @@ impl Func {
                         }
                         clobbers.push(PReg::new(reg, RegClass::Int));
                     }
+                } else if opts.fixed_nonallocatable && bool::arbitrary(u)? {
+                    operands.push(Operand::fixed_nonallocatable(PReg::new(63, RegClass::Int)));
                 }
 
                 let is_safepoint = opts.reftypes
@@ -658,7 +662,8 @@ pub fn machine_env() -> MachineEnv {
     }
     let preferred_regs_by_class: [Vec<PReg>; 2] = [regs(0..24), vec![]];
     let non_preferred_regs_by_class: [Vec<PReg>; 2] = [regs(24..32), vec![]];
-    let fixed_stack_slots = regs(32..64);
+    let fixed_stack_slots = regs(32..63);
+    // Register 63 is reserved for use as a fixed non-allocatable register.
     MachineEnv {
         preferred_regs_by_class,
         non_preferred_regs_by_class,

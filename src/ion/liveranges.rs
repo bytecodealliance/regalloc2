@@ -366,6 +366,9 @@ impl<'a, F: Function> Env<'a, F> {
 
                 for pos in &[OperandPos::Late, OperandPos::Early] {
                     for op in self.func.inst_operands(inst) {
+                        if op.as_fixed_nonallocatable().is_some() {
+                            continue;
+                        }
                         if op.pos() == *pos {
                             let was_live = live.get(op.vreg().vreg());
                             trace!("op {:?} was_live = {}", op, was_live);
@@ -511,6 +514,9 @@ impl<'a, F: Function> Env<'a, F> {
                 let mut reused_input = None;
                 for op in self.func.inst_operands(inst) {
                     if let OperandConstraint::Reuse(i) = op.constraint() {
+                        debug_assert!(self.func.inst_operands(inst)[i]
+                            .as_fixed_nonallocatable()
+                            .is_none());
                         reused_input = Some(self.func.inst_operands(inst)[i].vreg());
                         break;
                     }
@@ -931,6 +937,9 @@ impl<'a, F: Function> Env<'a, F> {
                 let mut operand_rewrites: FxHashMap<usize, Operand> = FxHashMap::default();
                 let mut late_def_fixed: SmallVec<[(PReg, Operand, usize); 2]> = smallvec![];
                 for (i, &operand) in self.func.inst_operands(inst).iter().enumerate() {
+                    if operand.as_fixed_nonallocatable().is_some() {
+                        continue;
+                    }
                     if let OperandConstraint::FixedReg(preg) = operand.constraint() {
                         match operand.pos() {
                             OperandPos::Late => {
@@ -952,6 +961,9 @@ impl<'a, F: Function> Env<'a, F> {
                     }
                 }
                 for (i, &operand) in self.func.inst_operands(inst).iter().enumerate() {
+                    if operand.as_fixed_nonallocatable().is_some() {
+                        continue;
+                    }
                     if let OperandConstraint::FixedReg(preg) = operand.constraint() {
                         match operand.pos() {
                             OperandPos::Early => {
@@ -1056,6 +1068,15 @@ impl<'a, F: Function> Env<'a, F> {
                             pos,
                             operand
                         );
+
+                        // If this is a "fixed non-allocatable
+                        // register" operand, set the alloc
+                        // immediately and then ignore the operand
+                        // hereafter.
+                        if let Some(preg) = operand.as_fixed_nonallocatable() {
+                            self.set_alloc(inst, i, Allocation::reg(preg));
+                            continue;
+                        }
 
                         match operand.kind() {
                             OperandKind::Def | OperandKind::Mod => {
