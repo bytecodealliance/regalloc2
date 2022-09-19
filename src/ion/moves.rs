@@ -39,16 +39,6 @@ impl<'a, F: Function> Env<'a, F> {
         pos == self.cfginfo.block_exit[block.index()]
     }
 
-    fn allocation_is_stack(&self, alloc: Allocation) -> bool {
-        if alloc.is_stack() {
-            true
-        } else if let Some(preg) = alloc.as_reg() {
-            self.pregs[preg.index()].is_stack
-        } else {
-            false
-        }
-    }
-
     pub fn insert_move(
         &mut self,
         pos: ProgPoint,
@@ -1054,10 +1044,21 @@ impl<'a, F: Function> Env<'a, F> {
                     // below.
                     Allocation::stack(SpillSlot::new(SpillSlot::MAX - idx, regclass))
                 };
+                let is_stack_alloc = |alloc: Allocation| {
+                    if let Some(preg) = alloc.as_reg() {
+                        self.pregs[preg.index()].is_stack
+                    } else {
+                        alloc.is_stack()
+                    }
+                };
                 let preferred_victim = self.preferred_victim_by_class[regclass as usize];
 
-                let scratch_resolver =
-                    MoveAndScratchResolver::new(get_reg, get_stackslot, preferred_victim);
+                let scratch_resolver = MoveAndScratchResolver::new(
+                    get_reg,
+                    get_stackslot,
+                    is_stack_alloc,
+                    preferred_victim,
+                );
 
                 let resolved = scratch_resolver.compute(resolved);
 

@@ -97,7 +97,7 @@
 
 use crate::{
     Allocation, AllocationKind, Block, Edit, Function, Inst, InstOrEdit, InstPosition, MachineEnv,
-    Operand, OperandConstraint, OperandKind, OperandPos, Output, PReg, VReg,
+    Operand, OperandConstraint, OperandKind, OperandPos, Output, PReg, PRegSet, VReg,
 };
 use fxhash::{FxHashMap, FxHashSet};
 use smallvec::{smallvec, SmallVec};
@@ -168,6 +168,10 @@ pub enum CheckerError {
         inst: Inst,
         alloc: Allocation,
         vregs: FxHashSet<VReg>,
+    },
+    StackToStackMove {
+        into: Allocation,
+        from: Allocation,
     },
 }
 
@@ -560,7 +564,20 @@ impl CheckerState {
                     }
                 }
             }
-            &CheckerInst::ParallelMove { .. } | &CheckerInst::Move { .. } => {
+            &CheckerInst::Move { into, from } => {
+                // Ensure that the allocator never returns stack-to-stack moves.
+                let is_stack = |alloc: Allocation| {
+                    if let Some(reg) = alloc.as_reg() {
+                        checker.stack_pregs.contains(reg)
+                    } else {
+                        alloc.is_stack()
+                    }
+                };
+                if is_stack(into) && is_stack(from) {
+                    return Err(CheckerError::StackToStackMove { into, from });
+                }
+            }
+            &CheckerInst::ParallelMove { .. } => {
                 // This doesn't need verification; we just update
                 // according to the move semantics in the step
                 // function below.
@@ -813,6 +830,7 @@ pub struct Checker<'a, F: Function> {
     edge_insts: FxHashMap<(Block, Block), Vec<CheckerInst>>,
     reftyped_vregs: FxHashSet<VReg>,
     machine_env: &'a MachineEnv,
+    stack_pregs: PRegSet,
 }
 
 impl<'a, F: Function> Checker<'a, F> {
@@ -841,6 +859,11 @@ impl<'a, F: Function> Checker<'a, F> {
 
         bb_in.insert(f.entry_block(), CheckerState::initial_with_pinned_vregs(f));
 
+        let mut stack_pregs = PRegSet::empty();
+        for &preg in &machine_env.fixed_stack_slots {
+            stack_pregs.add(preg);
+        }
+
         Checker {
             f,
             bb_in,
@@ -848,6 +871,7 @@ impl<'a, F: Function> Checker<'a, F> {
             edge_insts,
             reftyped_vregs,
             machine_env,
+            stack_pregs,
         }
     }
 

@@ -285,11 +285,11 @@ impl<T> MoveVecWithScratch<T> {
     }
 
     /// Do any moves go from stack to stack?
-    pub fn stack_to_stack(&self) -> bool {
+    pub fn stack_to_stack(&self, is_stack_alloc: impl Fn(Allocation) -> bool) -> bool {
         match self {
             MoveVecWithScratch::NoScratch(moves) | MoveVecWithScratch::Scratch(moves) => moves
                 .iter()
-                .any(|(src, dst, _)| src.is_stack() && dst.is_stack()),
+                .any(|&(src, dst, _)| is_stack_alloc(src) && is_stack_alloc(dst)),
         }
     }
 }
@@ -320,10 +320,11 @@ impl<T> MoveVecWithScratch<T> {
 /// Sometimes move elision will be able to clean this up a bit. But,
 /// for simplicity reasons, let's keep the concerns separated! So we
 /// always do the full expansion above.
-pub struct MoveAndScratchResolver<GetReg, GetStackSlot>
+pub struct MoveAndScratchResolver<GetReg, GetStackSlot, IsStackAlloc>
 where
     GetReg: FnMut() -> Option<Allocation>,
     GetStackSlot: FnMut() -> Allocation,
+    IsStackAlloc: Fn(Allocation) -> bool,
 {
     /// Scratch register for stack-to-stack move expansion.
     stack_stack_scratch_reg: Option<Allocation>,
@@ -335,6 +336,8 @@ where
     find_free_reg: GetReg,
     /// Closure that gets us a stackslot, if needed.
     get_stackslot: GetStackSlot,
+    /// Closure to determine whether an `Allocation` refers to a stack slot.
+    is_stack_alloc: IsStackAlloc,
     /// The victim PReg to evict to another stackslot at every
     /// stack-to-stack move if a free PReg is not otherwise
     /// available. Provided by caller and statically chosen. This is a
@@ -342,17 +345,24 @@ where
     victim: PReg,
 }
 
-impl<GetReg, GetStackSlot> MoveAndScratchResolver<GetReg, GetStackSlot>
+impl<GetReg, GetStackSlot, IsStackAlloc> MoveAndScratchResolver<GetReg, GetStackSlot, IsStackAlloc>
 where
     GetReg: FnMut() -> Option<Allocation>,
     GetStackSlot: FnMut() -> Allocation,
+    IsStackAlloc: Fn(Allocation) -> bool,
 {
-    pub fn new(find_free_reg: GetReg, get_stackslot: GetStackSlot, victim: PReg) -> Self {
+    pub fn new(
+        find_free_reg: GetReg,
+        get_stackslot: GetStackSlot,
+        is_stack_alloc: IsStackAlloc,
+        victim: PReg,
+    ) -> Self {
         Self {
             stack_stack_scratch_reg: None,
             stack_stack_scratch_reg_save: None,
             find_free_reg,
             get_stackslot,
+            is_stack_alloc,
             victim,
         }
     }
@@ -360,7 +370,7 @@ where
     pub fn compute<T: Debug + Copy>(mut self, moves: MoveVecWithScratch<T>) -> MoveVec<T> {
         // First, do we have a vec with no stack-to-stack moves or use
         // of a scratch register? Fast return if so.
-        if !moves.needs_scratch() && !moves.stack_to_stack() {
+        if !moves.needs_scratch() && !moves.stack_to_stack(&self.is_stack_alloc) {
             return moves.without_scratch().unwrap();
         }
 
@@ -373,7 +383,7 @@ where
         let moves = moves.with_scratch(scratch);
         for &(src, dst, data) in &moves {
             // Do we have a stack-to-stack move? If so, resolve.
-            if src.is_stack() && dst.is_stack() {
+            if (self.is_stack_alloc)(src) && (self.is_stack_alloc)(dst) {
                 trace!("scratch resolver: stack to stack: {:?} -> {:?}", src, dst);
                 // Lazily allocate a stack-to-stack scratch.
                 if self.stack_stack_scratch_reg.is_none() {

@@ -10,6 +10,15 @@ use regalloc2::fuzzing::moves::{MoveAndScratchResolver, ParallelMoves};
 use regalloc2::{Allocation, PReg, RegClass, SpillSlot};
 use std::collections::{HashMap, HashSet};
 
+fn is_stack_alloc(alloc: Allocation) -> bool {
+    // Treat registers 20..=29 as fixed stack slots.
+    if let Some(reg) = alloc.as_reg() {
+        reg.index() > 20
+    } else {
+        alloc.is_stack()
+    }
+}
+
 #[derive(Clone, Debug)]
 struct TestCase {
     moves: Vec<(Allocation, Allocation)>,
@@ -82,7 +91,8 @@ fuzz_target!(|testcase: TestCase| {
         Allocation::stack(SpillSlot::new(slot, RegClass::Int))
     };
     let preferred_victim = PReg::new(0, RegClass::Int);
-    let scratch_resolver = MoveAndScratchResolver::new(get_reg, get_stackslot, preferred_victim);
+    let scratch_resolver =
+        MoveAndScratchResolver::new(get_reg, get_stackslot, is_stack_alloc, preferred_victim);
     let moves = scratch_resolver.compute(moves);
     log::trace!("resolved moves: {:?}", moves);
 
@@ -97,7 +107,7 @@ fuzz_target!(|testcase: TestCase| {
     // Simulate the sequence of moves.
     let mut locations: HashMap<Allocation, Allocation> = HashMap::new();
     for (src, dst, _) in moves {
-        if src.is_stack() && dst.is_stack() {
+        if is_stack_alloc(src) && is_stack_alloc(dst) {
             panic!("Stack-to-stack move!");
         }
 
