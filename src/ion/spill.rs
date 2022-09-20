@@ -165,7 +165,7 @@ impl<'a, F: Function> Env<'a, F> {
                 self.spillslots.push(SpillSlotData {
                     ranges: LiveRangeSet::new(),
                     alloc: Allocation::none(),
-                    size: size as u32,
+                    slots: size as u32,
                 });
                 self.slots_by_size[size].slots.push(spillslot);
                 self.slots_by_size[size].probe_start = self.slots_by_size[size].slots.len() - 1;
@@ -176,7 +176,7 @@ impl<'a, F: Function> Env<'a, F> {
 
         // Assign actual slot indices to spillslots.
         for i in 0..self.spillslots.len() {
-            self.spillslots[i].alloc = self.allocate_spillslot(self.spillslots[i].size);
+            self.spillslots[i].alloc = self.allocate_spillslot(self.spillslots[i].slots);
         }
 
         trace!("spillslot allocator done");

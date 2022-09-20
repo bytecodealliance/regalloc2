@@ -440,7 +440,7 @@ impl<'a, F: Function> Env<'a, F> {
 #[derive(Clone, Debug)]
 pub struct SpillSlotData {
     pub ranges: LiveRangeSet,
-    pub size: u32,
+    pub slots: u32,
     pub alloc: Allocation,
 }
 
