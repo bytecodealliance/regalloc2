@@ -53,6 +53,14 @@ impl CodeRange {
     pub fn len(&self) -> usize {
         self.to.inst().index() - self.from.inst().index()
     }
+    /// Returns the range covering just one program point.
+    #[inline(always)]
+    pub fn singleton(pos: ProgPoint) -> CodeRange {
+        CodeRange {
+            from: pos,
+            to: pos.next(),
+        }
+    }
 }
 
 impl std::cmp::PartialOrd for CodeRange {
@@ -185,7 +193,7 @@ pub struct LiveBundle {
     pub spill_weight_and_props: u32,
 }
 
-pub const BUNDLE_MAX_SPILL_WEIGHT: u32 = (1 << 29) - 1;
+pub const BUNDLE_MAX_SPILL_WEIGHT: u32 = (1 << 28) - 1;
 pub const MINIMAL_FIXED_BUNDLE_SPILL_WEIGHT: u32 = BUNDLE_MAX_SPILL_WEIGHT;
 pub const MINIMAL_BUNDLE_SPILL_WEIGHT: u32 = BUNDLE_MAX_SPILL_WEIGHT - 1;
 pub const BUNDLE_MAX_NORMAL_SPILL_WEIGHT: u32 = BUNDLE_MAX_SPILL_WEIGHT - 2;
@@ -197,13 +205,15 @@ impl LiveBundle {
         spill_weight: u32,
         minimal: bool,
         fixed: bool,
+        fixed_def: bool,
         stack: bool,
     ) {
         debug_assert!(spill_weight <= BUNDLE_MAX_SPILL_WEIGHT);
         self.spill_weight_and_props = spill_weight
             | (if minimal { 1 << 31 } else { 0 })
             | (if fixed { 1 << 30 } else { 0 })
-            | (if stack { 1 << 29 } else { 0 });
+            | (if fixed_def { 1 << 29 } else { 0 })
+            | (if stack { 1 << 28 } else { 0 });
     }
 
     #[inline(always)]
@@ -217,8 +227,13 @@ impl LiveBundle {
     }
 
     #[inline(always)]
-    pub fn cached_stack(&self) -> bool {
+    pub fn cached_fixed_def(&self) -> bool {
         self.spill_weight_and_props & (1 << 29) != 0
+    }
+
+    #[inline(always)]
+    pub fn cached_stack(&self) -> bool {
+        self.spill_weight_and_props & (1 << 28) != 0
     }
 
     #[inline(always)]
@@ -227,13 +242,18 @@ impl LiveBundle {
     }
 
     #[inline(always)]
-    pub fn set_cached_stack(&mut self) {
+    pub fn set_cached_fixed_def(&mut self) {
         self.spill_weight_and_props |= 1 << 29;
     }
 
     #[inline(always)]
+    pub fn set_cached_stack(&mut self) {
+        self.spill_weight_and_props |= 1 << 28;
+    }
+
+    #[inline(always)]
     pub fn cached_spill_weight(&self) -> u32 {
-        self.spill_weight_and_props & ((1 << 29) - 1)
+        self.spill_weight_and_props & ((1 << 28) - 1)
     }
 }
 

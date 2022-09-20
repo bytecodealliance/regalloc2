@@ -130,7 +130,7 @@ impl<'a, F: Function> Env<'a, F> {
         trace!("compute_requirement: {:?}", bundle);
         let ranges = &self.bundles[bundle.index()].ranges;
         for entry in ranges {
-            trace!(" -> LR {:?}", entry.index);
+            trace!(" -> LR {:?}: {:?}", entry.index, entry.range);
             for u in &self.ranges[entry.index.index()].uses {
                 trace!("  -> use {:?}", u);
                 let r = self.requirement_from_operand(u.operand);
