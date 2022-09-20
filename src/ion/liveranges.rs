@@ -573,7 +573,7 @@ impl<'a, F: Function> Env<'a, F> {
                                     InsertMovePrio::MultiFixedRegInitial,
                                     Allocation::reg(src_preg),
                                     Allocation::reg(dst_preg),
-                                    Some(dst.vreg()),
+                                    dst.vreg(),
                                 );
                             }
 
@@ -718,14 +718,14 @@ impl<'a, F: Function> Env<'a, F> {
                                             InsertMovePrio::Regular,
                                             Allocation::reg(preg),
                                             Allocation::reg(preg),
-                                            Some(dst.vreg()),
+                                            dst.vreg(),
                                         );
                                         self.insert_move(
                                             ProgPoint::before(inst.next()),
                                             InsertMovePrio::MultiFixedRegInitial,
                                             Allocation::reg(preg),
                                             Allocation::reg(preg),
-                                            Some(src.vreg()),
+                                            src.vreg(),
                                         );
                                     } else {
                                         if inst > self.cfginfo.block_entry[block.index()].inst() {
@@ -751,7 +751,7 @@ impl<'a, F: Function> Env<'a, F> {
                                             InsertMovePrio::BlockParam,
                                             Allocation::reg(preg),
                                             Allocation::reg(preg),
-                                            Some(dst.vreg()),
+                                            dst.vreg(),
                                         );
                                     }
                                 } else {
@@ -781,7 +781,7 @@ impl<'a, F: Function> Env<'a, F> {
                                             InsertMovePrio::PostRegular,
                                             Allocation::reg(preg),
                                             Allocation::reg(preg),
-                                            Some(dst.vreg()),
+                                            dst.vreg(),
                                         );
                                     }
                                     // Otherwise, if dead, no need to create

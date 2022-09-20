@@ -45,20 +45,21 @@ impl<'a, F: Function> Env<'a, F> {
         prio: InsertMovePrio,
         from_alloc: Allocation,
         to_alloc: Allocation,
-        to_vreg: Option<VReg>,
+        to_vreg: VReg,
     ) {
         trace!(
-            "insert_move: pos {:?} prio {:?} from_alloc {:?} to_alloc {:?}",
+            "insert_move: pos {:?} prio {:?} from_alloc {:?} to_alloc {:?} to_vreg {:?}",
             pos,
             prio,
             from_alloc,
-            to_alloc
+            to_alloc,
+            to_vreg
         );
-        match (from_alloc.as_reg(), to_alloc.as_reg()) {
-            (Some(from), Some(to)) => {
-                debug_assert_eq!(from.class(), to.class());
-            }
-            _ => {}
+        if let Some(from) = from_alloc.as_reg() {
+            debug_assert_eq!(from.class(), to_vreg.class());
+        }
+        if let Some(to) = to_alloc.as_reg() {
+            debug_assert_eq!(to.class(), to_vreg.class());
         }
         self.inserted_moves.push(InsertedMove {
             pos_prio: PosWithPrio {
@@ -280,7 +281,7 @@ impl<'a, F: Function> Env<'a, F> {
                             InsertMovePrio::Regular,
                             prev_alloc,
                             alloc,
-                            Some(self.vreg(vreg)),
+                            self.vreg(vreg),
                         );
                     }
                 }
@@ -720,7 +721,7 @@ impl<'a, F: Function> Env<'a, F> {
                     prio,
                     src.alloc,
                     dest.alloc,
-                    Some(self.vreg(dest.to_vreg())),
+                    self.vreg(dest.to_vreg()),
                 );
                 last = Some(dest.alloc);
             }
@@ -741,13 +742,7 @@ impl<'a, F: Function> Env<'a, F> {
                 FixedRegFixupLevel::Initial => InsertMovePrio::MultiFixedRegInitial,
                 FixedRegFixupLevel::Secondary => InsertMovePrio::MultiFixedRegSecondary,
             };
-            self.insert_move(
-                fixup.pos,
-                prio,
-                from_alloc,
-                to_alloc,
-                Some(self.vreg(fixup.vreg)),
-            );
+            self.insert_move(fixup.pos, prio, from_alloc, to_alloc, self.vreg(fixup.vreg));
             self.set_alloc(
                 fixup.pos.inst(),
                 fixup.to_slot as usize,
@@ -831,7 +826,7 @@ impl<'a, F: Function> Env<'a, F> {
                             InsertMovePrio::ReusedInput,
                             input_alloc,
                             output_alloc,
-                            Some(input_operand.vreg()),
+                            input_operand.vreg(),
                         );
                         self.set_alloc(inst, input_idx, output_alloc);
                     }
@@ -871,7 +866,7 @@ impl<'a, F: Function> Env<'a, F> {
                 InsertMovePrio::Regular,
                 from_alloc,
                 to_alloc,
-                Some(self.vreg(to_vreg)),
+                self.vreg(to_vreg),
             );
         }
 
@@ -961,13 +956,10 @@ impl<'a, F: Function> Env<'a, F> {
             let mut float_moves: SmallVec<[InsertedMove; 8]> = smallvec![];
 
             for m in moves {
-                if m.from_alloc.is_reg() && m.to_alloc.is_reg() {
-                    debug_assert_eq!(m.from_alloc.class(), m.to_alloc.class());
-                }
                 if m.from_alloc == m.to_alloc {
                     continue;
                 }
-                match m.from_alloc.class() {
+                match m.to_vreg.class() {
                     RegClass::Int => {
                         int_moves.push(m.clone());
                     }
@@ -990,10 +982,8 @@ impl<'a, F: Function> Env<'a, F> {
                     pos_prio.prio
                 );
                 for m in moves {
-                    if (m.from_alloc != m.to_alloc) || m.to_vreg.is_some() {
-                        trace!(" {} -> {}", m.from_alloc, m.to_alloc,);
-                        parallel_moves.add(m.from_alloc, m.to_alloc, m.to_vreg);
-                    }
+                    trace!(" {} -> {}", m.from_alloc, m.to_alloc);
+                    parallel_moves.add(m.from_alloc, m.to_alloc, Some(m.to_vreg));
                 }
 
                 let resolved = parallel_moves.resolve();
@@ -1042,7 +1032,7 @@ impl<'a, F: Function> Env<'a, F> {
                     // these placeholders then allocate the actual
                     // slots if needed with `self.allocate_spillslot`
                     // below.
-                    Allocation::stack(SpillSlot::new(SpillSlot::MAX - idx, regclass))
+                    Allocation::stack(SpillSlot::new(SpillSlot::MAX - idx))
                 };
                 let is_stack_alloc = |alloc: Allocation| {
                     if let Some(preg) = alloc.as_reg() {
@@ -1065,11 +1055,12 @@ impl<'a, F: Function> Env<'a, F> {
                 let mut rewrites = FxHashMap::default();
                 for i in 0..stackslot_idx {
                     if i >= self.extra_spillslots_by_class[regclass as usize].len() {
-                        let slot = self.allocate_spillslot(regclass);
+                        let slot =
+                            self.allocate_spillslot(self.func.spillslot_size(regclass) as u32);
                         self.extra_spillslots_by_class[regclass as usize].push(slot);
                     }
                     rewrites.insert(
-                        Allocation::stack(SpillSlot::new(SpillSlot::MAX - i, regclass)),
+                        Allocation::stack(SpillSlot::new(SpillSlot::MAX - i)),
                         self.extra_spillslots_by_class[regclass as usize][i],
                     );
                 }

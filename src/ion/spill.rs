@@ -13,7 +13,7 @@
 //! Spillslot allocation.
 
 use super::{
-    AllocRegResult, Env, LiveRangeKey, LiveRangeSet, PReg, PRegIndex, RegClass, RegTraversalIter,
+    AllocRegResult, Env, LiveRangeKey, LiveRangeSet, PReg, PRegIndex, RegTraversalIter,
     SpillSetIndex, SpillSlotData, SpillSlotIndex, SpillSlotList,
 };
 use crate::{Allocation, Function, SpillSlot};
@@ -165,7 +165,7 @@ impl<'a, F: Function> Env<'a, F> {
                 self.spillslots.push(SpillSlotData {
                     ranges: LiveRangeSet::new(),
                     alloc: Allocation::none(),
-                    class: self.spillsets[spillset.index()].class,
+                    slots: size as u32,
                 });
                 self.slots_by_size[size].slots.push(spillslot);
                 self.slots_by_size[size].probe_start = self.slots_by_size[size].slots.len() - 1;
@@ -176,14 +176,13 @@ impl<'a, F: Function> Env<'a, F> {
 
         // Assign actual slot indices to spillslots.
         for i in 0..self.spillslots.len() {
-            self.spillslots[i].alloc = self.allocate_spillslot(self.spillslots[i].class);
+            self.spillslots[i].alloc = self.allocate_spillslot(self.spillslots[i].slots);
         }
 
         trace!("spillslot allocator done");
     }
 
-    pub fn allocate_spillslot(&mut self, class: RegClass) -> Allocation {
-        let size = self.func.spillslot_size(class) as u32;
+    pub fn allocate_spillslot(&mut self, size: u32) -> Allocation {
         let mut offset = self.num_spillslots;
         // Align up to `size`.
         debug_assert!(size.is_power_of_two());
@@ -195,6 +194,6 @@ impl<'a, F: Function> Env<'a, F> {
         };
         offset += size;
         self.num_spillslots = offset;
-        Allocation::stack(SpillSlot::new(slot as usize, class))
+        Allocation::stack(SpillSlot::new(slot as usize))
     }
 }

@@ -40,14 +40,14 @@ impl Arbitrary<'_> for TestCase {
                 Allocation::reg(PReg::new(reg, RegClass::Int))
             } else {
                 let slot = u.int_in_range(0..=31)?;
-                Allocation::stack(SpillSlot::new(slot, RegClass::Int))
+                Allocation::stack(SpillSlot::new(slot))
             };
             let dst = if bool::arbitrary(u)? {
                 let reg = u.int_in_range(0..=29)?;
                 Allocation::reg(PReg::new(reg, RegClass::Int))
             } else {
                 let slot = u.int_in_range(0..=31)?;
-                Allocation::stack(SpillSlot::new(slot, RegClass::Int))
+                Allocation::stack(SpillSlot::new(slot))
             };
 
             // Stop if we are going to write a reg more than once:
@@ -88,7 +88,7 @@ fuzz_target!(|testcase: TestCase| {
     let get_stackslot = || {
         let slot = next_slot;
         next_slot += 1;
-        Allocation::stack(SpillSlot::new(slot, RegClass::Int))
+        Allocation::stack(SpillSlot::new(slot))
     };
     let preferred_victim = PReg::new(0, RegClass::Int);
     let scratch_resolver =
