@@ -440,7 +440,7 @@ impl<'a, F: Function> Env<'a, F> {
 #[derive(Clone, Debug)]
 pub struct SpillSlotData {
     pub ranges: LiveRangeSet,
-    pub class: RegClass,
+    pub size: u32,
     pub alloc: Allocation,
 }
 
@@ -580,7 +580,7 @@ pub struct InsertedMove {
     pub pos_prio: PosWithPrio,
     pub from_alloc: Allocation,
     pub to_alloc: Allocation,
-    pub to_vreg: Option<VReg>,
+    pub to_vreg: VReg,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]

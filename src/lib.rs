@@ -324,13 +324,11 @@ impl SpillSlot {
     /// The maximum spillslot index.
     pub const MAX: usize = (1 << 24) - 1;
 
-    /// Create a new SpillSlot of a given class.
+    /// Create a new SpillSlot.
     #[inline(always)]
-    pub fn new(slot: usize, class: RegClass) -> Self {
+    pub fn new(slot: usize) -> Self {
         debug_assert!(slot <= Self::MAX);
-        SpillSlot {
-            bits: (slot as u32) | (class as u8 as u32) << 24,
-        }
+        SpillSlot { bits: slot as u32 }
     }
 
     /// Get the spillslot index for this spillslot.
@@ -339,20 +337,10 @@ impl SpillSlot {
         (self.bits & 0x00ffffff) as usize
     }
 
-    /// Get the class for this spillslot.
-    #[inline(always)]
-    pub fn class(self) -> RegClass {
-        match (self.bits >> 24) as u8 {
-            0 => RegClass::Int,
-            1 => RegClass::Float,
-            _ => unreachable!(),
-        }
-    }
-
     /// Get the spillslot `offset` slots away.
     #[inline(always)]
     pub fn plus(self, offset: usize) -> Self {
-        SpillSlot::new(self.index() + offset, self.class())
+        SpillSlot::new(self.index() + offset)
     }
 
     /// Get the invalid spillslot, used for initializing data structures.
@@ -963,18 +951,6 @@ pub enum AllocationKind {
     None = 0,
     Reg = 1,
     Stack = 2,
-}
-
-impl Allocation {
-    /// Get the register class of an allocation's value.
-    #[inline(always)]
-    pub fn class(self) -> RegClass {
-        match self.kind() {
-            AllocationKind::None => panic!("Allocation::None has no class"),
-            AllocationKind::Reg => self.as_reg().unwrap().class(),
-            AllocationKind::Stack => self.as_stack().unwrap().class(),
-        }
-    }
 }
 
 /// A trait defined by the regalloc client to provide access to its
