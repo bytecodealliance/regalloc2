@@ -374,7 +374,7 @@ the Operand word (directly copied, so there is no need to dereference
 it); the ProgPoint at which the use occurs; the operand slot on that
 instruction, if any, that the operand comes from, and the use's
 'weight". (It's possible to have "ghost uses" that do not derive from
-any slot on the isntruction.) These four parts are packed into three
+any slot on the instruction.) These four parts are packed into three
 `u32`s: the slot can fit in 8 bits, and the weight in 16.
 
 The live-range carries its program-point range, uses, vreg index,
