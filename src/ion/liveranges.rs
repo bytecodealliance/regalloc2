@@ -987,12 +987,14 @@ impl<'a, F: Function> Env<'a, F> {
                                 // conflicting constraints for the
                                 // same vreg in a separate pass (see
                                 // `fixup_multi_fixed_vregs` below).
-                                if late_def_fixed.contains(&preg) {
+                                if late_def_fixed.contains(&preg)
+                                    || self.func.inst_clobbers(inst).contains(preg)
+                                {
                                     log::trace!(
                                         concat!(
                                             "-> operand {:?} is fixed to preg {:?}, ",
                                             "is downward live, and there is also a ",
-                                            "def at this preg"
+                                            "def or clobber at this preg"
                                         ),
                                         operand,
                                         preg
@@ -1010,43 +1012,11 @@ impl<'a, F: Function> Env<'a, F> {
                                     // We need to insert a reservation
                                     // at the before-point to reserve
                                     // the reg for the use too.
-                                    let range = CodeRange {
-                                        from: ProgPoint::before(inst),
-                                        to: ProgPoint::after(inst),
-                                    };
+                                    let range = CodeRange::singleton(pos);
                                     self.add_liverange_to_preg(range, preg);
 
                                     // Remove the fixed-preg
                                     // constraint from the Use.
-                                    operand_rewrites.insert(
-                                        i,
-                                        Operand::new(
-                                            operand.vreg(),
-                                            OperandConstraint::Any,
-                                            operand.kind(),
-                                            operand.pos(),
-                                        ),
-                                    );
-                                } else if self.func.inst_clobbers(inst).contains(preg) {
-                                    let pos = ProgPoint::before(inst);
-
-                                    // We need to insert a clobber at
-                                    // the before-point to reserve the
-                                    // reg for the use too.
-                                    let range = CodeRange {
-                                        from: ProgPoint::before(inst),
-                                        to: ProgPoint::after(inst),
-                                    };
-                                    self.add_liverange_to_preg(range, preg);
-
-                                    self.multi_fixed_reg_fixups.push(MultiFixedRegFixup {
-                                        pos,
-                                        from_slot: i as u8,
-                                        to_slot: i as u8,
-                                        to_preg: PRegIndex::new(preg.index()),
-                                        vreg: VRegIndex::new(operand.vreg().vreg()),
-                                        level: FixedRegFixupLevel::Initial,
-                                    });
                                     operand_rewrites.insert(
                                         i,
                                         Operand::new(

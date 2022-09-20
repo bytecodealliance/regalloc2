@@ -53,6 +53,14 @@ impl CodeRange {
     pub fn len(&self) -> usize {
         self.to.inst().index() - self.from.inst().index()
     }
+    /// Returns the range covering just one program point.
+    #[inline(always)]
+    pub fn singleton(pos: ProgPoint) -> CodeRange {
+        CodeRange {
+            from: pos,
+            to: pos.next(),
+        }
+    }
 }
 
 impl std::cmp::PartialOrd for CodeRange {
