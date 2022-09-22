@@ -1004,7 +1004,7 @@ impl<'a, F: Function> Env<'a, F> {
                         if !self.pregs[preg.index()]
                             .allocations
                             .btree
-                            .contains_key(&key)
+                            .contains_key(&self.arena, &key)
                         {
                             let alloc = Allocation::reg(preg);
                             if moves

@@ -84,7 +84,7 @@ impl<'a, F: Function> Env<'a, F> {
         let mut preg_range_iter = self.pregs[reg.index()]
             .allocations
             .btree
-            .range(from_key..)
+            .range(&self.arena, from_key..)
             .peekable();
         trace!(
             "alloc map for {:?} in range {:?}..: {:?}",
@@ -122,7 +122,7 @@ impl<'a, F: Function> Env<'a, F> {
                         preg_range_iter = self.pregs[reg.index()]
                             .allocations
                             .btree
-                            .range(from_key..)
+                            .range(&self.arena, from_key..)
                             .peekable();
                         skips = 0;
                     }
@@ -198,10 +198,11 @@ impl<'a, F: Function> Env<'a, F> {
         trace!("  -> bundle {:?} assigned to preg {:?}", bundle, preg);
         self.bundles[bundle.index()].allocation = Allocation::reg(preg);
         for entry in &self.bundles[bundle.index()].ranges {
-            self.pregs[reg.index()]
-                .allocations
-                .btree
-                .insert(LiveRangeKey::from_range(&entry.range), entry.index);
+            self.pregs[reg.index()].allocations.btree.insert(
+                &mut self.arena,
+                LiveRangeKey::from_range(&entry.range),
+                entry.index,
+            );
         }
 
         AllocRegResult::Allocated(Allocation::reg(preg))
@@ -230,7 +231,7 @@ impl<'a, F: Function> Env<'a, F> {
             self.pregs[preg_idx.index()]
                 .allocations
                 .btree
-                .remove(&LiveRangeKey::from_range(&entry.range));
+                .remove(&mut self.arena, &LiveRangeKey::from_range(&entry.range));
         }
         let prio = self.bundles[bundle.index()].prio;
         trace!(" -> prio {}; back into queue", prio);
@@ -1230,7 +1231,11 @@ impl<'a, F: Function> Env<'a, F> {
                             from: range.from.prev(),
                             to: range.from.prev(),
                         });
-                        for (key, lr) in self.pregs[preg.index()].allocations.btree.range(start..) {
+                        for (key, lr) in self.pregs[preg.index()]
+                            .allocations
+                            .btree
+                            .range(&self.arena, start..)
+                        {
                             let preg_range = key.to_range();
                             if preg_range.to <= range.from {
                                 continue;

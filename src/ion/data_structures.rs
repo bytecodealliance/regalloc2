@@ -20,9 +20,10 @@ use crate::{
     define_index, Allocation, Block, Edit, Function, Inst, MachineEnv, Operand, PReg, ProgPoint,
     RegClass, VReg,
 };
+use arena_btree::{Arena, BTreeMap};
 use smallvec::SmallVec;
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 
 /// A range from `from` (inclusive) to `to` (exclusive).
@@ -286,10 +287,23 @@ pub struct VRegData {
     pub class: Option<RegClass>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct PRegData {
     pub allocations: LiveRangeSet,
     pub is_stack: bool,
+}
+
+impl PRegData {
+    pub fn clone(&self, arena: &mut Arena<LiveRangeKey, LiveRangeIndex>) -> Self {
+        PRegData {
+            allocations: self.allocations.clone(arena),
+            is_stack: self.is_stack,
+        }
+    }
+
+    pub fn drop(self, arena: &mut Arena<LiveRangeKey, LiveRangeIndex>) {
+        self.allocations.drop(arena);
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -361,7 +375,7 @@ impl BlockparamIn {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct Env<'a, F: Function> {
     pub func: &'a F,
     pub env: &'a MachineEnv,
@@ -371,6 +385,7 @@ pub struct Env<'a, F: Function> {
     pub blockparam_outs: Vec<BlockparamOut>,
     pub blockparam_ins: Vec<BlockparamIn>,
 
+    pub arena: Arena<LiveRangeKey, LiveRangeIndex>,
     pub ranges: Vec<LiveRange>,
     pub bundles: Vec<LiveBundle>,
     pub spillsets: Vec<SpillSet>,
@@ -432,6 +447,17 @@ pub struct Env<'a, F: Function> {
     pub annotations_enabled: bool,
 }
 
+impl<'a, F: Function> Drop for Env<'a, F> {
+    fn drop(&mut self) {
+        for preg in self.pregs.drain(..) {
+            preg.drop(&mut self.arena);
+        }
+        for slot in self.spillslots.drain(..) {
+            slot.drop(&mut self.arena);
+        }
+    }
+}
+
 impl<'a, F: Function> Env<'a, F> {
     /// Get the VReg (with bundled RegClass) from a vreg index.
     #[inline]
@@ -457,11 +483,25 @@ impl<'a, F: Function> Env<'a, F> {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct SpillSlotData {
     pub ranges: LiveRangeSet,
     pub slots: u32,
     pub alloc: Allocation,
+}
+
+impl SpillSlotData {
+    pub fn clone(&self, arena: &mut Arena<LiveRangeKey, LiveRangeIndex>) -> Self {
+        SpillSlotData {
+            ranges: self.ranges.clone(arena),
+            slots: self.slots,
+            alloc: self.alloc,
+        }
+    }
+
+    pub fn drop(self, arena: &mut Arena<LiveRangeKey, LiveRangeIndex>) {
+        self.ranges.drop(arena);
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -495,9 +535,21 @@ pub struct PrioQueueEntry {
     pub reg_hint: PReg,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct LiveRangeSet {
     pub btree: BTreeMap<LiveRangeKey, LiveRangeIndex>,
+}
+
+impl LiveRangeSet {
+    pub fn clone(&self, arena: &mut Arena<LiveRangeKey, LiveRangeIndex>) -> LiveRangeSet {
+        LiveRangeSet {
+            btree: self.btree.clone(arena),
+        }
+    }
+
+    pub fn drop(self, arena: &mut Arena<LiveRangeKey, LiveRangeIndex>) {
+        self.btree.drop(arena);
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -588,9 +640,9 @@ impl PrioQueue {
 }
 
 impl LiveRangeSet {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(arena: &Arena<LiveRangeKey, LiveRangeIndex>) -> Self {
         Self {
-            btree: BTreeMap::new(),
+            btree: BTreeMap::new(arena),
         }
     }
 }

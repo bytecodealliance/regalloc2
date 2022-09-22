@@ -250,10 +250,11 @@ impl<'a, F: Function> Env<'a, F> {
             if let Some(preg) = self.func.is_pinned_vreg(self.vreg(vreg)) {
                 for entry in &self.vregs[vreg.index()].ranges {
                     let key = LiveRangeKey::from_range(&entry.range);
-                    self.pregs[preg.index()]
-                        .allocations
-                        .btree
-                        .insert(key, LiveRangeIndex::invalid());
+                    self.pregs[preg.index()].allocations.btree.insert(
+                        &mut self.arena,
+                        key,
+                        LiveRangeIndex::invalid(),
+                    );
                 }
                 continue;
             }

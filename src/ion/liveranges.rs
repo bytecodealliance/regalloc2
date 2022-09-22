@@ -25,10 +25,12 @@ use crate::{
     Allocation, Block, Function, Inst, InstPosition, Operand, OperandConstraint, OperandKind,
     OperandPos, PReg, ProgPoint, RegAllocError, VReg,
 };
+use arena_btree::Arena;
 use fxhash::{FxHashMap, FxHashSet};
 use slice_group_by::GroupByMut;
 use smallvec::{smallvec, SmallVec};
 use std::collections::{HashSet, VecDeque};
+use std::mem;
 
 /// A spill weight computed for a certain Use.
 #[derive(Clone, Copy, Debug)]
@@ -101,13 +103,13 @@ impl std::ops::Add<SpillWeight> for SpillWeight {
 impl<'a, F: Function> Env<'a, F> {
     pub fn create_pregs_and_vregs(&mut self) {
         // Create PRegs from the env.
-        self.pregs.resize(
-            PReg::NUM_INDEX,
-            PRegData {
-                allocations: LiveRangeSet::new(),
-                is_stack: false,
-            },
-        );
+        let arena = mem::replace(&mut self.arena, Arena::new());
+        self.pregs.resize_with(PReg::NUM_INDEX, || PRegData {
+            allocations: LiveRangeSet::new(&arena),
+            is_stack: false,
+        });
+        self.arena = arena;
+
         for &preg in &self.env.fixed_stack_slots {
             self.pregs[preg.index()].is_stack = true;
         }
@@ -307,10 +309,11 @@ impl<'a, F: Function> Env<'a, F> {
     pub fn add_liverange_to_preg(&mut self, range: CodeRange, reg: PReg) {
         trace!("adding liverange to preg: {:?} to {}", range, reg);
         let preg_idx = PRegIndex::new(reg.index());
-        self.pregs[preg_idx.index()]
-            .allocations
-            .btree
-            .insert(LiveRangeKey::from_range(&range), LiveRangeIndex::invalid());
+        self.pregs[preg_idx.index()].allocations.btree.insert(
+            &mut self.arena,
+            LiveRangeKey::from_range(&range),
+            LiveRangeIndex::invalid(),
+        );
     }
 
     pub fn is_live_in(&mut self, block: Block, vreg: VRegIndex) -> bool {

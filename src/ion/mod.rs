@@ -15,7 +15,9 @@
 
 use crate::cfg::CFGInfo;
 use crate::{Function, MachineEnv, Output, PReg, ProgPoint, RegAllocError, RegClass};
+use arena_btree::Arena;
 use std::collections::HashMap;
+use std::mem;
 
 pub(crate) mod data_structures;
 pub use data_structures::Stats;
@@ -55,6 +57,8 @@ impl<'a, F: Function> Env<'a, F> {
             blockparam_outs: vec![],
             blockparam_ins: vec![],
             bundles: Vec::with_capacity(n),
+
+            arena: Arena::new(),
             ranges: Vec::with_capacity(4 * n),
             spillsets: Vec::with_capacity(n),
             vregs: Vec::with_capacity(n),
@@ -133,14 +137,14 @@ pub fn run<F: Function>(
     Ok(Output {
         edits: env
             .edits
-            .into_iter()
+            .drain(..)
             .map(|(pos_prio, edit)| (pos_prio.pos, edit))
             .collect(),
-        allocs: env.allocs,
-        inst_alloc_offsets: env.inst_alloc_offsets,
+        allocs: mem::take(&mut env.allocs),
+        inst_alloc_offsets: mem::take(&mut env.inst_alloc_offsets),
         num_spillslots: env.num_spillslots as usize,
-        debug_locations: env.debug_locations,
-        safepoint_slots: env.safepoint_slots,
+        debug_locations: mem::take(&mut env.debug_locations),
+        safepoint_slots: mem::take(&mut env.safepoint_slots),
         stats: env.stats,
     })
 }

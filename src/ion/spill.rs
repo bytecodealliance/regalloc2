@@ -74,7 +74,7 @@ impl<'a, F: Function> Env<'a, F> {
                 if self.spillslots[spillslot.index()]
                     .ranges
                     .btree
-                    .contains_key(&LiveRangeKey::from_range(&entry.range))
+                    .contains_key(&self.arena, &LiveRangeKey::from_range(&entry.range))
                 {
                     return false;
                 }
@@ -106,10 +106,11 @@ impl<'a, F: Function> Env<'a, F> {
                     entry.index,
                     vreg,
                 );
-                self.spillslots[spillslot.index()]
-                    .ranges
-                    .btree
-                    .insert(LiveRangeKey::from_range(&entry.range), entry.index);
+                self.spillslots[spillslot.index()].ranges.btree.insert(
+                    &mut self.arena,
+                    LiveRangeKey::from_range(&entry.range),
+                    entry.index,
+                );
             }
         }
     }
@@ -163,7 +164,7 @@ impl<'a, F: Function> Env<'a, F> {
                 // Allocate a new spillslot.
                 let spillslot = SpillSlotIndex::new(self.spillslots.len());
                 self.spillslots.push(SpillSlotData {
-                    ranges: LiveRangeSet::new(),
+                    ranges: LiveRangeSet::new(&self.arena),
                     alloc: Allocation::none(),
                     slots: size as u32,
                 });

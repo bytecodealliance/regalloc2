@@ -11,6 +11,7 @@ description = "Backtracking register allocator inspired from IonMonkey"
 repository = "https://github.com/bytecodealliance/regalloc2"
 
 [dependencies]
+arena-btree = { path = "../arena-btree" }
 log = { version = "0.4.8", default-features = false }
 smallvec = "1.6.1"
 fxhash = "0.2.1"
