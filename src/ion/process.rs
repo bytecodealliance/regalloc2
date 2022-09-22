@@ -800,6 +800,7 @@ impl<'a, F: Function> Env<'a, F> {
         for entry_idx in 0..self.bundles[bundle.index()].ranges.len() {
             // Iterate manually; don't borrow `self`.
             let entry = self.bundles[bundle.index()].ranges[entry_idx];
+            let lr_from = entry.range.from;
             let lr_to = entry.range.to;
 
             removed_lrs.insert(entry.index);
@@ -863,6 +864,7 @@ impl<'a, F: Function> Env<'a, F> {
 
                 // Otherwise, create a new LR.
                 let pos = ProgPoint::before(u.pos.inst());
+                let pos = std::cmp::max(lr_from, pos);
                 let cr = CodeRange { from: pos, to };
                 let lr = self.create_liverange(cr);
                 new_lrs.push((vreg, lr));
