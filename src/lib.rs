@@ -1032,7 +1032,7 @@ pub trait Function {
     /// that must be live across the instruction.
     ///
     /// Another way of seeing this is that a clobber is equivalent to
-    /// an "early def" of a fresh vreg that is not used anywhere else
+    /// a "late def" of a fresh vreg that is not used anywhere else
     /// in the program, with a fixed-register constraint that places
     /// it in a given PReg chosen by the client prior to regalloc.
     ///
