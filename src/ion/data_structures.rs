@@ -20,6 +20,7 @@ use crate::{
     define_index, Allocation, Block, Edit, Function, Inst, MachineEnv, Operand, PReg, ProgPoint,
     RegClass, VReg,
 };
+use fxhash::FxHashSet;
 use smallvec::SmallVec;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -430,6 +431,10 @@ pub struct Env<'a, F: Function> {
     // ProgPoint to insert into the final allocated program listing.
     pub debug_annotations: std::collections::HashMap<ProgPoint, Vec<String>>,
     pub annotations_enabled: bool,
+
+    // Cached allocation for `try_to_allocate_bundle_to_reg` to avoid allocating
+    // a new HashSet on every call.
+    pub conflict_set: FxHashSet<LiveBundleIndex>,
 }
 
 impl<'a, F: Function> Env<'a, F> {

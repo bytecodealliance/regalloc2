@@ -87,6 +87,8 @@ impl<'a, F: Function> Env<'a, F> {
 
             debug_annotations: std::collections::HashMap::new(),
             annotations_enabled,
+
+            conflict_set: Default::default(),
         }
     }
 
