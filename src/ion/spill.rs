@@ -19,7 +19,7 @@ use super::{
 use crate::{Allocation, Function, SpillSlot};
 use smallvec::smallvec;
 
-impl<'a, F: Function> Env<'a, F> {
+impl<'a, 'arena, F: Function> Env<'a, 'arena, F> {
     pub fn try_allocating_regs_for_spilled_bundles(&mut self) {
         trace!("allocating regs for spilled bundles");
         for i in 0..self.spilled_bundles.len() {
@@ -163,7 +163,7 @@ impl<'a, F: Function> Env<'a, F> {
                 // Allocate a new spillslot.
                 let spillslot = SpillSlotIndex::new(self.spillslots.len());
                 self.spillslots.push(SpillSlotData {
-                    ranges: LiveRangeSet::new(),
+                    ranges: LiveRangeSet::new(self.arena),
                     alloc: Allocation::none(),
                     slots: size as u32,
                 });

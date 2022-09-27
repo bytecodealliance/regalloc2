@@ -29,7 +29,7 @@ use fxhash::FxHashMap;
 use smallvec::{smallvec, SmallVec};
 use std::fmt::Debug;
 
-impl<'a, F: Function> Env<'a, F> {
+impl<'a, 'arena, F: Function> Env<'a, 'arena, F> {
     pub fn is_start_of_block(&self, pos: ProgPoint) -> bool {
         let block = self.cfginfo.insn_block[pos.inst().index()];
         pos == self.cfginfo.block_entry[block.index()]
@@ -885,8 +885,8 @@ impl<'a, F: Function> Env<'a, F> {
         // Redundant-move elimination state tracker.
         let mut redundant_moves = RedundantMoveEliminator::default();
 
-        fn redundant_move_process_side_effects<'a, F: Function>(
-            this: &Env<'a, F>,
+        fn redundant_move_process_side_effects<'a, 'arena, F: Function>(
+            this: &Env<'a, 'arena, F>,
             redundant_moves: &mut RedundantMoveEliminator,
             from: ProgPoint,
             to: ProgPoint,

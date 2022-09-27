@@ -3,7 +3,7 @@
 use super::Env;
 use crate::{Block, Function, ProgPoint};
 
-impl<'a, F: Function> Env<'a, F> {
+impl<'a, 'arena, F: Function> Env<'a, 'arena, F> {
     pub fn dump_state(&self) {
         trace!("Bundles:");
         for (i, b) in self.bundles.iter().enumerate() {

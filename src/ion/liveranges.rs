@@ -98,13 +98,13 @@ impl std::ops::Add<SpillWeight> for SpillWeight {
     }
 }
 
-impl<'a, F: Function> Env<'a, F> {
+impl<'a, 'arena, F: Function> Env<'a, 'arena, F> {
     pub fn create_pregs_and_vregs(&mut self) {
         // Create PRegs from the env.
         self.pregs.resize(
             PReg::NUM_INDEX,
             PRegData {
-                allocations: LiveRangeSet::new(),
+                allocations: LiveRangeSet::new(self.arena),
                 is_stack: false,
             },
         );

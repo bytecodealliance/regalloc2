@@ -21,7 +21,7 @@ use crate::{
 };
 use smallvec::smallvec;
 
-impl<'a, F: Function> Env<'a, F> {
+impl<'a, 'arena, F: Function> Env<'a, 'arena, F> {
     pub fn merge_bundles(&mut self, from: LiveBundleIndex, to: LiveBundleIndex) -> bool {
         if from == to {
             // Merge bundle into self -- trivial merge.

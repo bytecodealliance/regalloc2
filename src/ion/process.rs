@@ -37,7 +37,7 @@ pub enum AllocRegResult {
     ConflictHighCost,
 }
 
-impl<'a, F: Function> Env<'a, F> {
+impl<'a, 'arena, F: Function> Env<'a, 'arena, F> {
     pub fn process_bundles(&mut self) -> Result<(), RegAllocError> {
         while let Some((bundle, reg_hint)) = self.allocation_queue.pop() {
             self.stats.process_bundle_count += 1;

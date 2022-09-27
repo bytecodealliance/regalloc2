@@ -104,7 +104,7 @@ impl Requirement {
     }
 }
 
-impl<'a, F: Function> Env<'a, F> {
+impl<'a, 'arena, F: Function> Env<'a, 'arena, F> {
     #[inline(always)]
     pub fn requirement_from_operand(&self, op: Operand) -> Requirement {
         match op.constraint() {

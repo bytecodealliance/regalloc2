@@ -15,6 +15,7 @@
 
 use crate::cfg::CFGInfo;
 use crate::{Function, MachineEnv, Output, PReg, ProgPoint, RegAllocError, RegClass};
+use arena_btree::Arena;
 use std::collections::HashMap;
 
 pub(crate) mod data_structures;
@@ -37,15 +38,18 @@ pub(crate) mod moves;
 pub(crate) mod spill;
 pub(crate) mod stackmap;
 
-impl<'a, F: Function> Env<'a, F> {
+impl<'a, 'arena, F: Function> Env<'a, 'arena, F> {
     pub(crate) fn new(
         func: &'a F,
         env: &'a MachineEnv,
+        arena: &'arena Arena<LiveRangeKey, LiveRangeIndex>,
         cfginfo: CFGInfo,
         annotations_enabled: bool,
     ) -> Self {
         let n = func.num_insts();
         Self {
+            arena,
+
             func,
             env,
             cfginfo,
@@ -123,7 +127,8 @@ pub fn run<F: Function>(
 ) -> Result<Output, RegAllocError> {
     let cfginfo = CFGInfo::new(func)?;
 
-    let mut env = Env::new(func, mach_env, cfginfo, enable_annotations);
+    let arena = Arena::new();
+    let mut env = Env::new(func, mach_env, &arena, cfginfo, enable_annotations);
     env.init()?;
 
     env.run()?;

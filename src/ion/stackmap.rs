@@ -15,7 +15,7 @@
 use super::{Env, ProgPoint, VRegIndex};
 use crate::{ion::data_structures::u64_key, Function};
 
-impl<'a, F: Function> Env<'a, F> {
+impl<'a, 'arena, F: Function> Env<'a, 'arena, F> {
     pub fn compute_stackmaps(&mut self) {
         // For each ref-typed vreg, iterate through ranges and find
         // safepoints in-range. Add the SpillSlot to the stackmap.

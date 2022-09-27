@@ -21,10 +21,13 @@ use crate::{
     RegClass, VReg,
 };
 use fxhash::FxHashSet;
+use arena_btree::BTreeMap;
 use smallvec::SmallVec;
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
+
+pub use arena_btree::Arena;
 
 /// A range from `from` (inclusive) to `to` (exclusive).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -288,8 +291,8 @@ pub struct VRegData {
 }
 
 #[derive(Clone, Debug)]
-pub struct PRegData {
-    pub allocations: LiveRangeSet,
+pub struct PRegData<'arena> {
+    pub allocations: LiveRangeSet<'arena>,
     pub is_stack: bool,
 }
 
@@ -362,8 +365,9 @@ impl BlockparamIn {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct Env<'a, F: Function> {
+pub struct Env<'a, 'arena, F: Function> {
+    pub arena: &'arena Arena<LiveRangeKey, LiveRangeIndex>,
+
     pub func: &'a F,
     pub env: &'a MachineEnv,
     pub cfginfo: CFGInfo,
@@ -376,13 +380,13 @@ pub struct Env<'a, F: Function> {
     pub bundles: Vec<LiveBundle>,
     pub spillsets: Vec<SpillSet>,
     pub vregs: Vec<VRegData>,
-    pub pregs: Vec<PRegData>,
+    pub pregs: Vec<PRegData<'arena>>,
     pub allocation_queue: PrioQueue,
     pub safepoints: Vec<Inst>, // Sorted list of safepoint insts.
     pub safepoints_per_vreg: HashMap<usize, HashSet<Inst>>,
 
     pub spilled_bundles: Vec<LiveBundleIndex>,
-    pub spillslots: Vec<SpillSlotData>,
+    pub spillslots: Vec<SpillSlotData<'arena>>,
     pub slots_by_size: Vec<SpillSlotList>,
 
     pub extra_spillslots_by_class: [SmallVec<[Allocation; 2]>; 2],
@@ -437,7 +441,7 @@ pub struct Env<'a, F: Function> {
     pub conflict_set: FxHashSet<LiveBundleIndex>,
 }
 
-impl<'a, F: Function> Env<'a, F> {
+impl<'a, 'arena, F: Function> Env<'a, 'arena, F> {
     /// Get the VReg (with bundled RegClass) from a vreg index.
     #[inline]
     pub fn vreg(&self, index: VRegIndex) -> VReg {
@@ -463,8 +467,8 @@ impl<'a, F: Function> Env<'a, F> {
 }
 
 #[derive(Clone, Debug)]
-pub struct SpillSlotData {
-    pub ranges: LiveRangeSet,
+pub struct SpillSlotData<'arena> {
+    pub ranges: LiveRangeSet<'arena>,
     pub slots: u32,
     pub alloc: Allocation,
 }
@@ -501,8 +505,8 @@ pub struct PrioQueueEntry {
 }
 
 #[derive(Clone, Debug)]
-pub struct LiveRangeSet {
-    pub btree: BTreeMap<LiveRangeKey, LiveRangeIndex>,
+pub struct LiveRangeSet<'arena> {
+    pub btree: BTreeMap<'arena, LiveRangeKey, LiveRangeIndex>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -592,10 +596,10 @@ impl PrioQueue {
     }
 }
 
-impl LiveRangeSet {
-    pub(crate) fn new() -> Self {
+impl<'arena> LiveRangeSet<'arena> {
+    pub(crate) fn new(arena: &'arena Arena<LiveRangeKey, LiveRangeIndex>) -> Self {
         Self {
-            btree: BTreeMap::new(),
+            btree: BTreeMap::new(arena),
         }
     }
 }
