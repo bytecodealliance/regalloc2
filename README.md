@@ -4,7 +4,9 @@ This is a register allocator that started life as, and is about 50%
 still, a port of IonMonkey's backtracking register allocator to
 Rust. In many regards, it has been generalized, optimized, and
 improved since the initial port, and now supports both SSA and non-SSA
-use-cases.
+use-cases. (However, non-SSA should be considered deprecated; we want to
+move to SSA-only in the future, to enable some performance improvements.
+See #4.)
 
 In addition, it contains substantial amounts of testing infrastructure
 (fuzzing harnesses and checkers) that does not exist in the original
