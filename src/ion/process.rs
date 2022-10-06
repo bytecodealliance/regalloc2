@@ -157,9 +157,8 @@ impl<'a, F: Function> Env<'a, F> {
                     // conflicts list.
                     let conflict_bundle = self.ranges[preg_range.index()].bundle;
                     trace!("   -> conflict bundle {:?}", conflict_bundle);
-                    if !self.conflict_set.contains(&conflict_bundle) {
+                    if self.conflict_set.insert(conflict_bundle) {
                         conflicts.push(conflict_bundle);
-                        self.conflict_set.insert(conflict_bundle);
                         max_conflict_weight = std::cmp::max(
                             max_conflict_weight,
                             self.bundles[conflict_bundle.index()].cached_spill_weight(),
