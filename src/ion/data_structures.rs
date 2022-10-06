@@ -630,6 +630,7 @@ pub struct PosWithPrio {
 }
 
 impl PosWithPrio {
+    #[inline]
     pub fn key(self) -> u64 {
         u64_key(self.pos.to_index(), self.prio)
     }
