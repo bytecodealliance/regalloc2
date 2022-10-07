@@ -36,73 +36,41 @@ impl AdaptiveMap {
         }
     }
 
-    /// Expand into `Large` mode if we are at capacity and have no
-    /// zero-value pairs that can be trimmed.
-    #[inline(never)]
-    fn expand(&mut self) {
-        match self {
-            &mut Self::Small {
-                ref mut len,
-                ref mut keys,
-                ref mut values,
-            } => {
-                // Note: we *may* remain as `Small` if there are any
-                // zero elements. Try removing them first, before we
-                // commit to a memory allocation.
-                if values.iter().any(|v| *v == 0) {
-                    let mut out = 0;
-                    for i in 0..(*len as usize) {
-                        if values[i] == 0 {
-                            continue;
-                        }
-                        if out < i {
-                            keys[out] = keys[i];
-                            values[out] = values[i];
-                        }
-                        out += 1;
-                    }
-                    *len = out as u32;
-                } else {
-                    let mut map = FxHashMap::default();
-                    for i in 0..(*len as usize) {
-                        map.insert(keys[i], values[i]);
-                    }
-                    *self = Self::Large(map);
-                }
-            }
-            _ => {}
-        }
-    }
     #[inline(always)]
     fn get_or_insert<'a>(&'a mut self, key: u32) -> &'a mut u64 {
         // Check whether the key is present and we are in small mode;
         // if no to both, we need to expand first.
-        let (needs_expand, small_mode_idx) = match self {
-            &mut Self::Small { len, ref keys, .. } => {
+        let small_mode_idx = match self {
+            &mut Self::Small {
+                len,
+                ref mut keys,
+                ref values,
+            } => {
                 // Perform this scan but do not return right away;
                 // doing so runs into overlapping-borrow issues
                 // because the current non-lexical lifetimes
                 // implementation is not able to see that the `self`
                 // mutable borrow on return is only on the
                 // early-return path.
-                let small_mode_idx = keys.iter().take(len as usize).position(|k| *k == key);
-                let needs_expand = small_mode_idx.is_none() && len == SMALL_ELEMS as u32;
-                (needs_expand, small_mode_idx)
+                if let Some(i) = keys[..len as usize].iter().position(|&k| k == key) {
+                    Some(i)
+                } else if len != SMALL_ELEMS as u32 {
+                    debug_assert!(len < SMALL_ELEMS as u32);
+                    None
+                } else if let Some(i) = values.iter().position(|&v| v == 0) {
+                    // If an existing value is zero, reuse that slot.
+                    keys[i] = key;
+                    Some(i)
+                } else {
+                    *self = Self::Large(keys.iter().copied().zip(values.iter().copied()).collect());
+                    None
+                }
             }
-            _ => (false, None),
+            _ => None,
         };
 
-        if needs_expand {
-            debug_assert!(small_mode_idx.is_none());
-            self.expand();
-        }
-
         match self {
-            &mut Self::Small {
-                ref mut len,
-                ref mut keys,
-                ref mut values,
-            } => {
+            Self::Small { len, keys, values } => {
                 // If we found the key already while checking whether
                 // we need to expand above, use that index to return
                 // early.
@@ -112,15 +80,16 @@ impl AdaptiveMap {
                 // Otherwise, the key must not be present; add a new
                 // entry.
                 debug_assert!(*len < SMALL_ELEMS as u32);
-                let idx = *len;
+                let idx = *len as usize;
                 *len += 1;
-                keys[idx as usize] = key;
-                values[idx as usize] = 0;
-                &mut values[idx as usize]
+                keys[idx] = key;
+                values[idx] = 0;
+                &mut values[idx]
             }
-            &mut Self::Large(ref mut map) => map.entry(key).or_insert(0),
+            Self::Large(map) => map.entry(key).or_insert(0),
         }
     }
+
     #[inline(always)]
     fn get_mut(&mut self, key: u32) -> Option<&mut u64> {
         match self {
@@ -180,6 +149,8 @@ enum AdaptiveMapIter<'a> {
 
 impl<'a> std::iter::Iterator for AdaptiveMapIter<'a> {
     type Item = (u32, u64);
+
+    #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         match self {
             &mut Self::Small(ref mut keys, ref mut values) => {
@@ -285,7 +256,7 @@ impl IndexSet {
     pub fn iter<'a>(&'a self) -> impl Iterator<Item = usize> + 'a {
         self.elems.iter().flat_map(|(word_idx, bits)| {
             let word_idx = word_idx as usize;
-            set_bits(bits).map(move |i| BITS_PER_WORD * word_idx + i)
+            SetBitsIter(bits).map(move |i| BITS_PER_WORD * word_idx + i)
         })
     }
 
@@ -299,15 +270,12 @@ impl IndexSet {
     }
 }
 
-fn set_bits(bits: u64) -> impl Iterator<Item = usize> {
-    let iter = SetBitsIter(bits);
-    iter
-}
-
 pub struct SetBitsIter(u64);
 
 impl Iterator for SetBitsIter {
     type Item = usize;
+
+    #[inline]
     fn next(&mut self) -> Option<usize> {
         // Build an `Option<NonZeroU64>` so that on the nonzero path,
         // the compiler can optimize the trailing-zeroes operator
