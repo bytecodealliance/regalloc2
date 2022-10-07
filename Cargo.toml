@@ -12,7 +12,7 @@ repository = "https://github.com/bytecodealliance/regalloc2"
 
 [dependencies]
 log = { version = "0.4.8", default-features = false }
-smallvec = "1.6.1"
+smallvec = { version = "1.6.1", features = ["union"] }
 fxhash = "0.2.1"
 slice-group-by = "0.3.0"
 
