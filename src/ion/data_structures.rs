@@ -101,7 +101,7 @@ pub struct LiveRangeListEntry {
 }
 
 pub type LiveRangeList = SmallVec<[LiveRangeListEntry; 4]>;
-pub type UseList = SmallVec<[Use; 2]>;
+pub type UseList = SmallVec<[Use; 4]>;
 
 #[derive(Clone, Debug)]
 pub struct LiveRange {
