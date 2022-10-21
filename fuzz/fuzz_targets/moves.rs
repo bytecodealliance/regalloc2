@@ -62,7 +62,7 @@ impl Arbitrary<'_> for TestCase {
 
         // We might have some unallocated registers free for scratch
         // space...
-        for i in u.int_in_range(0..=2) {
+        for i in 0..u.int_in_range(0..=2)? {
             let reg = PReg::new(30 + i, RegClass::Int);
             ret.available_pregs.push(Allocation::reg(reg));
         }
