@@ -107,10 +107,6 @@ fuzz_target!(|testcase: TestCase| {
     // Simulate the sequence of moves.
     let mut locations: HashMap<Allocation, Allocation> = HashMap::new();
     for (src, dst, _) in moves {
-        if is_stack_alloc(src) && is_stack_alloc(dst) {
-            panic!("Stack-to-stack move!");
-        }
-
         let data = locations.get(&src).cloned().unwrap_or(src);
         locations.insert(dst, data);
     }
