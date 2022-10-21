@@ -62,7 +62,7 @@ impl Arbitrary<'_> for TestCase {
 
         // We might have some unallocated registers free for scratch
         // space...
-        for i in u.int_in_range(0..=2) {
+        for i in 0..u.int_in_range(0..=2)? {
             let reg = PReg::new(30 + i, RegClass::Int);
             ret.available_pregs.push(Allocation::reg(reg));
         }
@@ -107,10 +107,6 @@ fuzz_target!(|testcase: TestCase| {
     // Simulate the sequence of moves.
     let mut locations: HashMap<Allocation, Allocation> = HashMap::new();
     for (src, dst, _) in moves {
-        if is_stack_alloc(src) && is_stack_alloc(dst) {
-            panic!("Stack-to-stack move!");
-        }
-
         let data = locations.get(&src).cloned().unwrap_or(src);
         locations.insert(dst, data);
     }
