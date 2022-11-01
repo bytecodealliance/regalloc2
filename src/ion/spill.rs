@@ -89,9 +89,11 @@ impl<'a, F: Function> Env<'a, F> {
         spillslot: SpillSlotIndex,
     ) {
         self.spillsets[spillset.index()].slot = spillslot;
-        for i in 0..self.spillsets[spillset.index()].vregs.len() {
-            // don't borrow self
-            let vreg = self.spillsets[spillset.index()].vregs[i];
+
+        // Take `spillsets` to avoid a conflicting borrow of `self`.
+        let spillsets = std::mem::take(&mut self.spillsets);
+
+        for vreg in &spillsets[spillset.index()].vregs {
             trace!(
                 "spillslot {:?} alloc'ed to spillset {:?}: vreg {:?}",
                 spillslot,
@@ -112,6 +114,10 @@ impl<'a, F: Function> Env<'a, F> {
                     .insert(LiveRangeKey::from_range(&entry.range), entry.index);
             }
         }
+
+        // Replace `spillsets`.
+        let default = std::mem::replace(&mut self.spillsets, spillsets);
+        debug_assert!(default.is_empty());
     }
 
     pub fn allocate_spillslots(&mut self) {
