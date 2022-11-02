@@ -264,9 +264,22 @@ pub struct BundleProperties {
     pub fixed: bool,
 }
 
+#[cfg(target_pointer_width = "64")]
+pub type VRegIndexList = SmallVec<[VRegIndex; 4]>;
+#[cfg(target_pointer_width = "32")]
+pub type VRegIndexList = SmallVec<[VRegIndex; 2]>;
+
+#[test]
+fn vreg_index_list_is_same_size_as_vec() {
+    assert_eq!(
+        std::mem::size_of::<VRegIndexList>(),
+        std::mem::size_of::<Vec<VRegIndex>>()
+    );
+}
+
 #[derive(Clone, Debug)]
 pub struct SpillSet {
-    pub vregs: SmallVec<[VRegIndex; 2]>,
+    pub vregs: VRegIndexList,
     pub slot: SpillSlotIndex,
     pub reg_hint: PReg,
     pub class: RegClass,
