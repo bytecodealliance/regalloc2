@@ -264,22 +264,26 @@ pub struct BundleProperties {
     pub fixed: bool,
 }
 
-#[cfg(target_pointer_width = "64")]
-pub type VRegIndexList = SmallVec<[VRegIndex; 4]>;
-#[cfg(target_pointer_width = "32")]
-pub type VRegIndexList = SmallVec<[VRegIndex; 2]>;
-
-#[test]
-fn vreg_index_list_is_same_size_as_vec() {
-    assert_eq!(
-        std::mem::size_of::<VRegIndexList>(),
-        std::mem::size_of::<Vec<VRegIndex>>()
-    );
+/// Calculate the maximum `N` inline capacity for a `SmallVec<[T; N]>` we can
+/// have without bloating its size to be larger than a `Vec<T>`.
+const fn no_bloat_capacity<T>() -> usize {
+    // `Vec<T>` is three words: `(pointer, capacity, length)`.
+    //
+    // A `SmallVec<[T; N]>` replaces the first two members with the following:
+    //
+    //     union {
+    //         Inline([T; N]),
+    //         Heap(pointer, capacity),
+    //     }
+    //
+    // So if `size_of([T; N]) == size_of(pointer) + size_of(capacity)` then we
+    // get the maximum inline capacity without bloat.
+    std::mem::size_of::<usize>() * 2 / std::mem::size_of::<T>()
 }
 
 #[derive(Clone, Debug)]
 pub struct SpillSet {
-    pub vregs: VRegIndexList,
+    pub vregs: SmallVec<[VRegIndex; no_bloat_capacity::<VRegIndex>()]>,
     pub slot: SpillSlotIndex,
     pub reg_hint: PReg,
     pub class: RegClass,
