@@ -264,9 +264,26 @@ pub struct BundleProperties {
     pub fixed: bool,
 }
 
+/// Calculate the maximum `N` inline capacity for a `SmallVec<[T; N]>` we can
+/// have without bloating its size to be larger than a `Vec<T>`.
+const fn no_bloat_capacity<T>() -> usize {
+    // `Vec<T>` is three words: `(pointer, capacity, length)`.
+    //
+    // A `SmallVec<[T; N]>` replaces the first two members with the following:
+    //
+    //     union {
+    //         Inline([T; N]),
+    //         Heap(pointer, capacity),
+    //     }
+    //
+    // So if `size_of([T; N]) == size_of(pointer) + size_of(capacity)` then we
+    // get the maximum inline capacity without bloat.
+    std::mem::size_of::<usize>() * 2 / std::mem::size_of::<T>()
+}
+
 #[derive(Clone, Debug)]
 pub struct SpillSet {
-    pub vregs: SmallVec<[VRegIndex; 2]>,
+    pub vregs: SmallVec<[VRegIndex; no_bloat_capacity::<VRegIndex>()]>,
     pub slot: SpillSlotIndex,
     pub reg_hint: PReg,
     pub class: RegClass,
