@@ -242,6 +242,26 @@ impl Iterator for PRegSetIter {
     }
 }
 
+impl From<&MachineEnv> for PRegSet {
+    fn from(env: &MachineEnv) -> Self {
+        let mut res = Self::default();
+
+        for class in env.preferred_regs_by_class.iter() {
+            for preg in class {
+                res.add(*preg)
+            }
+        }
+
+        for class in env.non_preferred_regs_by_class.iter() {
+            for preg in class {
+                res.add(*preg)
+            }
+        }
+
+        res
+    }
+}
+
 /// A virtual register. Contains a virtual register number and a
 /// class.
 ///
