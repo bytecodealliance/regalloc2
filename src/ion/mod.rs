@@ -14,6 +14,7 @@
 //! its design.
 
 use crate::cfg::CFGInfo;
+use crate::ssa::validate_ssa;
 use crate::{Function, MachineEnv, Output, PReg, ProgPoint, RegAllocError, RegClass};
 use std::collections::HashMap;
 
@@ -120,8 +121,13 @@ pub fn run<F: Function>(
     func: &F,
     mach_env: &MachineEnv,
     enable_annotations: bool,
+    enable_ssa_checker: bool,
 ) -> Result<Output, RegAllocError> {
     let cfginfo = CFGInfo::new(func)?;
+
+    if enable_ssa_checker {
+        validate_ssa(func, &cfginfo)?;
+    }
 
     let mut env = Env::new(func, mach_env, cfginfo, enable_annotations);
     env.init()?;

@@ -34,6 +34,7 @@ pub mod indexset;
 pub(crate) mod ion;
 pub(crate) mod moves;
 pub(crate) mod postorder;
+pub mod ssa;
 
 #[macro_use]
 mod index;
@@ -1477,7 +1478,7 @@ pub fn run<F: Function>(
     env: &MachineEnv,
     options: &RegallocOptions,
 ) -> Result<Output, RegAllocError> {
-    ion::run(func, env, options.verbose_log)
+    ion::run(func, env, options.verbose_log, options.validate_ssa)
 }
 
 /// Options for allocation.
@@ -1485,4 +1486,7 @@ pub fn run<F: Function>(
 pub struct RegallocOptions {
     /// Add extra verbosity to debug logs.
     pub verbose_log: bool,
+
+    /// Run the SSA validator before allocating registers.
+    pub validate_ssa: bool,
 }

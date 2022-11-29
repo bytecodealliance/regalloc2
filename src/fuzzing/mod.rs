@@ -6,7 +6,6 @@
 //! Utilities for fuzzing.
 
 pub mod func;
-pub mod ssa;
 
 // Re-exports for fuzz targets.
 
