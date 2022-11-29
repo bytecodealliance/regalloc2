@@ -13,7 +13,7 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v3
     - name: Install rustfmt
       run: rustup component add rustfmt
     - name: Run rustfmt and check there's no difference
@@ -23,7 +23,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v3
     - name: Build
       run: cargo build
     - name: Run tests
@@ -33,7 +33,7 @@ jobs:
   features:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v3
     - name: Check with all features
       run: cargo check --all-features
 
@@ -43,7 +43,7 @@ jobs:
     name: Cargo deny
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v3
       with:
         submodules: true
     - run: |
@@ -57,7 +57,7 @@ jobs:
   fuzz:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v3
     - name: Install nightly
       run: rustup toolchain install nightly
     - name: Install cargo-fuzz
