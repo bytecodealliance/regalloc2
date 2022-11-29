@@ -8,7 +8,7 @@ use regalloc2::fuzzing::arbitrary::{Arbitrary, Result, Unstructured};
 use regalloc2::fuzzing::cfg::CFGInfo;
 use regalloc2::fuzzing::func::{Func, Options};
 use regalloc2::fuzzing::fuzz_target;
-use regalloc2::fuzzing::ssa::validate_ssa;
+use regalloc2::ssa::validate_ssa;
 
 #[derive(Debug)]
 struct TestCase {
