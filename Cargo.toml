@@ -1,6 +1,6 @@
 [package]
 name = "regalloc2"
-version = "0.4.3"
+version = "0.4.2"
 authors = [
     "Chris Fallin <chris@cfallin.org>",
     "Mozilla SpiderMonkey Developers",
