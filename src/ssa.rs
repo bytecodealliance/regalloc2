@@ -48,6 +48,13 @@ pub fn validate_ssa<F: Function>(f: &F, cfginfo: &CFGInfo) -> Result<(), RegAllo
         for iix in f.block_insns(block).iter() {
             let operands = f.inst_operands(iix);
             for operand in operands {
+
+                // Fixed registers uses will likely not be SSA, but they also
+                // won't receive assignments.
+                if operand.as_fixed_nonallocatable().is_some() {
+                    continue
+                }
+
                 match operand.kind() {
                     OperandKind::Use => {
                         let def_block = defined_in[operand.vreg().vreg()];
