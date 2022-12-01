@@ -17,6 +17,7 @@ pub fn validate_ssa<F: Function>(f: &F, cfginfo: &CFGInfo) -> Result<(), RegAllo
         let block = Block::new(block);
         let mut def = |vreg: VReg, inst| {
             if defined_in[vreg.vreg()].is_valid() {
+                trace!("Multiple def constraints for {:?}", vreg);
                 Err(RegAllocError::SSA(vreg, inst))
             } else {
                 defined_in[vreg.vreg()] = block;
@@ -48,6 +49,12 @@ pub fn validate_ssa<F: Function>(f: &F, cfginfo: &CFGInfo) -> Result<(), RegAllo
         for iix in f.block_insns(block).iter() {
             let operands = f.inst_operands(iix);
             for operand in operands {
+                // Fixed registers uses will likely not be SSA, but they also
+                // won't receive assignments.
+                if operand.as_fixed_nonallocatable().is_some() {
+                    continue;
+                }
+
                 match operand.kind() {
                     OperandKind::Use => {
                         let def_block = defined_in[operand.vreg().vreg()];
@@ -58,6 +65,7 @@ pub fn validate_ssa<F: Function>(f: &F, cfginfo: &CFGInfo) -> Result<(), RegAllo
                                 cfginfo.dominates(def_block, block)
                             };
                         if !okay {
+                            trace!("Invalid use {:?}", operand.vreg());
                             return Err(RegAllocError::SSA(operand.vreg(), iix));
                         }
                     }
@@ -69,10 +77,12 @@ pub fn validate_ssa<F: Function>(f: &F, cfginfo: &CFGInfo) -> Result<(), RegAllo
                         // Mod (modify) operands are not used in SSA,
                         // but can be used by non-SSA code (e.g. with
                         // the regalloc.rs compatibility shim).
+                        trace!("Unexpected mod {:?}", operand.vreg());
                         return Err(RegAllocError::SSA(operand.vreg(), iix));
                     }
                 }
             }
+
             // In SSA form, an instruction can't use a VReg that it
             // also defines. So only record this instruction's defs
             // after its uses have been checked.
@@ -94,6 +104,7 @@ pub fn validate_ssa<F: Function>(f: &F, cfginfo: &CFGInfo) -> Result<(), RegAllo
         for insn in insns.iter() {
             if insn == insns.last() {
                 if !(f.is_branch(insn) || f.is_ret(insn)) {
+                    trace!("block {:?} is not terminated by a branch or ret!", block);
                     return Err(RegAllocError::BB(block));
                 }
                 if f.is_branch(insn) {
@@ -101,12 +112,18 @@ pub fn validate_ssa<F: Function>(f: &F, cfginfo: &CFGInfo) -> Result<(), RegAllo
                         let blockparams_in = f.block_params(succ);
                         let blockparams_out = f.branch_blockparams(block, insn, i);
                         if blockparams_in.len() != blockparams_out.len() {
+                            trace!(
+                                "Mismatch on block params, found {} expected {}",
+                                blockparams_out.len(),
+                                blockparams_in.len()
+                            );
                             return Err(RegAllocError::Branch(insn));
                         }
                     }
                 }
             } else {
                 if f.is_branch(insn) || f.is_ret(insn) {
+                    trace!("Block terminator found in the middle of a block");
                     return Err(RegAllocError::BB(block));
                 }
             }
@@ -116,6 +133,7 @@ pub fn validate_ssa<F: Function>(f: &F, cfginfo: &CFGInfo) -> Result<(), RegAllo
     // Check that the entry block has no block args: otherwise it is
     // undefined what their value would be.
     if f.block_params(f.entry_block()).len() > 0 {
+        trace!("Entry block contains block args");
         return Err(RegAllocError::BB(f.entry_block()));
     }
 
