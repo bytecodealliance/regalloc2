@@ -13,8 +13,7 @@
 //! Bundle merging.
 
 use super::{
-    Env, LiveBundleIndex, LiveRangeIndex, LiveRangeKey, SpillSet, SpillSetIndex, SpillSlotIndex,
-    VRegIndex,
+    Env, LiveBundleIndex, LiveRangeIndex, SpillSet, SpillSetIndex, SpillSlotIndex, VRegIndex,
 };
 use crate::{
     ion::data_structures::BlockparamOut, Function, Inst, OperandConstraint, OperandKind, PReg,
@@ -245,19 +244,6 @@ impl<'a, F: Function> Env<'a, F> {
                 continue;
             }
 
-            // If this is a pinned vreg, go ahead and add it to the
-            // commitment map, and avoid creating a bundle entirely.
-            if let Some(preg) = self.func.is_pinned_vreg(self.vreg(vreg)) {
-                for entry in &self.vregs[vreg.index()].ranges {
-                    let key = LiveRangeKey::from_range(&entry.range);
-                    self.pregs[preg.index()]
-                        .allocations
-                        .btree
-                        .insert(key, LiveRangeIndex::invalid());
-                }
-                continue;
-            }
-
             let bundle = self.create_bundle();
             self.bundles[bundle.index()].ranges = self.vregs[vreg.index()].ranges.clone();
             trace!("vreg v{} gets bundle{}", vreg.index(), bundle.index());
@@ -325,11 +311,6 @@ impl<'a, F: Function> Env<'a, F> {
                 if let OperandConstraint::Reuse(reuse_idx) = op.constraint() {
                     let src_vreg = op.vreg();
                     let dst_vreg = self.func.inst_operands(inst)[reuse_idx].vreg();
-                    if self.func.is_pinned_vreg(src_vreg).is_some()
-                        || self.func.is_pinned_vreg(dst_vreg).is_some()
-                    {
-                        continue;
-                    }
 
                     trace!(
                         "trying to merge reused-input def: src {} to dst {}",
@@ -381,26 +362,6 @@ impl<'a, F: Function> Env<'a, F> {
                 src,
                 dst
             );
-
-            let dst_vreg = self.vreg(self.ranges[dst.index()].vreg);
-            let src_vreg = self.vreg(self.ranges[src.index()].vreg);
-            if self.func.is_pinned_vreg(src_vreg).is_some()
-                && self.func.is_pinned_vreg(dst_vreg).is_some()
-            {
-                continue;
-            }
-            if let Some(preg) = self.func.is_pinned_vreg(src_vreg) {
-                let dest_bundle = self.ranges[dst.index()].bundle;
-                let spillset = self.bundles[dest_bundle.index()].spillset;
-                self.spillsets[spillset.index()].reg_hint = preg;
-                continue;
-            }
-            if let Some(preg) = self.func.is_pinned_vreg(dst_vreg) {
-                let src_bundle = self.ranges[src.index()].bundle;
-                let spillset = self.bundles[src_bundle.index()].spillset;
-                self.spillsets[spillset.index()].reg_hint = preg;
-                continue;
-            }
 
             let src_bundle = self.ranges[src.index()].bundle;
             debug_assert!(src_bundle.is_valid());
