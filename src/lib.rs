@@ -426,7 +426,7 @@ impl std::fmt::Display for OperandConstraint {
     }
 }
 
-/// The "kind" of the operand: whether it reads a vreg (Use) orwrites
+/// The "kind" of the operand: whether it reads a vreg (Use) or writes
 /// a vreg (Def).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "enable-serde", derive(Serialize, Deserialize))]
