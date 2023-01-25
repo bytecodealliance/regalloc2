@@ -366,25 +366,8 @@ impl CheckerState {
         }
     }
 
-    fn initial_with_pinned_vregs<F: Function>(f: &F) -> CheckerState {
-        // Scan the function, looking for all vregs that are pinned
-        // vregs, gathering them with their PRegs.
-        let mut pinned_vregs: FxHashMap<VReg, PReg> = FxHashMap::default();
-        visit_all_vregs(f, |vreg: VReg| {
-            if let Some(preg) = f.is_pinned_vreg(vreg) {
-                pinned_vregs.insert(vreg, preg);
-            }
-        });
-
-        let mut allocs = FxHashMap::default();
-        for (vreg, preg) in pinned_vregs {
-            allocs.insert(
-                Allocation::reg(preg),
-                CheckerValue::VRegs(std::iter::once(vreg).collect()),
-            );
-        }
-
-        CheckerState::Allocations(allocs)
+    fn initial() -> Self {
+        CheckerState::Allocations(FxHashMap::default())
     }
 }
 
@@ -857,7 +840,7 @@ impl<'a, F: Function> Checker<'a, F> {
             reftyped_vregs.insert(vreg);
         }
 
-        bb_in.insert(f.entry_block(), CheckerState::initial_with_pinned_vregs(f));
+        bb_in.insert(f.entry_block(), CheckerState::default());
 
         let mut stack_pregs = PRegSet::empty();
         for &preg in &machine_env.fixed_stack_slots {
@@ -932,21 +915,11 @@ impl<'a, F: Function> Checker<'a, F> {
         // move/edit framework, so we don't get allocs for these moves
         // in the post-regalloc output, and the embedder is not
         // supposed to emit the moves. But we *do* want to check the
-        // semantic implications, namely definition of new vregs and,
-        // for moves to/from pinned vregs, the implied register
-        // constraints. So we emit `ProgramMove` ops that do just
-        // this.
+        // semantic implications, namely definition of new vregs. So
+        // we emit `ProgramMove` ops that do just this.
         if let Some((src, dst)) = self.f.is_move(inst) {
-            let src_preg = self.f.is_pinned_vreg(src.vreg());
-            let src_op = match src_preg {
-                Some(preg) => Operand::reg_fixed_use(src.vreg(), preg),
-                None => Operand::any_use(src.vreg()),
-            };
-            let dst_preg = self.f.is_pinned_vreg(dst.vreg());
-            let dst_op = match dst_preg {
-                Some(preg) => Operand::reg_fixed_def(dst.vreg(), preg),
-                None => Operand::any_def(dst.vreg()),
-            };
+            let src_op = Operand::any_use(src.vreg());
+            let dst_op = Operand::any_def(dst.vreg());
             let checkinst = CheckerInst::ProgramMove {
                 inst,
                 src: src_op,

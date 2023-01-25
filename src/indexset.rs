@@ -140,6 +140,13 @@ impl AdaptiveMap {
             &Self::Large(ref map) => AdaptiveMapIter::Large(map.iter()),
         }
     }
+
+    fn is_empty(&self) -> bool {
+        match self {
+            AdaptiveMap::Small { values, .. } => values.iter().all(|&value| value == 0),
+            AdaptiveMap::Large(m) => m.values().all(|&value| value == 0),
+        }
+    }
 }
 
 enum AdaptiveMapIter<'a> {
@@ -267,6 +274,11 @@ impl IndexSet {
             &AdaptiveMap::Small { .. } => true,
             _ => false,
         }
+    }
+
+    /// Is the set empty?
+    pub(crate) fn is_empty(&self) -> bool {
+        self.elems.is_empty()
     }
 }
 
