@@ -373,7 +373,7 @@ impl<'a, F: Function> Env<'a, F> {
                             let was_live = live.get(op.vreg().vreg());
                             trace!("op {:?} was_live = {}", op, was_live);
                             match op.kind() {
-                                OperandKind::Use | OperandKind::Mod => {
+                                OperandKind::Use => {
                                     live.set(op.vreg().vreg(), true);
                                 }
                                 OperandKind::Def => {
@@ -776,7 +776,6 @@ impl<'a, F: Function> Env<'a, F> {
                             .cloned()
                             .unwrap_or(self.func.inst_operands(inst)[i]);
                         let pos = match (operand.kind(), operand.pos()) {
-                            (OperandKind::Mod, _) => ProgPoint::before(inst),
                             (OperandKind::Def, OperandPos::Early) => ProgPoint::before(inst),
                             (OperandKind::Def, OperandPos::Late) => ProgPoint::after(inst),
                             (OperandKind::Use, OperandPos::Late) => ProgPoint::after(inst),
@@ -817,7 +816,7 @@ impl<'a, F: Function> Env<'a, F> {
                         }
 
                         match operand.kind() {
-                            OperandKind::Def | OperandKind::Mod => {
+                            OperandKind::Def => {
                                 trace!("Def of {} at {:?}", operand.vreg(), pos);
 
                                 // Get or create the LiveRange.
@@ -825,11 +824,7 @@ impl<'a, F: Function> Env<'a, F> {
                                 trace!(" -> has existing LR {:?}", lr);
                                 // If there was no liverange (dead def), create a trivial one.
                                 if !live.get(operand.vreg().vreg()) {
-                                    let from = match operand.kind() {
-                                        OperandKind::Def => pos,
-                                        OperandKind::Mod => self.cfginfo.block_entry[block.index()],
-                                        _ => unreachable!(),
-                                    };
+                                    let from = pos;
                                     // We want to we want to span
                                     // until Before of the next
                                     // inst. This ensures that early

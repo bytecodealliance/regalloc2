@@ -906,7 +906,7 @@ impl<'a, F: Function> Env<'a, F> {
                 let inst = Inst::new(inst);
                 for (i, op) in this.func.inst_operands(inst).iter().enumerate() {
                     match op.kind() {
-                        OperandKind::Def | OperandKind::Mod => {
+                        OperandKind::Def => {
                             let alloc = this.get_alloc(inst, i);
                             redundant_moves.clear_alloc(alloc);
                         }
