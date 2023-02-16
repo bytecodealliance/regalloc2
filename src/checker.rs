@@ -987,8 +987,19 @@ impl<'a, F: Function> Checker<'a, F> {
         let mut queue = Vec::new();
         let mut queue_set = FxHashSet::default();
 
-        queue.push(self.f.entry_block());
-        queue_set.insert(self.f.entry_block());
+        // Put every block in the queue to start with, to ensure
+        // everything is visited even if the initial state remains
+        // `Top` after preds update it.
+        //
+        // We add blocks in reverse order so that when we process
+        // back-to-front below, we do our initial pass in input block
+        // order, which is (usually) RPO order or at least a
+        // reasonable visit order.
+        for block in (0..self.f.num_blocks()).rev() {
+            let block = Block::new(block);
+            queue.push(block);
+            queue_set.insert(block);
+        }
 
         while !queue.is_empty() {
             let block = queue.pop().unwrap();
