@@ -1001,8 +1001,7 @@ impl<'a, F: Function> Checker<'a, F> {
             queue_set.insert(block);
         }
 
-        while !queue.is_empty() {
-            let block = queue.pop().unwrap();
+        while let Some(block) = queue.pop() {
             queue_set.remove(&block);
             let mut state = self.bb_in.get(&block).cloned().unwrap();
             trace!("analyze: block {} has state {:?}", block.index(), state);
@@ -1043,9 +1042,8 @@ impl<'a, F: Function> Checker<'a, F> {
                         new_state
                     );
                     self.bb_in.insert(succ, new_state);
-                    if !queue_set.contains(&succ) {
+                    if queue_set.insert(succ) {
                         queue.push(succ);
-                        queue_set.insert(succ);
                     }
                 }
             }
