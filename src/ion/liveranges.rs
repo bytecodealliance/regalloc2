@@ -959,12 +959,9 @@ impl<'a, F: Function> Env<'a, F> {
             }
         }
 
-        for range in 0..self.ranges.len() {
-            self.ranges[range].uses.reverse();
-            debug_assert!(self.ranges[range]
-                .uses
-                .windows(2)
-                .all(|win| win[0].pos <= win[1].pos));
+        for range in &mut self.ranges {
+            range.uses.reverse();
+            debug_assert!(range.uses.windows(2).all(|win| win[0].pos <= win[1].pos));
         }
 
         // Insert safepoint virtual stack uses, if needed.
