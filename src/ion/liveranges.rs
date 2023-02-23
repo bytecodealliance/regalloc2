@@ -1029,7 +1029,7 @@ impl<'a, F: Function> Env<'a, F> {
 
     pub fn fixup_multi_fixed_vregs(&mut self) {
         // Do a fixed-reg cleanup pass: if there are any LiveRanges with
-        // multiple uses (or defs) at the same ProgPoint and there is
+        // multiple uses at the same ProgPoint and there is
         // more than one FixedReg constraint at that ProgPoint, we
         // need to record all but one of them in a special fixup list
         // and handle them later; otherwise, bundle-splitting to
