@@ -334,8 +334,7 @@ impl<'a, F: Function> Env<'a, F> {
             workqueue_set.insert(block);
         }
 
-        while !workqueue.is_empty() {
-            let block = workqueue.pop_front().unwrap();
+        while let Some(block) = workqueue.pop_front() {
             workqueue_set.remove(&block);
             let insns = self.func.block_insns(block);
 
