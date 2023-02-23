@@ -521,140 +521,141 @@ impl<'a, F: Function> Env<'a, F> {
 
                 // If this is a move, handle specially.
                 if let Some((src, dst)) = self.func.is_move(inst) {
-                    // We can completely skip the move if it is
-                    // trivial (vreg to same vreg).
-                    if src.vreg() != dst.vreg() {
-                        trace!(" -> move inst{}: src {} -> dst {}", inst.index(), src, dst);
+                    assert!(
+                        src.vreg() != dst.vreg(),
+                        "Invalid move: overwriting an SSA value"
+                    );
 
-                        debug_assert_eq!(src.class(), dst.class());
-                        debug_assert_eq!(src.kind(), OperandKind::Use);
-                        debug_assert_eq!(src.pos(), OperandPos::Early);
-                        debug_assert_eq!(dst.kind(), OperandKind::Def);
-                        debug_assert_eq!(dst.pos(), OperandPos::Late);
+                    trace!(" -> move inst{}: src {} -> dst {}", inst.index(), src, dst);
 
-                        // Redefine src and dst operands to have
-                        // positions of After and Before respectively
-                        // (see note below), and to have Any
-                        // constraints if they were originally Reg.
-                        let src_constraint = match src.constraint() {
-                            OperandConstraint::Reg => OperandConstraint::Any,
-                            x => x,
-                        };
-                        let dst_constraint = match dst.constraint() {
-                            OperandConstraint::Reg => OperandConstraint::Any,
-                            x => x,
-                        };
-                        let src = Operand::new(
-                            src.vreg(),
-                            src_constraint,
-                            OperandKind::Use,
-                            OperandPos::Late,
+                    debug_assert_eq!(src.class(), dst.class());
+                    debug_assert_eq!(src.kind(), OperandKind::Use);
+                    debug_assert_eq!(src.pos(), OperandPos::Early);
+                    debug_assert_eq!(dst.kind(), OperandKind::Def);
+                    debug_assert_eq!(dst.pos(), OperandPos::Late);
+
+                    // Redefine src and dst operands to have
+                    // positions of After and Before respectively
+                    // (see note below), and to have Any
+                    // constraints if they were originally Reg.
+                    let src_constraint = match src.constraint() {
+                        OperandConstraint::Reg => OperandConstraint::Any,
+                        x => x,
+                    };
+                    let dst_constraint = match dst.constraint() {
+                        OperandConstraint::Reg => OperandConstraint::Any,
+                        x => x,
+                    };
+                    let src = Operand::new(
+                        src.vreg(),
+                        src_constraint,
+                        OperandKind::Use,
+                        OperandPos::Late,
+                    );
+                    let dst = Operand::new(
+                        dst.vreg(),
+                        dst_constraint,
+                        OperandKind::Def,
+                        OperandPos::Early,
+                    );
+
+                    if self.annotations_enabled {
+                        self.annotate(
+                            ProgPoint::after(inst),
+                            format!(
+                                " prog-move v{} ({:?}) -> v{} ({:?})",
+                                src.vreg().vreg(),
+                                src_constraint,
+                                dst.vreg().vreg(),
+                                dst_constraint,
+                            ),
                         );
-                        let dst = Operand::new(
-                            dst.vreg(),
-                            dst_constraint,
-                            OperandKind::Def,
-                            OperandPos::Early,
+                    }
+
+                    // N.B.: in order to integrate with the move
+                    // resolution that joins LRs in general, we
+                    // conceptually treat the move as happening
+                    // between the move inst's After and the next
+                    // inst's Before. Thus the src LR goes up to
+                    // (exclusive) next-inst-pre, and the dst LR
+                    // starts at next-inst-pre. We have to take
+                    // care in our move insertion to handle this
+                    // like other inter-inst moves, i.e., at
+                    // `Regular` priority, so it properly happens
+                    // in parallel with other inter-LR moves.
+                    //
+                    // Why the progpoint between move and next
+                    // inst, and not the progpoint between prev
+                    // inst and move? Because a move can be the
+                    // first inst in a block, but cannot be the
+                    // last; so the following progpoint is always
+                    // within the same block, while the previous
+                    // one may be an inter-block point (and the
+                    // After of the prev inst in a different
+                    // block).
+
+                    // Handle the def w.r.t. liveranges: trim the
+                    // start of the range and mark it dead at this
+                    // point in our backward scan.
+                    let pos = ProgPoint::before(inst.next());
+                    let mut dst_lr = vreg_ranges[dst.vreg().vreg()];
+                    if !live.get(dst.vreg().vreg()) {
+                        let from = pos;
+                        let to = pos.next();
+                        dst_lr = self.add_liverange_to_vreg(
+                            VRegIndex::new(dst.vreg().vreg()),
+                            CodeRange { from, to },
                         );
+                        trace!(" -> invalid LR for def; created {:?}", dst_lr);
+                    }
+                    trace!(" -> has existing LR {:?}", dst_lr);
+                    // Trim the LR to start here.
+                    if self.ranges[dst_lr.index()].range.from
+                        == self.cfginfo.block_entry[block.index()]
+                    {
+                        trace!(" -> started at block start; trimming to {:?}", pos);
+                        self.ranges[dst_lr.index()].range.from = pos;
+                    }
+                    self.ranges[dst_lr.index()].set_flag(LiveRangeFlag::StartsAtDef);
+                    live.set(dst.vreg().vreg(), false);
+                    vreg_ranges[dst.vreg().vreg()] = LiveRangeIndex::invalid();
 
-                        if self.annotations_enabled {
-                            self.annotate(
-                                ProgPoint::after(inst),
-                                format!(
-                                    " prog-move v{} ({:?}) -> v{} ({:?})",
-                                    src.vreg().vreg(),
-                                    src_constraint,
-                                    dst.vreg().vreg(),
-                                    dst_constraint,
-                                ),
-                            );
-                        }
-
-                        // N.B.: in order to integrate with the move
-                        // resolution that joins LRs in general, we
-                        // conceptually treat the move as happening
-                        // between the move inst's After and the next
-                        // inst's Before. Thus the src LR goes up to
-                        // (exclusive) next-inst-pre, and the dst LR
-                        // starts at next-inst-pre. We have to take
-                        // care in our move insertion to handle this
-                        // like other inter-inst moves, i.e., at
-                        // `Regular` priority, so it properly happens
-                        // in parallel with other inter-LR moves.
-                        //
-                        // Why the progpoint between move and next
-                        // inst, and not the progpoint between prev
-                        // inst and move? Because a move can be the
-                        // first inst in a block, but cannot be the
-                        // last; so the following progpoint is always
-                        // within the same block, while the previous
-                        // one may be an inter-block point (and the
-                        // After of the prev inst in a different
-                        // block).
-
-                        // Handle the def w.r.t. liveranges: trim the
-                        // start of the range and mark it dead at this
-                        // point in our backward scan.
-                        let pos = ProgPoint::before(inst.next());
-                        let mut dst_lr = vreg_ranges[dst.vreg().vreg()];
-                        if !live.get(dst.vreg().vreg()) {
-                            let from = pos;
-                            let to = pos.next();
-                            dst_lr = self.add_liverange_to_vreg(
-                                VRegIndex::new(dst.vreg().vreg()),
-                                CodeRange { from, to },
-                            );
-                            trace!(" -> invalid LR for def; created {:?}", dst_lr);
-                        }
-                        trace!(" -> has existing LR {:?}", dst_lr);
-                        // Trim the LR to start here.
-                        if self.ranges[dst_lr.index()].range.from
-                            == self.cfginfo.block_entry[block.index()]
-                        {
-                            trace!(" -> started at block start; trimming to {:?}", pos);
-                            self.ranges[dst_lr.index()].range.from = pos;
-                        }
-                        self.ranges[dst_lr.index()].set_flag(LiveRangeFlag::StartsAtDef);
-                        live.set(dst.vreg().vreg(), false);
-                        vreg_ranges[dst.vreg().vreg()] = LiveRangeIndex::invalid();
-
-                        // Handle the use w.r.t. liveranges: make it live
-                        // and create an initial LR back to the start of
-                        // the block.
-                        let pos = ProgPoint::after(inst);
-                        let src_lr = if !live.get(src.vreg().vreg()) {
-                            let range = CodeRange {
-                                from: self.cfginfo.block_entry[block.index()],
-                                to: pos.next(),
-                            };
-                            let src_lr = self
-                                .add_liverange_to_vreg(VRegIndex::new(src.vreg().vreg()), range);
-                            vreg_ranges[src.vreg().vreg()] = src_lr;
-                            src_lr
-                        } else {
-                            vreg_ranges[src.vreg().vreg()]
+                    // Handle the use w.r.t. liveranges: make it live
+                    // and create an initial LR back to the start of
+                    // the block.
+                    let pos = ProgPoint::after(inst);
+                    let src_lr = if !live.get(src.vreg().vreg()) {
+                        let range = CodeRange {
+                            from: self.cfginfo.block_entry[block.index()],
+                            to: pos.next(),
                         };
+                        let src_lr =
+                            self.add_liverange_to_vreg(VRegIndex::new(src.vreg().vreg()), range);
+                        vreg_ranges[src.vreg().vreg()] = src_lr;
+                        src_lr
+                    } else {
+                        vreg_ranges[src.vreg().vreg()]
+                    };
 
-                        trace!(" -> src LR {:?}", src_lr);
+                    trace!(" -> src LR {:?}", src_lr);
 
-                        // Add to live-set.
-                        let src_is_dead_after_move = !live.get(src.vreg().vreg());
-                        live.set(src.vreg().vreg(), true);
+                    // Add to live-set.
+                    let src_is_dead_after_move = !live.get(src.vreg().vreg());
+                    live.set(src.vreg().vreg(), true);
 
-                        // Add to program-moves lists.
-                        self.prog_move_srcs.push((
-                            (VRegIndex::new(src.vreg().vreg()), inst),
-                            Allocation::none(),
-                        ));
-                        self.prog_move_dsts.push((
-                            (VRegIndex::new(dst.vreg().vreg()), inst.next()),
-                            Allocation::none(),
-                        ));
-                        self.stats.prog_moves += 1;
-                        if src_is_dead_after_move {
-                            self.stats.prog_moves_dead_src += 1;
-                            self.prog_move_merges.push((src_lr, dst_lr));
-                        }
+                    // Add to program-moves lists.
+                    self.prog_move_srcs.push((
+                        (VRegIndex::new(src.vreg().vreg()), inst),
+                        Allocation::none(),
+                    ));
+                    self.prog_move_dsts.push((
+                        (VRegIndex::new(dst.vreg().vreg()), inst.next()),
+                        Allocation::none(),
+                    ));
+                    self.stats.prog_moves += 1;
+                    if src_is_dead_after_move {
+                        self.stats.prog_moves_dead_src += 1;
+                        self.prog_move_merges.push((src_lr, dst_lr));
                     }
 
                     continue;
