@@ -64,6 +64,23 @@ impl CodeRange {
             to: pos.next(),
         }
     }
+    /// Returns the range covering just one instruction.
+    #[inline(always)]
+    pub fn single_inst(inst: Inst) -> CodeRange {
+        CodeRange {
+            from: ProgPoint::before(inst),
+            to: ProgPoint::before(inst.next()),
+        }
+    }
+
+    /// Join two [CodeRange] values together, producing a [CodeRange] that includes both.
+    #[inline(always)]
+    pub fn join(&self, other: CodeRange) -> Self {
+        CodeRange {
+            from: self.from.min(other.from),
+            to: self.to.max(other.to),
+        }
+    }
 }
 
 impl core::cmp::PartialOrd for CodeRange {
@@ -118,10 +135,14 @@ pub struct LiveRange {
     pub merged_into: LiveRangeIndex,
 }
 
+/// Flags for LiveRanges. The values of these enums are bit patterns, not indices. There are
+/// currently only three bits free in `uses_spill_weight_and_flags` in `LiveRange`, so there is at
+/// most one additional flag that can be added here, with the value `4`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u32)]
 pub enum LiveRangeFlag {
     StartsAtDef = 1,
+    Overlap = 2,
 }
 
 impl LiveRange {
@@ -153,6 +174,9 @@ impl LiveRange {
     }
     #[inline(always)]
     pub fn uses_spill_weight(&self) -> SpillWeight {
+        // NOTE: the spill weight is technically stored in 29 bits, but we ignore the sign bit as
+        // we will always be dealing with positive values. Thus we mask out the top 3 bits to
+        // ensure that the sign bit is clear, then shift left by only two.
         let bits = (self.uses_spill_weight_and_flags & 0x1fff_ffff) << 2;
         SpillWeight::from_f32(f32::from_bits(bits))
     }
@@ -170,6 +194,7 @@ pub struct Use {
     pub pos: ProgPoint,
     pub slot: u8,
     pub weight: u16,
+    tombstoned: bool,
 }
 
 impl Use {
@@ -181,7 +206,18 @@ impl Use {
             slot,
             // Weight is updated on insertion into LR.
             weight: 0,
+            tombstoned: false,
         }
+    }
+
+    /// Mark this use as tombstoned.
+    pub fn tombstone(&mut self) {
+        self.tombstoned = true;
+    }
+
+    /// Has this use been tombstoned?
+    pub fn is_tombstoned(&self) -> bool {
+        self.tombstoned
     }
 }
 
@@ -285,7 +321,6 @@ const fn no_bloat_capacity<T>() -> usize {
 
 #[derive(Clone, Debug)]
 pub struct SpillSet {
-    pub vregs: SmallVec<[VRegIndex; no_bloat_capacity::<VRegIndex>()]>,
     pub slot: SpillSlotIndex,
     pub reg_hint: PReg,
     pub class: RegClass,
@@ -293,6 +328,12 @@ pub struct SpillSet {
     pub required: bool,
     pub size: u8,
     pub splits: u8,
+
+    /// The aggregate [`CodeRange`] of all involved [`LiveRange`]s. The effect of this abstraction
+    /// is that we attempt to allocate one spill slot for the extent of a bundle. For fragmented
+    /// bundles with lots of open space this abstraction is pessimistic, but when bundles are small
+    /// or dense this yields similar results to tracking individual live ranges.
+    pub range: CodeRange,
 }
 
 pub(crate) const MAX_SPLITS_PER_SPILLSET: u8 = 10;
@@ -467,8 +508,21 @@ impl<'a, F: Function> Env<'a, F> {
 }
 
 #[derive(Clone, Debug)]
+pub struct SpillSetRanges {
+    pub btree: BTreeMap<LiveRangeKey, SpillSetIndex>,
+}
+
+impl SpillSetRanges {
+    pub fn new() -> Self {
+        Self {
+            btree: BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct SpillSlotData {
-    pub ranges: LiveRangeSet,
+    pub ranges: SpillSetRanges,
     pub slots: u32,
     pub alloc: Allocation,
 }

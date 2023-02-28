@@ -96,6 +96,7 @@ impl<'a, F: Function> Env<'a, F> {
         self.compute_liveness()?;
         self.build_liveranges();
         self.fixup_multi_fixed_vregs();
+        self.insert_safepoints();
         self.merge_vreg_bundles();
         self.queue_bundles();
         if trace_enabled!() {

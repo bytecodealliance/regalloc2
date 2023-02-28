@@ -17,7 +17,8 @@ use super::{
     VRegIndex, SLOT_NONE,
 };
 use crate::ion::data_structures::{
-    BlockparamIn, BlockparamOut, CodeRange, FixedRegFixupLevel, LiveRangeKey, PosWithPrio,
+    BlockparamIn, BlockparamOut, CodeRange, FixedRegFixupLevel, LiveRangeKey, LiveRangeListEntry,
+    PosWithPrio,
 };
 use crate::ion::reg_traversal::RegTraversalIter;
 use crate::moves::{MoveAndScratchResolver, ParallelMoves};
@@ -173,6 +174,68 @@ impl<'a, F: Function> Env<'a, F> {
             }
         }
 
+        /// Buffered information about the previous liverange that was processed.
+        struct PrevBuffer {
+            prev: Option<LiveRangeListEntry>,
+            prev_ins_idx: usize,
+            next: Option<LiveRangeListEntry>,
+            next_ins_idx: usize,
+        }
+
+        impl PrevBuffer {
+            fn new(prev_ins_idx: usize) -> Self {
+                Self {
+                    prev: None,
+                    prev_ins_idx,
+                    next: None,
+                    next_ins_idx: prev_ins_idx,
+                }
+            }
+
+            #[inline(always)]
+            fn is_valid(&self) -> Option<LiveRangeListEntry> {
+                self.prev
+            }
+
+            #[inline(always)]
+            fn blockparam_ins_idx(&self) -> usize {
+                self.prev_ins_idx
+            }
+
+            /// As overlapping liveranges might start at the same program point, we buffer the
+            /// previous liverange used when determining where to take the last value from for
+            /// intra-block moves. The liveranges we process are buffered until we encounter one
+            /// that starts at a later program point, indicating that it's now safe to advance the
+            /// previous LR buffer. We accumulate the longest-lived liverange in the buffer as a
+            /// heuristic for finding the most stable source of a value.
+            ///
+            /// We also buffer the index into the `Env::blockparam_ins` vector, as we may see
+            /// multiple uses of a blockparam within a single instruction, and as such may need to
+            /// generate multiple blockparam move destinations by re-traversing that section of the
+            /// vector.
+            #[inline(always)]
+            fn advance(&mut self, current: LiveRangeListEntry) {
+                // Advance the `prev` pointer to the `next` pointer, as long as the `next` pointer
+                // does not start at the same time as the current LR we're processing.
+                if self
+                    .next
+                    .map_or(false, |entry| entry.range.from < current.range.from)
+                {
+                    self.prev = self.next;
+                    self.prev_ins_idx = self.next_ins_idx;
+                }
+
+                // Advance the `next` pointer to the currently processed LR, as long as it ends
+                // later than the current `next`.
+                if self
+                    .next
+                    .map_or(true, |entry| entry.range.to < current.range.to)
+                {
+                    self.next = Some(current);
+                }
+            }
+        }
+
         let debug_labels = self.func.debug_value_labels();
 
         let mut half_moves: Vec<HalfMove> = Vec::with_capacity(6 * self.func.num_insts());
@@ -190,7 +253,7 @@ impl<'a, F: Function> Env<'a, F> {
             // half-moves.  We also scan over `blockparam_ins` and
             // `blockparam_outs`, which are sorted by (block, vreg),
             // to fill in allocations.
-            let mut prev = LiveRangeIndex::invalid();
+            let mut prev = PrevBuffer::new(blockparam_in_idx);
             for range_idx in 0..self.vregs[vreg.index()].ranges.len() {
                 let entry = self.vregs[vreg.index()].ranges[range_idx];
                 let alloc = self.get_alloc_for_range(entry.index);
@@ -227,6 +290,8 @@ impl<'a, F: Function> Env<'a, F> {
                     );
                 }
 
+                prev.advance(entry);
+
                 // Does this range follow immediately after a prior
                 // range in the same block? If so, insert a move (if
                 // the allocs differ). We do this directly rather than
@@ -247,20 +312,17 @@ impl<'a, F: Function> Env<'a, F> {
                 // can't insert a move that logically happens just
                 // before After (i.e. in the middle of a single
                 // instruction).
-                if prev.is_valid() {
-                    let prev_alloc = self.get_alloc_for_range(prev);
-                    let prev_range = self.ranges[prev.index()].range;
-                    let first_is_def =
-                        self.ranges[entry.index.index()].has_flag(LiveRangeFlag::StartsAtDef);
+                if let Some(prev) = prev.is_valid() {
+                    let prev_alloc = self.get_alloc_for_range(prev.index);
                     debug_assert!(prev_alloc != Allocation::none());
 
-                    if prev_range.to == range.from
-                        && !self.is_start_of_block(range.from)
-                        && !first_is_def
+                    if prev.range.to >= range.from
+                        && (prev.range.to > range.from || !self.is_start_of_block(range.from))
+                        && !self.ranges[entry.index.index()].has_flag(LiveRangeFlag::StartsAtDef)
                     {
                         trace!(
                             "prev LR {} abuts LR {} in same block; moving {} -> {} for v{}",
-                            prev.index(),
+                            prev.index.index(),
                             entry.index.index(),
                             prev_alloc,
                             alloc,
@@ -294,9 +356,6 @@ impl<'a, F: Function> Env<'a, F> {
                             succ.index(),
                             self.cfginfo.block_entry[succ.index()]
                         );
-                        if range.contains_point(self.cfginfo.block_entry[succ.index()]) {
-                            continue;
-                        }
                         trace!(" -> out of this range, requires half-move if live");
                         if self.is_live_in(succ, vreg) {
                             trace!("  -> live at input to succ, adding halfmove");
@@ -383,14 +442,15 @@ impl<'a, F: Function> Env<'a, F> {
                         "scanning blockparam_ins at vreg {} block {}: blockparam_in_idx = {}",
                         vreg.index(),
                         block.index(),
-                        blockparam_in_idx
+                        prev.prev_ins_idx,
                     );
-                    while blockparam_in_idx < self.blockparam_ins.len() {
+                    let mut idx = prev.blockparam_ins_idx();
+                    while idx < self.blockparam_ins.len() {
                         let BlockparamIn {
                             from_block,
                             to_block,
                             to_vreg,
-                        } = self.blockparam_ins[blockparam_in_idx];
+                        } = self.blockparam_ins[idx];
                         if (to_vreg, to_block) > (vreg, block) {
                             break;
                         }
@@ -425,8 +485,10 @@ impl<'a, F: Function> Env<'a, F> {
                                 );
                             }
                         }
-                        blockparam_in_idx += 1;
+                        idx += 1;
                     }
+
+                    prev.next_ins_idx = idx;
 
                     if !self.is_live_in(block, vreg) {
                         block = block.next();
@@ -522,16 +584,29 @@ impl<'a, F: Function> Env<'a, F> {
                         self.debug_locations.push((label, from, to, alloc));
                     }
                 }
-
-                prev = entry.index;
             }
+
+            blockparam_in_idx = prev.blockparam_ins_idx();
         }
 
         // Sort the half-moves list. For each (from, to,
         // from-vreg) tuple, find the from-alloc and all the
         // to-allocs, and insert moves on the block edge.
         half_moves.sort_unstable_by_key(|h| h.key);
-        trace!("halfmoves: {:?}", half_moves);
+
+        if cfg!(feature = "trace-log") {
+            trace!("halfmoves:");
+            for half_move in &half_moves {
+                trace!(
+                    "from: {:?}, to: {:?}, vreg: {:?}, kind: {:?}",
+                    half_move.from_block(),
+                    half_move.to_block(),
+                    half_move.to_vreg(),
+                    half_move.kind()
+                );
+            }
+        }
+
         self.stats.halfmoves_count = half_moves.len();
 
         let mut i = 0;

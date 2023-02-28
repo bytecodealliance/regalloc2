@@ -13,10 +13,10 @@
 //! Spillslot allocation.
 
 use super::{
-    AllocRegResult, Env, LiveRangeKey, LiveRangeSet, PReg, PRegIndex, RegTraversalIter,
-    SpillSetIndex, SpillSlotData, SpillSlotIndex, SpillSlotList,
+    AllocRegResult, Env, LiveRangeKey, PReg, PRegIndex, RegTraversalIter, SpillSetIndex,
+    SpillSlotData, SpillSlotIndex, SpillSlotList,
 };
-use crate::{Allocation, Function, SpillSlot};
+use crate::{ion::data_structures::SpillSetRanges, Allocation, Function, SpillSlot};
 use smallvec::smallvec;
 
 impl<'a, F: Function> Env<'a, F> {
@@ -69,18 +69,12 @@ impl<'a, F: Function> Env<'a, F> {
         spillslot: SpillSlotIndex,
         spillset: SpillSetIndex,
     ) -> bool {
-        for &vreg in &self.spillsets[spillset.index()].vregs {
-            for entry in &self.vregs[vreg.index()].ranges {
-                if self.spillslots[spillslot.index()]
-                    .ranges
-                    .btree
-                    .contains_key(&LiveRangeKey::from_range(&entry.range))
-                {
-                    return false;
-                }
-            }
-        }
-        true
+        !self.spillslots[spillslot.index()]
+            .ranges
+            .btree
+            .contains_key(&LiveRangeKey::from_range(
+                &self.spillsets[spillset.index()].range,
+            ))
     }
 
     pub fn allocate_spillset_to_spillslot(
@@ -90,27 +84,12 @@ impl<'a, F: Function> Env<'a, F> {
     ) {
         self.spillsets[spillset.index()].slot = spillslot;
 
-        for vreg in &self.spillsets[spillset.index()].vregs {
-            trace!(
-                "spillslot {:?} alloc'ed to spillset {:?}: vreg {:?}",
-                spillslot,
-                spillset,
-                vreg,
-            );
-            for entry in &self.vregs[vreg.index()].ranges {
-                trace!(
-                    "spillslot {:?} getting range {:?} from LR {:?} from vreg {:?}",
-                    spillslot,
-                    entry.range,
-                    entry.index,
-                    vreg,
-                );
-                self.spillslots[spillslot.index()]
-                    .ranges
-                    .btree
-                    .insert(LiveRangeKey::from_range(&entry.range), entry.index);
-            }
-        }
+        let res = self.spillslots[spillslot.index()].ranges.btree.insert(
+            LiveRangeKey::from_range(&self.spillsets[spillset.index()].range),
+            spillset,
+        );
+
+        debug_assert!(res.is_none());
     }
 
     pub fn allocate_spillslots(&mut self) {
@@ -162,7 +141,7 @@ impl<'a, F: Function> Env<'a, F> {
                 // Allocate a new spillslot.
                 let spillslot = SpillSlotIndex::new(self.spillslots.len());
                 self.spillslots.push(SpillSlotData {
-                    ranges: LiveRangeSet::new(),
+                    ranges: SpillSetRanges::new(),
                     alloc: Allocation::none(),
                     slots: size as u32,
                 });

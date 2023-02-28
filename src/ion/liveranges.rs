@@ -818,56 +818,6 @@ impl<'a, F: Function> Env<'a, F> {
             debug_assert!(range.uses.windows(2).all(|win| win[0].pos <= win[1].pos));
         }
 
-        // Insert safepoint virtual stack uses, if needed.
-        for &vreg in self.func.reftype_vregs() {
-            let vreg = VRegIndex::new(vreg.vreg());
-            let mut inserted = false;
-            let mut safepoint_idx = 0;
-            for range_idx in 0..self.vregs[vreg.index()].ranges.len() {
-                let LiveRangeListEntry { range, index } =
-                    self.vregs[vreg.index()].ranges[range_idx];
-                while safepoint_idx < self.safepoints.len()
-                    && ProgPoint::before(self.safepoints[safepoint_idx]) < range.from
-                {
-                    safepoint_idx += 1;
-                }
-                while safepoint_idx < self.safepoints.len()
-                    && range.contains_point(ProgPoint::before(self.safepoints[safepoint_idx]))
-                {
-                    // Create a virtual use.
-                    let pos = ProgPoint::before(self.safepoints[safepoint_idx]);
-                    let operand = Operand::new(
-                        self.vreg(vreg),
-                        OperandConstraint::Stack,
-                        OperandKind::Use,
-                        OperandPos::Early,
-                    );
-
-                    trace!(
-                        "Safepoint-induced stack use of {:?} at {:?} -> {:?}",
-                        operand,
-                        pos,
-                        index,
-                    );
-
-                    self.insert_use_into_liverange(index, Use::new(operand, pos, SLOT_NONE));
-                    safepoint_idx += 1;
-
-                    inserted = true;
-                }
-
-                if inserted {
-                    self.ranges[index.index()]
-                        .uses
-                        .sort_unstable_by_key(|u| u.pos);
-                }
-
-                if safepoint_idx >= self.safepoints.len() {
-                    break;
-                }
-            }
-        }
-
         self.blockparam_ins.sort_unstable_by_key(|x| x.key());
         self.blockparam_outs.sort_unstable_by_key(|x| x.key());
 
@@ -886,7 +836,7 @@ impl<'a, F: Function> Env<'a, F> {
         // have to split the multiple uses at the same progpoint into
         // different bundles, which breaks invariants related to
         // disjoint ranges and bundles).
-        let mut extra_clobbers: SmallVec<[(PReg, ProgPoint); 8]> = smallvec![];
+        let mut range_edits = vec![];
         for vreg in 0..self.vregs.len() {
             for range_idx in 0..self.vregs[vreg].ranges.len() {
                 let entry = self.vregs[vreg].ranges[range_idx];
@@ -898,6 +848,7 @@ impl<'a, F: Function> Env<'a, F> {
                 );
 
                 // Find groups of uses that occur in at the same program point.
+                let mut tombstoned = false;
                 for uses in self.ranges[range.index()]
                     .uses
                     .linear_group_by_key_mut(|u| u.pos)
@@ -946,15 +897,6 @@ impl<'a, F: Function> Env<'a, F> {
                         continue;
                     }
 
-                    // We pick one constraint (in order: FixedReg, Reg, FixedStack)
-                    // and then rewrite any incompatible constraints to Any.
-                    // This allows register allocation to succeed and we will
-                    // later insert moves to satisfy the rewritten constraints.
-                    let source_slot = if requires_reg {
-                        first_reg_slot.unwrap()
-                    } else {
-                        first_stack_slot.unwrap()
-                    };
                     let mut first_preg = None;
                     for u in uses.iter_mut() {
                         if let OperandConstraint::FixedReg(preg) = u.operand.constraint() {
@@ -979,33 +921,110 @@ impl<'a, F: Function> Env<'a, F> {
                                 continue;
                             }
 
-                            trace!(" -> duplicate; switching to constraint Any");
-                            self.multi_fixed_reg_fixups.push(MultiFixedRegFixup {
-                                pos: u.pos,
-                                from_slot: source_slot,
-                                to_slot: u.slot,
-                                to_preg: preg_idx,
-                                vreg: vreg_idx,
-                                level: FixedRegFixupLevel::Secondary,
-                            });
-                            u.operand = Operand::new(
-                                u.operand.vreg(),
-                                OperandConstraint::Any,
-                                u.operand.kind(),
-                                u.operand.pos(),
+                            trace!(
+                                " -> overlapping liverange {} at inst{}",
+                                preg,
+                                u.pos.inst().index()
                             );
-                            trace!(" -> extra clobber {} at inst{}", preg, u.pos.inst().index());
-                            extra_clobbers.push((preg, u.pos));
+                            range_edits.push((range_idx, vreg_idx, *u));
+
+                            trace!(" -> tombstoning use");
+                            u.tombstone();
+                            tombstoned = true;
                         }
                     }
                 }
 
-                for (clobber, pos) in extra_clobbers.drain(..) {
-                    let range = CodeRange {
-                        from: pos,
-                        to: pos.next(),
-                    };
-                    self.add_liverange_to_preg(range, clobber);
+                if tombstoned {
+                    // If there are edits to process, there are also tombstoned entries in the uses
+                    // list for this liverange.
+                    self.ranges[range.index()]
+                        .uses
+                        .retain(|u| !u.is_tombstoned());
+                }
+            }
+
+            // If there are edits to perform, rebuild the ranges for `vreg` and insert the edits at
+            // sorted.
+            if !range_edits.is_empty() {
+                let mut iter = range_edits.drain(..).peekable();
+                let old_ranges = core::mem::take(&mut self.vregs[vreg].ranges);
+                for (ix, range) in old_ranges.into_iter().enumerate() {
+                    self.vregs[vreg].ranges.push(range);
+                    while Some(ix) == iter.peek().map(|(range_ix, _, _)| *range_ix) {
+                        let (_, vreg_idx, u) = iter.next().unwrap();
+                        let range = CodeRange::singleton(u.pos);
+                        let lr = self.create_liverange(range);
+                        self.ranges[lr.index()].vreg = vreg_idx;
+                        self.ranges[lr.index()].uses.push(u);
+                        self.ranges[lr.index()]
+                            .set_uses_spill_weight(SpillWeight::from_bits(u.weight));
+
+                        // Avoid merging this live range with the live range that we already know
+                        // we overlap with.
+                        self.ranges[lr.index()].set_flag(LiveRangeFlag::Overlap);
+
+                        self.vregs[vreg]
+                            .ranges
+                            .push(LiveRangeListEntry { range, index: lr });
+                    }
+                }
+            }
+        }
+    }
+
+    /// Insert safepoint virtual stack uses, if needed.
+    pub fn insert_safepoints(&mut self) {
+        trace!("inserting safepoints");
+        for &vreg in self.func.reftype_vregs() {
+            let vreg = VRegIndex::new(vreg.vreg());
+            let mut inserted = false;
+            let mut safepoint_idx = 0;
+            trace!("reffy vreg: {:?}", vreg);
+            for range_idx in 0..self.vregs[vreg.index()].ranges.len() {
+                let LiveRangeListEntry { range, index } =
+                    self.vregs[vreg.index()].ranges[range_idx];
+                trace!("reffy vreg {:?} has range {:?}", vreg, range);
+                while safepoint_idx < self.safepoints.len()
+                    && ProgPoint::before(self.safepoints[safepoint_idx]) < range.from
+                {
+                    safepoint_idx += 1;
+                }
+
+                let mut range_safepoint_idx = safepoint_idx;
+                while range_safepoint_idx < self.safepoints.len()
+                    && range.contains_point(ProgPoint::before(self.safepoints[range_safepoint_idx]))
+                {
+                    // Create a virtual use.
+                    let pos = ProgPoint::before(self.safepoints[range_safepoint_idx]);
+                    let operand = Operand::new(
+                        self.vreg(vreg),
+                        OperandConstraint::Stack,
+                        OperandKind::Use,
+                        OperandPos::Early,
+                    );
+
+                    trace!(
+                        "Safepoint-induced stack use of {:?} at {:?} -> {:?}",
+                        operand,
+                        pos,
+                        index,
+                    );
+
+                    self.insert_use_into_liverange(index, Use::new(operand, pos, SLOT_NONE));
+                    range_safepoint_idx += 1;
+
+                    inserted = true;
+                }
+
+                if inserted {
+                    self.ranges[index.index()]
+                        .uses
+                        .sort_unstable_by_key(|u| u.pos);
+                }
+
+                if safepoint_idx >= self.safepoints.len() {
+                    break;
                 }
             }
         }
