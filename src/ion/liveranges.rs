@@ -1151,15 +1151,13 @@ impl<'a, F: Function> Env<'a, F> {
                     }
                 }
 
-                for &(clobber, pos) in &extra_clobbers {
+                for (clobber, pos) in extra_clobbers.drain(..) {
                     let range = CodeRange {
                         from: pos,
                         to: pos.next(),
                     };
                     self.add_liverange_to_preg(range, clobber);
                 }
-
-                extra_clobbers.clear();
             }
         }
     }
