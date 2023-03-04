@@ -179,8 +179,6 @@ impl<'a, F: Function> Env<'a, F> {
 
         let mut blockparam_in_idx = 0;
         let mut blockparam_out_idx = 0;
-        let mut prog_move_src_idx = 0;
-        let mut prog_move_dst_idx = 0;
         for vreg in 0..self.vregs.len() {
             let vreg = VRegIndex::new(vreg);
             if !self.is_vreg_used(vreg) {
@@ -190,7 +188,7 @@ impl<'a, F: Function> Env<'a, F> {
             // For each range in each vreg, insert moves or
             // half-moves.  We also scan over `blockparam_ins` and
             // `blockparam_outs`, which are sorted by (block, vreg),
-            // and over program-move srcs/dsts to fill in allocations.
+            // to fill in allocations.
             let mut prev = LiveRangeIndex::invalid();
             for range_idx in 0..self.vregs[vreg.index()].ranges.len() {
                 let entry = self.vregs[vreg.index()].ranges[range_idx];
@@ -524,89 +522,6 @@ impl<'a, F: Function> Env<'a, F> {
                     }
                 }
 
-                // Scan over program move srcs/dsts to fill in allocations.
-
-                // Move srcs happen at `After` of a given
-                // inst. Compute [from, to) semi-inclusive range of
-                // inst indices for which we should fill in the source
-                // with this LR's allocation.
-                //
-                // range from inst-Before or inst-After covers cur
-                // inst's After; so includes move srcs from inst.
-                let move_src_start = (vreg, range.from.inst());
-                // range to (exclusive) inst-Before or inst-After
-                // covers only prev inst's After; so includes move
-                // srcs to (exclusive) inst.
-                let move_src_end = (vreg, range.to.inst());
-                trace!(
-                    "vreg {:?} range {:?}: looking for program-move sources from {:?} to {:?}",
-                    vreg,
-                    range,
-                    move_src_start,
-                    move_src_end
-                );
-                while prog_move_src_idx < self.prog_move_srcs.len()
-                    && self.prog_move_srcs[prog_move_src_idx].0 < move_src_start
-                {
-                    trace!(" -> skipping idx {}", prog_move_src_idx);
-                    prog_move_src_idx += 1;
-                }
-                while prog_move_src_idx < self.prog_move_srcs.len()
-                    && self.prog_move_srcs[prog_move_src_idx].0 < move_src_end
-                {
-                    trace!(
-                        " -> setting idx {} ({:?}) to alloc {:?}",
-                        prog_move_src_idx,
-                        self.prog_move_srcs[prog_move_src_idx].0,
-                        alloc
-                    );
-                    self.prog_move_srcs[prog_move_src_idx].1 = alloc;
-                    prog_move_src_idx += 1;
-                }
-
-                // move dsts happen at Before point.
-                //
-                // Range from inst-Before includes cur inst, while inst-After includes only next inst.
-                let move_dst_start = if range.from.pos() == InstPosition::Before {
-                    (vreg, range.from.inst())
-                } else {
-                    (vreg, range.from.inst().next())
-                };
-                // Range to (exclusive) inst-Before includes prev
-                // inst, so to (exclusive) cur inst; range to
-                // (exclusive) inst-After includes cur inst, so to
-                // (exclusive) next inst.
-                let move_dst_end = if range.to.pos() == InstPosition::Before {
-                    (vreg, range.to.inst())
-                } else {
-                    (vreg, range.to.inst().next())
-                };
-                trace!(
-                    "vreg {:?} range {:?}: looking for program-move dests from {:?} to {:?}",
-                    vreg,
-                    range,
-                    move_dst_start,
-                    move_dst_end
-                );
-                while prog_move_dst_idx < self.prog_move_dsts.len()
-                    && self.prog_move_dsts[prog_move_dst_idx].0 < move_dst_start
-                {
-                    trace!(" -> skipping idx {}", prog_move_dst_idx);
-                    prog_move_dst_idx += 1;
-                }
-                while prog_move_dst_idx < self.prog_move_dsts.len()
-                    && self.prog_move_dsts[prog_move_dst_idx].0 < move_dst_end
-                {
-                    trace!(
-                        " -> setting idx {} ({:?}) to alloc {:?}",
-                        prog_move_dst_idx,
-                        self.prog_move_dsts[prog_move_dst_idx].0,
-                        alloc
-                    );
-                    self.prog_move_dsts[prog_move_dst_idx].1 = alloc;
-                    prog_move_dst_idx += 1;
-                }
-
                 prev = entry.index;
             }
         }
@@ -818,42 +733,6 @@ impl<'a, F: Function> Env<'a, F> {
                     }
                 }
             }
-        }
-
-        // Sort the prog-moves lists and insert moves to reify the
-        // input program's move operations.
-        self.prog_move_srcs
-            .sort_unstable_by_key(|((_, inst), _)| *inst);
-        self.prog_move_dsts
-            .sort_unstable_by_key(|((_, inst), _)| inst.prev());
-        let prog_move_srcs = std::mem::replace(&mut self.prog_move_srcs, vec![]);
-        let prog_move_dsts = std::mem::replace(&mut self.prog_move_dsts, vec![]);
-        debug_assert_eq!(prog_move_srcs.len(), prog_move_dsts.len());
-        for (&((_, from_inst), from_alloc), &((to_vreg, to_inst), to_alloc)) in
-            prog_move_srcs.iter().zip(prog_move_dsts.iter())
-        {
-            trace!(
-                "program move at inst {:?}: alloc {:?} -> {:?} (v{})",
-                from_inst,
-                from_alloc,
-                to_alloc,
-                to_vreg.index(),
-            );
-            debug_assert!(from_alloc.is_some());
-            debug_assert!(to_alloc.is_some());
-            debug_assert_eq!(from_inst, to_inst.prev());
-            // N.B.: these moves happen with the *same* priority as
-            // LR-to-LR moves, because they work just like them: they
-            // connect a use at one progpoint (move-After) with a def
-            // at an adjacent progpoint (move+1-Before), so they must
-            // happen in parallel with all other LR-to-LR moves.
-            self.insert_move(
-                ProgPoint::before(to_inst),
-                InsertMovePrio::Regular,
-                from_alloc,
-                to_alloc,
-                self.vreg(to_vreg),
-            );
         }
 
         // Sort the debug-locations vector; we provide this

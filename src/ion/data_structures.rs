@@ -405,21 +405,6 @@ pub struct Env<'a, F: Function> {
     pub extra_spillslots_by_class: [SmallVec<[Allocation; 2]>; 2],
     pub preferred_victim_by_class: [PReg; 2],
 
-    // Program moves: these are moves in the provided program that we
-    // handle with our internal machinery, in order to avoid the
-    // overhead of ordinary operand processing. We expect the client
-    // to not generate any code for instructions that return
-    // `Some(..)` for `.is_move()`, and instead use the edits that we
-    // provide to implement those moves (or some simplified version of
-    // them) post-regalloc.
-    //
-    // (from-vreg, inst, from-alloc), sorted by (from-vreg, inst)
-    pub prog_move_srcs: Vec<((VRegIndex, Inst), Allocation)>,
-    // (to-vreg, inst, to-alloc), sorted by (to-vreg, inst)
-    pub prog_move_dsts: Vec<((VRegIndex, Inst), Allocation)>,
-    // (from-vreg, to-vreg) for bundle-merging.
-    pub prog_move_merges: Vec<(LiveRangeIndex, LiveRangeIndex)>,
-
     // When multiple fixed-register constraints are present on a
     // single VReg at a single program point (this can happen for,
     // e.g., call args that use the same value multiple times), we
@@ -628,9 +613,7 @@ pub struct InsertedMove {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum InsertMovePrio {
     InEdgeMoves,
-    BlockParam,
     Regular,
-    PostRegular,
     MultiFixedRegInitial,
     MultiFixedRegSecondary,
     ReusedInput,
@@ -660,10 +643,6 @@ pub struct Stats {
     pub livein_iterations: usize,
     pub initial_liverange_count: usize,
     pub merged_bundle_count: usize,
-    pub prog_moves: usize,
-    pub prog_moves_dead_src: usize,
-    pub prog_move_merge_attempt: usize,
-    pub prog_move_merge_success: usize,
     pub process_bundle_count: usize,
     pub process_bundle_reg_probes_fixed: usize,
     pub process_bundle_reg_success_fixed: usize,
