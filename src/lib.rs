@@ -1326,19 +1326,43 @@ impl<'a> Iterator for OutputIter<'a> {
 pub struct MachineEnv {
     /// Preferred physical registers for each class. These are the
     /// registers that will be allocated first, if free.
+    ///
+    /// If an explicit scratch register is provided in `scratch_by_class` then
+    /// it must not appear in this list.
     pub preferred_regs_by_class: [Vec<PReg>; 2],
 
     /// Non-preferred physical registers for each class. These are the
     /// registers that will be allocated if a preferred register is
     /// not available; using one of these is considered suboptimal,
     /// but still better than spilling.
+    ///
+    /// If an explicit scratch register is provided in `scratch_by_class` then
+    /// it must not appear in this list.
     pub non_preferred_regs_by_class: [Vec<PReg>; 2],
+
+    /// Optional dedicated scratch register per class. This is needed to perform
+    /// moves between registers when cyclic move patterns occur. The
+    /// register should not be placed in either the preferred or
+    /// non-preferred list (i.e., it is not otherwise allocatable).
+    ///
+    /// Note that the register allocator will freely use this register
+    /// between instructions, but *within* the machine code generated
+    /// by a single (regalloc-level) instruction, the client is free
+    /// to use the scratch register. E.g., if one "instruction" causes
+    /// the emission of two machine-code instructions, this lowering
+    /// can use the scratch register between them.
+    ///
+    /// If a scratch register is not provided then the register allocator will
+    /// automatically allocate one as needed, spilling a value to the stack if
+    /// necessary.
+    pub scratch_by_class: [Option<PReg>; 2],
 
     /// Some `PReg`s can be designated as locations on the stack rather than
     /// actual registers. These can be used to tell the register allocator about
     /// pre-defined stack slots used for function arguments and return values.
     ///
-    /// `PReg`s in this list cannot be used as an allocatable register.
+    /// `PReg`s in this list cannot be used as an allocatable or scratch
+    /// register.
     pub fixed_stack_slots: Vec<PReg>,
 }
 
