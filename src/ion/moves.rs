@@ -986,6 +986,9 @@ impl<'a, F: Function> Env<'a, F> {
                     to: pos_prio.pos.next(),
                 });
                 let get_reg = || {
+                    if let Some(reg) = self.env.scratch_by_class[regclass as usize] {
+                        return Some(Allocation::reg(reg));
+                    }
                     while let Some(preg) = scratch_iter.next() {
                         if !self.pregs[preg.index()]
                             .allocations

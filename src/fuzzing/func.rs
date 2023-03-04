@@ -662,11 +662,13 @@ pub fn machine_env() -> MachineEnv {
     }
     let preferred_regs_by_class: [Vec<PReg>; 2] = [regs(0..24), vec![]];
     let non_preferred_regs_by_class: [Vec<PReg>; 2] = [regs(24..32), vec![]];
+    let scratch_by_class: [Option<PReg>; 2] = [None, None];
     let fixed_stack_slots = regs(32..63);
     // Register 63 is reserved for use as a fixed non-allocatable register.
     MachineEnv {
         preferred_regs_by_class,
         non_preferred_regs_by_class,
+        scratch_by_class,
         fixed_stack_slots,
     }
 }
