@@ -1326,12 +1326,18 @@ impl<'a> Iterator for OutputIter<'a> {
 pub struct MachineEnv {
     /// Preferred physical registers for each class. These are the
     /// registers that will be allocated first, if free.
+    ///
+    /// If an explicit scratch register is provided in `scratch_by_class` then
+    /// it must not appear in this list.
     pub preferred_regs_by_class: [Vec<PReg>; 2],
 
     /// Non-preferred physical registers for each class. These are the
     /// registers that will be allocated if a preferred register is
     /// not available; using one of these is considered suboptimal,
     /// but still better than spilling.
+    ///
+    /// If an explicit scratch register is provided in `scratch_by_class` then
+    /// it must not appear in this list.
     pub non_preferred_regs_by_class: [Vec<PReg>; 2],
 
     /// Optional dedicated scratch register per class. This is needed to perform
