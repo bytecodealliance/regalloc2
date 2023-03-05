@@ -266,8 +266,7 @@ impl From<&MachineEnv> for PRegSet {
 /// A virtual register. Contains a virtual register number and a
 /// class.
 ///
-/// A virtual register ("vreg") corresponds to an SSA value for SSA
-/// input, or just a register when we allow for non-SSA input. All
+/// A virtual register ("vreg") corresponds to an SSA value. All
 /// dataflow in the input program is specified via flow through a
 /// virtual register; even uses of specially-constrained locations,
 /// such as fixed physical registers, are done by using vregs, because
@@ -1028,10 +1027,6 @@ pub trait Function {
     fn requires_refs_on_stack(&self, _: Inst) -> bool {
         false
     }
-
-    /// Determine whether an instruction is a move; if so, return the
-    /// Operands for (src, dst).
-    fn is_move(&self, insn: Inst) -> Option<(Operand, Operand)>;
 
     // --------------------------
     // Instruction register slots

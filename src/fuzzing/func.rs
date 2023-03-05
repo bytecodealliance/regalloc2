@@ -124,10 +124,6 @@ impl Function for Func {
         &self.debug_value_labels[..]
     }
 
-    fn is_move(&self, _: Inst) -> Option<(Operand, Operand)> {
-        None
-    }
-
     fn inst_operands(&self, insn: Inst) -> &[Operand] {
         &self.insts[insn.index()].operands[..]
     }

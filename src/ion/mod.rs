@@ -71,10 +71,6 @@ impl<'a, F: Function> Env<'a, F> {
             extra_spillslots_by_class: [smallvec![], smallvec![]],
             preferred_victim_by_class: [PReg::invalid(), PReg::invalid()],
 
-            prog_move_srcs: Vec::with_capacity(n / 2),
-            prog_move_dsts: Vec::with_capacity(n / 2),
-            prog_move_merges: Vec::with_capacity(n / 2),
-
             multi_fixed_reg_fixups: vec![],
             inserted_moves: vec![],
             edits: Vec::with_capacity(n),

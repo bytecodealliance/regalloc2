@@ -269,10 +269,6 @@ fn visit_all_vregs<F: Function, V: FnMut(VReg)>(f: &F, mut v: V) {
             for op in f.inst_operands(inst) {
                 v(op.vreg());
             }
-            if let Some((src, dst)) = f.is_move(inst) {
-                v(src.vreg());
-                v(dst.vreg());
-            }
             if f.is_branch(inst) {
                 for succ_idx in 0..f.block_succs(block).len() {
                     for &param in f.branch_blockparams(block, inst, succ_idx) {
@@ -565,25 +561,6 @@ impl CheckerState {
                 // according to the move semantics in the step
                 // function below.
             }
-            &CheckerInst::ProgramMove { inst, src, dst: _ } => {
-                // Validate that the fixed-reg constraint, if any, on
-                // `src` is satisfied.
-                if let OperandConstraint::FixedReg(preg) = src.constraint() {
-                    let alloc = Allocation::reg(preg);
-                    let val = self.get_value(&alloc).unwrap_or(&default_val);
-                    trace!(
-                        "checker: checkinst {:?}: cheker value in {:?} is {:?}",
-                        checkinst,
-                        alloc,
-                        val
-                    );
-                    self.check_val(inst, src, alloc, val, &[alloc], checker)?;
-                }
-                // Note that we don't do anything with `dst`
-                // here. That is implicitly checked whenever `dst` is
-                // used; the `update()` step below adds the symbolic
-                // vreg for `dst` into wherever `src` may be stored.
-            }
         }
         Ok(())
     }
@@ -686,15 +663,6 @@ impl CheckerState {
                     }
                 }
             }
-            &CheckerInst::ProgramMove { inst: _, src, dst } => {
-                // Remove all earlier instances of `dst`: this vreg is
-                // now stale (it is being overwritten).
-                self.remove_vreg(dst.vreg());
-                // Define `dst` wherever `src` occurs.
-                for (_, value) in self.get_mappings_mut() {
-                    value.copy_vreg(src.vreg(), dst.vreg());
-                }
-            }
         }
     }
 
@@ -786,23 +754,6 @@ pub(crate) enum CheckerInst {
     /// A safepoint, with the given Allocations specified as containing
     /// reftyped values. All other reftyped values become invalid.
     Safepoint { inst: Inst, allocs: Vec<Allocation> },
-
-    /// An op with one source operand, and one dest operand, that
-    /// copies any symbolic values from the source to the dest, in
-    /// addition to adding the symbolic value of the dest vreg to the
-    /// set. This "program move" is distinguished from the above
-    /// `Move` by being semantically relevant in the original
-    /// (pre-regalloc) program.
-    ///
-    /// We transform checker values as follows: for any vreg-set that
-    /// contains `dst`'s vreg, we first delete that vreg (because it
-    /// is being redefined). Then, for any vreg-set with `src`
-    /// present, we add `dst`.
-    ProgramMove {
-        inst: Inst,
-        src: Operand,
-        dst: Operand,
-    },
 }
 
 #[derive(Debug)]
@@ -903,35 +854,10 @@ impl<'a, F: Function> Checker<'a, F> {
             self.bb_insts.get_mut(&block).unwrap().push(checkinst);
         }
 
-        // If this is a move, handle specially. Note that the
-        // regalloc2-inserted moves are not semantically present in
-        // the original program and so do not modify the sets of
-        // symbolic values at all, but rather just move them around;
-        // but "program moves" *are* present, and have the following
-        // semantics: they define the destination vreg, but also
-        // retain any symbolic values in the source.
-        //
-        // regalloc2 reifies all moves into edits in its unified
-        // move/edit framework, so we don't get allocs for these moves
-        // in the post-regalloc output, and the embedder is not
-        // supposed to emit the moves. But we *do* want to check the
-        // semantic implications, namely definition of new vregs. So
-        // we emit `ProgramMove` ops that do just this.
-        if let Some((src, dst)) = self.f.is_move(inst) {
-            let src_op = Operand::any_use(src.vreg());
-            let dst_op = Operand::any_def(dst.vreg());
-            let checkinst = CheckerInst::ProgramMove {
-                inst,
-                src: src_op,
-                dst: dst_op,
-            };
-            trace!("checker: adding inst {:?}", checkinst);
-            self.bb_insts.get_mut(&block).unwrap().push(checkinst);
-        }
         // Skip normal checks if this is a branch: the blockparams do
         // not exist in post-regalloc code, and the edge-moves have to
         // be inserted before the branch rather than after.
-        else if !self.f.is_branch(inst) {
+        if !self.f.is_branch(inst) {
             let operands: Vec<_> = self.f.inst_operands(inst).iter().cloned().collect();
             let allocs: Vec<_> = out.inst_allocs(inst).iter().cloned().collect();
             let clobbers: Vec<_> = self.f.inst_clobbers(inst).into_iter().collect();
@@ -1127,9 +1053,6 @@ impl<'a, F: Function> Checker<'a, F> {
                             slotargs.push(format!("{}", slot));
                         }
                         trace!("    safepoint: {}", slotargs.join(", "));
-                    }
-                    &CheckerInst::ProgramMove { inst, src, dst } => {
-                        trace!("    inst{}: prog_move {} -> {}", inst.index(), src, dst);
                     }
                     &CheckerInst::ParallelMove { .. } => {
                         panic!("unexpected parallel_move in body (non-edge)")

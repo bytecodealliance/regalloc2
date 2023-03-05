@@ -351,28 +351,6 @@ impl<'a, F: Function> Env<'a, F> {
             self.merge_bundles(from_bundle, to_bundle);
         }
 
-        // Attempt to merge move srcs/dsts.
-        for i in 0..self.prog_move_merges.len() {
-            let (src, dst) = self.prog_move_merges[i];
-            trace!("trying to merge move src LR {:?} to dst LR {:?}", src, dst);
-            let src = self.resolve_merged_lr(src);
-            let dst = self.resolve_merged_lr(dst);
-            trace!(
-                "resolved LR-construction merging chains: move-merge is now src LR {:?} to dst LR {:?}",
-                src,
-                dst
-            );
-
-            let src_bundle = self.ranges[src.index()].bundle;
-            debug_assert!(src_bundle.is_valid());
-            let dest_bundle = self.ranges[dst.index()].bundle;
-            debug_assert!(dest_bundle.is_valid());
-            self.stats.prog_move_merge_attempt += 1;
-            if self.merge_bundles(/* from */ dest_bundle, /* to */ src_bundle) {
-                self.stats.prog_move_merge_success += 1;
-            }
-        }
-
         trace!("done merging bundles");
     }
 
