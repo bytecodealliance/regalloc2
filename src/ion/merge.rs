@@ -18,6 +18,7 @@ use super::{
 use crate::{
     ion::data_structures::BlockparamOut, Function, Inst, OperandConstraint, OperandKind, PReg,
 };
+use alloc::format;
 use smallvec::smallvec;
 
 impl<'a, F: Function> Env<'a, F> {
@@ -132,7 +133,7 @@ impl<'a, F: Function> Env<'a, F> {
             // `to` bundle is empty -- just move the list over from
             // `from` and set `bundle` up-link on all ranges.
             trace!(" -> to bundle{} is empty; trivial merge", to.index());
-            let list = std::mem::replace(&mut self.bundles[from.index()].ranges, smallvec![]);
+            let list = core::mem::replace(&mut self.bundles[from.index()].ranges, smallvec![]);
             for entry in &list {
                 self.ranges[entry.index.index()].bundle = to;
 
@@ -170,7 +171,7 @@ impl<'a, F: Function> Env<'a, F> {
         // Two non-empty lists of LiveRanges: concatenate and
         // sort. This is faster than a mergesort-like merge into a new
         // list, empirically.
-        let from_list = std::mem::replace(&mut self.bundles[from.index()].ranges, smallvec![]);
+        let from_list = core::mem::replace(&mut self.bundles[from.index()].ranges, smallvec![]);
         for entry in &from_list {
             self.ranges[entry.index.index()].bundle = to;
         }
@@ -213,7 +214,7 @@ impl<'a, F: Function> Env<'a, F> {
         }
 
         if self.bundles[from.index()].spillset != self.bundles[to.index()].spillset {
-            let from_vregs = std::mem::replace(
+            let from_vregs = core::mem::replace(
                 &mut self.spillsets[self.bundles[from.index()].spillset.index()].vregs,
                 smallvec![],
             );

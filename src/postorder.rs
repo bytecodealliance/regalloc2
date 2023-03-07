@@ -6,6 +6,8 @@
 //! Fast postorder computation.
 
 use crate::Block;
+use alloc::vec;
+use alloc::vec::Vec;
 use smallvec::{smallvec, SmallVec};
 
 pub fn calculate<'a, SuccFn: Fn(Block) -> &'a [Block]>(

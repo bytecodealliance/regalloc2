@@ -1,5 +1,9 @@
 //! Debugging output.
 
+use alloc::string::ToString;
+use alloc::{format, vec};
+use alloc::{string::String, vec::Vec};
+
 use super::Env;
 use crate::{Block, Function, ProgPoint};
 

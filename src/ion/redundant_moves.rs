@@ -1,7 +1,6 @@
 //! Redundant-move elimination.
 
-use crate::{Allocation, VReg};
-use fxhash::FxHashMap;
+use crate::{Allocation, FxHashMap, VReg};
 use smallvec::{smallvec, SmallVec};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]

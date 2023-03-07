@@ -96,14 +96,16 @@
 #![allow(dead_code)]
 
 use crate::{
-    Allocation, AllocationKind, Block, Edit, Function, Inst, InstOrEdit, InstPosition, MachineEnv,
-    Operand, OperandConstraint, OperandKind, OperandPos, Output, PReg, PRegSet, VReg,
+    Allocation, AllocationKind, Block, Edit, Function, FxHashMap, FxHashSet, Inst, InstOrEdit,
+    InstPosition, MachineEnv, Operand, OperandConstraint, OperandKind, OperandPos, Output, PReg,
+    PRegSet, VReg,
 };
-use fxhash::{FxHashMap, FxHashSet};
+use alloc::vec::Vec;
+use alloc::{format, vec};
+use core::default::Default;
+use core::hash::Hash;
+use core::result::Result;
 use smallvec::{smallvec, SmallVec};
-use std::default::Default;
-use std::hash::Hash;
-use std::result::Result;
 
 /// A set of errors detected by the regalloc checker.
 #[derive(Clone, Debug)]
@@ -230,7 +232,7 @@ impl CheckerValue {
     }
 
     fn from_reg(reg: VReg) -> CheckerValue {
-        CheckerValue::VRegs(std::iter::once(reg).collect())
+        CheckerValue::VRegs(core::iter::once(reg).collect())
     }
 
     fn remove_vreg(&mut self, reg: VReg) {
@@ -373,8 +375,8 @@ impl Default for CheckerState {
     }
 }
 
-impl std::fmt::Display for CheckerValue {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+impl core::fmt::Display for CheckerValue {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
         match self {
             CheckerValue::Universe => {
                 write!(f, "top")

@@ -4,8 +4,8 @@
  */
 
 use crate::{ion::data_structures::u64_key, Allocation, PReg};
+use core::fmt::Debug;
 use smallvec::{smallvec, SmallVec};
-use std::fmt::Debug;
 
 /// A list of moves to be performed in sequence, with auxiliary data
 /// attached to each.

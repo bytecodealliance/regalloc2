@@ -78,7 +78,7 @@ impl<'a> RegTraversalIter<'a> {
     }
 }
 
-impl<'a> std::iter::Iterator for RegTraversalIter<'a> {
+impl<'a> core::iter::Iterator for RegTraversalIter<'a> {
     type Item = PReg;
 
     fn next(&mut self) -> Option<PReg> {

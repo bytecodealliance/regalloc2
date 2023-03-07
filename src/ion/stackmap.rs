@@ -12,6 +12,8 @@
 
 //! Stackmap computation.
 
+use alloc::vec::Vec;
+
 use super::{Env, ProgPoint, VRegIndex};
 use crate::{ion::data_structures::u64_key, Function};
 

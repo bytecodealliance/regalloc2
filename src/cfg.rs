@@ -6,6 +6,8 @@
 //! Lightweight CFG analyses.
 
 use crate::{domtree, postorder, Block, Function, Inst, ProgPoint, RegAllocError};
+use alloc::vec;
+use alloc::vec::Vec;
 use smallvec::{smallvec, SmallVec};
 
 #[derive(Clone, Debug)]
