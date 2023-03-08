@@ -13,6 +13,9 @@
 #![allow(dead_code)]
 #![no_std]
 
+#[cfg(feature = "std")]
+extern crate std;
+
 extern crate alloc;
 
 // Even when trace logging is disabled, the trace macro has a significant
@@ -1478,6 +1481,9 @@ impl core::fmt::Display for RegAllocError {
         write!(f, "{:?}", self)
     }
 }
+
+#[cfg(feature = "std")]
+impl std::error::Error for RegAllocError {}
 
 /// Run the allocator.
 pub fn run<F: Function>(

@@ -45,7 +45,7 @@ jobs:
     - name: Install thumbv6m-none-eabi target
       run: rustup target add thumbv6m-none-eabi
     - name: Check no_std build
-      run: cargo check --target thumbv6m-none-eabi --features trace-log,checker,enable-serde
+      run: cargo check --target thumbv6m-none-eabi --no-default-features --features trace-log,checker,enable-serde
 
   # Lint dependency graph for security advisories, duplicate versions, and
   # incompatible licences.
