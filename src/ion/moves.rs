@@ -22,12 +22,13 @@ use crate::ion::data_structures::{
 use crate::ion::reg_traversal::RegTraversalIter;
 use crate::moves::{MoveAndScratchResolver, ParallelMoves};
 use crate::{
-    Allocation, Block, Edit, Function, Inst, InstPosition, OperandConstraint, OperandKind,
-    OperandPos, PReg, ProgPoint, RegClass, SpillSlot, VReg,
+    Allocation, Block, Edit, Function, FxHashMap, Inst, InstPosition, OperandConstraint,
+    OperandKind, OperandPos, PReg, ProgPoint, RegClass, SpillSlot, VReg,
 };
-use fxhash::FxHashMap;
+use alloc::vec::Vec;
+use alloc::{format, vec};
+use core::fmt::Debug;
 use smallvec::{smallvec, SmallVec};
-use std::fmt::Debug;
 
 impl<'a, F: Function> Env<'a, F> {
     pub fn is_start_of_block(&self, pos: ProgPoint) -> bool {
@@ -494,9 +495,9 @@ impl<'a, F: Function> Env<'a, F> {
                             // this case returns the index of the first
                             // entry that is greater as an `Err`.
                             if label_vreg.vreg() < vreg.index() {
-                                std::cmp::Ordering::Less
+                                core::cmp::Ordering::Less
                             } else {
-                                std::cmp::Ordering::Greater
+                                core::cmp::Ordering::Greater
                             }
                         })
                         .unwrap_err();
@@ -515,8 +516,8 @@ impl<'a, F: Function> Env<'a, F> {
                             continue;
                         }
 
-                        let from = std::cmp::max(label_from, range.from);
-                        let to = std::cmp::min(label_to, range.to);
+                        let from = core::cmp::max(label_from, range.from);
+                        let to = core::cmp::min(label_to, range.to);
 
                         self.debug_locations.push((label, from, to, alloc));
                     }
@@ -629,7 +630,7 @@ impl<'a, F: Function> Env<'a, F> {
         }
 
         // Handle multi-fixed-reg constraints by copying.
-        for fixup in std::mem::replace(&mut self.multi_fixed_reg_fixups, vec![]) {
+        for fixup in core::mem::replace(&mut self.multi_fixed_reg_fixups, vec![]) {
             let from_alloc = self.get_alloc(fixup.pos.inst(), fixup.from_slot as usize);
             let to_alloc = Allocation::reg(PReg::from_index(fixup.to_preg.index()));
             trace!(

@@ -5,7 +5,8 @@
 
 //! SSA-related utilities.
 
-use std::collections::HashSet;
+use alloc::vec;
+use hashbrown::HashSet;
 
 use crate::cfg::CFGInfo;
 use crate::{Block, Function, Inst, OperandKind, RegAllocError, VReg};

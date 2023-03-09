@@ -50,11 +50,11 @@ macro_rules! define_index {
     };
 }
 
-pub trait ContainerIndex: Clone + Copy + std::fmt::Debug + PartialEq + Eq {}
+pub trait ContainerIndex: Clone + Copy + core::fmt::Debug + PartialEq + Eq {}
 
 pub trait ContainerComparator {
     type Ix: ContainerIndex;
-    fn compare(&self, a: Self::Ix, b: Self::Ix) -> std::cmp::Ordering;
+    fn compare(&self, a: Self::Ix, b: Self::Ix) -> core::cmp::Ordering;
 }
 
 define_index!(Inst);
@@ -146,6 +146,9 @@ impl Iterator for InstRangeIter {
 
 #[cfg(test)]
 mod test {
+    use alloc::vec;
+    use alloc::vec::Vec;
+
     use super::*;
 
     #[test]

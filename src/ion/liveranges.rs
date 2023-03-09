@@ -22,13 +22,15 @@ use crate::ion::data_structures::{
     BlockparamIn, BlockparamOut, FixedRegFixupLevel, MultiFixedRegFixup,
 };
 use crate::{
-    Allocation, Block, Function, Inst, InstPosition, Operand, OperandConstraint, OperandKind,
-    OperandPos, PReg, ProgPoint, RegAllocError, VReg,
+    Allocation, Block, Function, FxHashMap, FxHashSet, Inst, InstPosition, Operand,
+    OperandConstraint, OperandKind, OperandPos, PReg, ProgPoint, RegAllocError, VReg,
 };
-use fxhash::{FxHashMap, FxHashSet};
+use alloc::collections::VecDeque;
+use alloc::vec;
+use alloc::vec::Vec;
+use hashbrown::HashSet;
 use slice_group_by::GroupByMut;
 use smallvec::{smallvec, SmallVec};
-use std::collections::{HashSet, VecDeque};
 
 /// A spill weight computed for a certain Use.
 #[derive(Clone, Copy, Debug)]
@@ -42,7 +44,7 @@ pub fn spill_weight_from_constraint(
 ) -> SpillWeight {
     // A bonus of 1000 for one loop level, 4000 for two loop levels,
     // 16000 for three loop levels, etc. Avoids exponentiation.
-    let loop_depth = std::cmp::min(10, loop_depth);
+    let loop_depth = core::cmp::min(10, loop_depth);
     let hot_bonus: f32 = (0..loop_depth).fold(1000.0, |a, _| a * 4.0);
     let def_bonus: f32 = if is_def { 2000.0 } else { 0.0 };
     let constraint_bonus: f32 = match constraint {
@@ -91,7 +93,7 @@ impl SpillWeight {
     }
 }
 
-impl std::ops::Add<SpillWeight> for SpillWeight {
+impl core::ops::Add<SpillWeight> for SpillWeight {
     type Output = SpillWeight;
     fn add(self, other: SpillWeight) -> Self {
         SpillWeight(self.0 + other.0)

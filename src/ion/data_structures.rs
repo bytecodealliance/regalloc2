@@ -17,14 +17,16 @@ use crate::cfg::CFGInfo;
 use crate::index::ContainerComparator;
 use crate::indexset::IndexSet;
 use crate::{
-    define_index, Allocation, Block, Edit, Function, Inst, MachineEnv, Operand, PReg, ProgPoint,
-    RegClass, VReg,
+    define_index, Allocation, Block, Edit, Function, FxHashSet, Inst, MachineEnv, Operand, PReg,
+    ProgPoint, RegClass, VReg,
 };
-use fxhash::FxHashSet;
+use alloc::collections::BTreeMap;
+use alloc::string::String;
+use alloc::vec::Vec;
+use core::cmp::Ordering;
+use core::fmt::Debug;
+use hashbrown::{HashMap, HashSet};
 use smallvec::SmallVec;
-use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap, HashSet};
-use std::fmt::Debug;
 
 /// A range from `from` (inclusive) to `to` (exclusive).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,13 +66,13 @@ impl CodeRange {
     }
 }
 
-impl std::cmp::PartialOrd for CodeRange {
+impl core::cmp::PartialOrd for CodeRange {
     #[inline(always)]
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
-impl std::cmp::Ord for CodeRange {
+impl core::cmp::Ord for CodeRange {
     #[inline(always)]
     fn cmp(&self, other: &Self) -> Ordering {
         if self.to <= other.from {
@@ -278,7 +280,7 @@ const fn no_bloat_capacity<T>() -> usize {
     //
     // So if `size_of([T; N]) == size_of(pointer) + size_of(capacity)` then we
     // get the maximum inline capacity without bloat.
-    std::mem::size_of::<usize>() * 2 / std::mem::size_of::<T>()
+    core::mem::size_of::<usize>() * 2 / core::mem::size_of::<T>()
 }
 
 #[derive(Clone, Debug)]
@@ -431,7 +433,7 @@ pub struct Env<'a, F: Function> {
 
     // For debug output only: a list of textual annotations at every
     // ProgPoint to insert into the final allocated program listing.
-    pub debug_annotations: std::collections::HashMap<ProgPoint, Vec<String>>,
+    pub debug_annotations: hashbrown::HashMap<ProgPoint, Vec<String>>,
     pub annotations_enabled: bool,
 
     // Cached allocation for `try_to_allocate_bundle_to_reg` to avoid allocating
@@ -492,7 +494,7 @@ impl SpillSlotList {
 
 #[derive(Clone, Debug)]
 pub struct PrioQueue {
-    pub heap: std::collections::BinaryHeap<PrioQueueEntry>,
+    pub heap: alloc::collections::BinaryHeap<PrioQueueEntry>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -531,28 +533,28 @@ impl LiveRangeKey {
     }
 }
 
-impl std::cmp::PartialEq for LiveRangeKey {
+impl core::cmp::PartialEq for LiveRangeKey {
     #[inline(always)]
     fn eq(&self, other: &Self) -> bool {
         self.to > other.from && self.from < other.to
     }
 }
-impl std::cmp::Eq for LiveRangeKey {}
-impl std::cmp::PartialOrd for LiveRangeKey {
+impl core::cmp::Eq for LiveRangeKey {}
+impl core::cmp::PartialOrd for LiveRangeKey {
     #[inline(always)]
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
-impl std::cmp::Ord for LiveRangeKey {
+impl core::cmp::Ord for LiveRangeKey {
     #[inline(always)]
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
         if self.to <= other.from {
-            std::cmp::Ordering::Less
+            core::cmp::Ordering::Less
         } else if self.from >= other.to {
-            std::cmp::Ordering::Greater
+            core::cmp::Ordering::Greater
         } else {
-            std::cmp::Ordering::Equal
+            core::cmp::Ordering::Equal
         }
     }
 }
@@ -562,7 +564,7 @@ pub struct PrioQueueComparator<'a> {
 }
 impl<'a> ContainerComparator for PrioQueueComparator<'a> {
     type Ix = LiveBundleIndex;
-    fn compare(&self, a: Self::Ix, b: Self::Ix) -> std::cmp::Ordering {
+    fn compare(&self, a: Self::Ix, b: Self::Ix) -> core::cmp::Ordering {
         self.prios[a.index()].cmp(&self.prios[b.index()])
     }
 }
@@ -570,7 +572,7 @@ impl<'a> ContainerComparator for PrioQueueComparator<'a> {
 impl PrioQueue {
     pub fn new() -> Self {
         PrioQueue {
-            heap: std::collections::BinaryHeap::new(),
+            heap: alloc::collections::BinaryHeap::new(),
         }
     }
 

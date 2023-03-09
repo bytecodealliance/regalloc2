@@ -5,8 +5,10 @@
 
 //! Index sets: sets of integers that represent indices into a space.
 
-use fxhash::FxHashMap;
-use std::cell::Cell;
+use alloc::vec::Vec;
+use core::cell::Cell;
+
+use crate::FxHashMap;
 
 const SMALL_ELEMS: usize = 12;
 
@@ -151,10 +153,10 @@ impl AdaptiveMap {
 
 enum AdaptiveMapIter<'a> {
     Small(&'a [u32], &'a [u64]),
-    Large(std::collections::hash_map::Iter<'a, u32, u64>),
+    Large(hashbrown::hash_map::Iter<'a, u32, u64>),
 }
 
-impl<'a> std::iter::Iterator for AdaptiveMapIter<'a> {
+impl<'a> core::iter::Iterator for AdaptiveMapIter<'a> {
     type Item = (u32, u64);
 
     #[inline]
@@ -292,7 +294,7 @@ impl Iterator for SetBitsIter {
         // Build an `Option<NonZeroU64>` so that on the nonzero path,
         // the compiler can optimize the trailing-zeroes operator
         // using that knowledge.
-        std::num::NonZeroU64::new(self.0).map(|nz| {
+        core::num::NonZeroU64::new(self.0).map(|nz| {
             let bitidx = nz.trailing_zeros();
             self.0 &= self.0 - 1; // clear highest set bit
             bitidx as usize
@@ -300,8 +302,8 @@ impl Iterator for SetBitsIter {
     }
 }
 
-impl std::fmt::Debug for IndexSet {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+impl core::fmt::Debug for IndexSet {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
         let vals = self.iter().collect::<Vec<_>>();
         write!(f, "{:?}", vals)
     }

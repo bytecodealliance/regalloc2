@@ -138,7 +138,7 @@ impl<'a, F: Function> Env<'a, F> {
             let mut success = false;
             // Never probe the same element more than once: limit the
             // attempt count to the number of slots in existence.
-            for _attempt in 0..std::cmp::min(self.slots_by_size[size].slots.len(), MAX_ATTEMPTS) {
+            for _attempt in 0..core::cmp::min(self.slots_by_size[size].slots.len(), MAX_ATTEMPTS) {
                 // Note: this indexing of `slots` is always valid
                 // because either the `slots` list is empty and the
                 // iteration limit above consequently means we don't

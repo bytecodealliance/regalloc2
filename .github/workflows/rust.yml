@@ -37,6 +37,16 @@ jobs:
     - name: Check with all features
       run: cargo check --all-features
 
+  # Make sure the code and its dependencies compile without std.
+  no_std:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    - name: Install thumbv6m-none-eabi target
+      run: rustup target add thumbv6m-none-eabi
+    - name: Check no_std build
+      run: cargo check --target thumbv6m-none-eabi --no-default-features --features trace-log,checker,enable-serde
+
   # Lint dependency graph for security advisories, duplicate versions, and
   # incompatible licences.
   cargo_deny:

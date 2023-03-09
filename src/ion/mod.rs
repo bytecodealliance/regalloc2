@@ -16,7 +16,9 @@
 use crate::cfg::CFGInfo;
 use crate::ssa::validate_ssa;
 use crate::{Function, MachineEnv, Output, PReg, ProgPoint, RegAllocError, RegClass};
-use std::collections::HashMap;
+use alloc::vec;
+use alloc::vec::Vec;
+use hashbrown::HashMap;
 
 pub(crate) mod data_structures;
 pub use data_structures::Stats;
@@ -82,7 +84,7 @@ impl<'a, F: Function> Env<'a, F> {
 
             stats: Stats::default(),
 
-            debug_annotations: std::collections::HashMap::new(),
+            debug_annotations: hashbrown::HashMap::new(),
             annotations_enabled,
 
             conflict_set: Default::default(),

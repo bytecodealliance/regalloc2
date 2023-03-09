@@ -12,6 +12,9 @@
 //   TR-06-33870
 //   https://www.cs.rice.edu/~keith/EMBED/dom.pdf
 
+use alloc::vec;
+use alloc::vec::Vec;
+
 use crate::Block;
 
 // Helper
