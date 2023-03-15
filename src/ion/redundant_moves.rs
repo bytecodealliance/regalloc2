@@ -111,9 +111,9 @@ impl RedundantMoveEliminator {
     pub fn clear_alloc(&mut self, alloc: Allocation) {
         trace!("   redundant move eliminator: clear {:?}", alloc);
         if let Some(ref mut existing_copies) = self.reverse_allocs.get_mut(&alloc) {
-            for to_inval in existing_copies.iter() {
+            for to_inval in existing_copies.drain(..) {
                 trace!("     -> clear existing copy: {:?}", to_inval);
-                if let Some(val) = self.allocs.get_mut(to_inval) {
+                if let Some(val) = self.allocs.get_mut(&to_inval) {
                     match val {
                         RedundantMoveState::Copy(_, Some(vreg)) => {
                             *val = RedundantMoveState::Orig(*vreg);
@@ -121,9 +121,8 @@ impl RedundantMoveEliminator {
                         _ => *val = RedundantMoveState::None,
                     }
                 }
-                self.allocs.remove(to_inval);
+                self.allocs.remove(&to_inval);
             }
-            existing_copies.clear();
         }
         self.allocs.remove(&alloc);
     }
