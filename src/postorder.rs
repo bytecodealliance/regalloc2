@@ -18,8 +18,7 @@ pub fn calculate<'a, SuccFn: Fn(Block) -> &'a [Block]>(
     let mut ret = vec![];
 
     // State: visited-block map, and explicit DFS stack.
-    let mut visited = vec![];
-    visited.resize(num_blocks, false);
+    let mut visited = vec![false; num_blocks];
 
     struct State<'a> {
         block: Block,
