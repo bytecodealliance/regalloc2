@@ -53,12 +53,12 @@ impl<'a> RegTraversalIter<'a> {
         }
         let hints = [hint_reg, hint2_reg];
         let class = class as u8 as usize;
-        let offset_pref = if env.preferred_regs_by_class[class].len() > 0 {
+        let offset_pref = if !env.preferred_regs_by_class[class].is_empty() {
             offset % env.preferred_regs_by_class[class].len()
         } else {
             0
         };
-        let offset_non_pref = if env.non_preferred_regs_by_class[class].len() > 0 {
+        let offset_non_pref = if !env.non_preferred_regs_by_class[class].is_empty() {
             offset % env.non_preferred_regs_by_class[class].len()
         } else {
             0

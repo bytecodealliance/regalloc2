@@ -126,7 +126,7 @@ impl AdaptiveMap {
                 }
                 None
             }
-            &Self::Large(ref map) => {
+            Self::Large(map) => {
                 let value = map.get(&key).cloned();
                 value
             }
@@ -139,7 +139,7 @@ impl AdaptiveMap {
                 ref keys,
                 ref values,
             } => AdaptiveMapIter::Small(&keys[0..len as usize], &values[0..len as usize]),
-            &Self::Large(ref map) => AdaptiveMapIter::Large(map.iter()),
+            Self::Large(map) => AdaptiveMapIter::Large(map.iter()),
         }
     }
 

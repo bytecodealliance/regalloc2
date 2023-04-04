@@ -25,8 +25,8 @@ use crate::{
     Allocation, Block, Edit, Function, FxHashMap, Inst, InstPosition, OperandConstraint,
     OperandKind, OperandPos, PReg, ProgPoint, RegClass, SpillSlot, VReg,
 };
+use alloc::format;
 use alloc::vec::Vec;
-use alloc::{format, vec};
 use core::fmt::Debug;
 use smallvec::{smallvec, SmallVec};
 
@@ -630,7 +630,7 @@ impl<'a, F: Function> Env<'a, F> {
         }
 
         // Handle multi-fixed-reg constraints by copying.
-        for fixup in core::mem::replace(&mut self.multi_fixed_reg_fixups, vec![]) {
+        for fixup in core::mem::take(&mut self.multi_fixed_reg_fixups) {
             let from_alloc = self.get_alloc(fixup.pos.inst(), fixup.from_slot as usize);
             let to_alloc = Allocation::reg(PReg::from_index(fixup.to_preg.index()));
             trace!(
@@ -869,7 +869,7 @@ impl<'a, F: Function> Env<'a, F> {
                     if let Some(reg) = self.env.scratch_by_class[regclass as usize] {
                         return Some(Allocation::reg(reg));
                     }
-                    while let Some(preg) = scratch_iter.next() {
+                    for preg in scratch_iter.by_ref() {
                         if !self.pregs[preg.index()]
                             .allocations
                             .btree

@@ -30,12 +30,12 @@ impl RedundantMoveEliminator {
         let from_state = self
             .allocs
             .get(&from)
-            .map(|&p| p)
+            .copied()
             .unwrap_or(RedundantMoveState::None);
         let to_state = self
             .allocs
             .get(&to)
-            .map(|&p| p)
+            .copied()
             .unwrap_or(RedundantMoveState::None);
 
         trace!(

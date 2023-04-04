@@ -1,7 +1,7 @@
 //! Debugging output.
 
+use alloc::format;
 use alloc::string::ToString;
-use alloc::{format, vec};
 use alloc::{string::String, vec::Vec};
 
 use super::Env;
@@ -58,7 +58,7 @@ impl<'a, F: Function> Env<'a, F> {
         if self.annotations_enabled {
             self.debug_annotations
                 .entry(progpoint)
-                .or_insert_with(|| vec![])
+                .or_insert_with(Vec::new)
                 .push(s);
         }
     }

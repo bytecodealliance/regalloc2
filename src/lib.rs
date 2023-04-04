@@ -305,8 +305,7 @@ impl VReg {
 
     #[inline(always)]
     pub const fn vreg(self) -> usize {
-        let vreg = (self.bits >> 1) as usize;
-        vreg
+        (self.bits >> 1) as usize
     }
 
     #[inline(always)]
@@ -723,7 +722,7 @@ impl Operand {
     /// are used to track dataflow.
     #[inline(always)]
     pub fn vreg(self) -> VReg {
-        let vreg_idx = ((self.bits as usize) & VReg::MAX) as usize;
+        let vreg_idx = (self.bits as usize) & VReg::MAX;
         VReg::new(vreg_idx, self.class())
     }
 
@@ -1204,7 +1203,7 @@ impl ProgPoint {
     /// Create a new ProgPoint before or after the given instruction.
     #[inline(always)]
     pub fn new(inst: Inst, pos: InstPosition) -> Self {
-        let bits = ((inst.0 as u32) << 1) | (pos as u8 as u32);
+        let bits = (inst.0 << 1) | (pos as u8 as u32);
         Self { bits }
     }
 

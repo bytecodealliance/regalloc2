@@ -107,15 +107,14 @@ impl<'a, F: Function> Env<'a, F> {
         }
 
         // Check for a requirements conflict.
-        if self.bundles[from.index()].cached_stack()
+        if (self.bundles[from.index()].cached_stack()
             || self.bundles[from.index()].cached_fixed()
             || self.bundles[to.index()].cached_stack()
-            || self.bundles[to.index()].cached_fixed()
+            || self.bundles[to.index()].cached_fixed())
+            && self.merge_bundle_requirements(from, to).is_err()
         {
-            if self.merge_bundle_requirements(from, to).is_err() {
-                trace!(" -> conflicting requirements; aborting merge");
-                return false;
-            }
+            trace!(" -> conflicting requirements; aborting merge");
+            return false;
         }
 
         trace!(" -> committing to merge");

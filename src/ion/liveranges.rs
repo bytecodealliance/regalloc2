@@ -385,11 +385,9 @@ impl<'a, F: Function> Env<'a, F> {
             }
 
             for &pred in self.func.block_preds(block) {
-                if self.liveouts[pred.index()].union_with(&live) {
-                    if !workqueue_set.contains(&pred) {
-                        workqueue_set.insert(pred);
-                        workqueue.push_back(pred);
-                    }
+                if self.liveouts[pred.index()].union_with(&live) && !workqueue_set.contains(&pred) {
+                    workqueue_set.insert(pred);
+                    workqueue.push_back(pred);
                 }
             }
 

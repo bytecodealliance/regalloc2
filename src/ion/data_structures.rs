@@ -457,7 +457,7 @@ impl<'a, F: Function> Env<'a, F> {
         let old_class = self.vregs[vreg.vreg()].class.replace(vreg.class());
         // We should never observe two different classes for two
         // mentions of a VReg in the source program.
-        debug_assert!(old_class == None || old_class == Some(vreg.class()));
+        debug_assert!(old_class.is_none() || old_class == Some(vreg.class()));
     }
 
     /// Is this vreg actually used in the source program?

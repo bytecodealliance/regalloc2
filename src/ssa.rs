@@ -115,18 +115,16 @@ pub fn validate_ssa<F: Function>(f: &F, cfginfo: &CFGInfo) -> Result<(), RegAllo
                         }
                     }
                 }
-            } else {
-                if f.is_branch(insn) || f.is_ret(insn) {
-                    trace!("Block terminator found in the middle of a block");
-                    return Err(RegAllocError::BB(block));
-                }
+            } else if f.is_branch(insn) || f.is_ret(insn) {
+                trace!("Block terminator found in the middle of a block");
+                return Err(RegAllocError::BB(block));
             }
         }
     }
 
     // Check that the entry block has no block args: otherwise it is
     // undefined what their value would be.
-    if f.block_params(f.entry_block()).len() > 0 {
+    if !f.block_params(f.entry_block()).is_empty() {
         trace!("Entry block contains block args");
         return Err(RegAllocError::BB(f.entry_block()));
     }

@@ -46,7 +46,7 @@ macro_rules! define_index {
             }
         }
 
-        impl crate::index::ContainerIndex for $ix {}
+        impl $crate::index::ContainerIndex for $ix {}
     };
 }
 

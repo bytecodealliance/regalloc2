@@ -187,7 +187,7 @@ impl<'a, F: Function> Env<'a, F> {
             }
         }
 
-        if conflicts.len() > 0 {
+        if !conflicts.is_empty() {
             return AllocRegResult::Conflict(conflicts, first_conflict.unwrap());
         }
 
@@ -360,7 +360,7 @@ impl<'a, F: Function> Env<'a, F> {
             trace!("range{}: use {:?}", range.index(), u);
         }
         rangedata.set_uses_spill_weight(w);
-        if rangedata.uses.len() > 0 && rangedata.uses[0].operand.kind() == OperandKind::Def {
+        if !rangedata.uses.is_empty() && rangedata.uses[0].operand.kind() == OperandKind::Def {
             // Note that we *set* the flag here, but we never *clear*
             // it: it may be set by a progmove as well (which does not
             // create an explicit use or def), and we want to preserve
@@ -730,13 +730,13 @@ impl<'a, F: Function> Env<'a, F> {
             }
         }
 
-        if self.bundles[bundle.index()].ranges.len() > 0 {
+        if !self.bundles[bundle.index()].ranges.is_empty() {
             self.recompute_bundle_properties(bundle);
             let prio = self.bundles[bundle.index()].prio;
             self.allocation_queue
                 .insert(bundle, prio as usize, reg_hint);
         }
-        if self.bundles[new_bundle.index()].ranges.len() > 0 {
+        if !self.bundles[new_bundle.index()].ranges.is_empty() {
             self.recompute_bundle_properties(new_bundle);
             let prio = self.bundles[new_bundle.index()].prio;
             self.allocation_queue
@@ -979,7 +979,7 @@ impl<'a, F: Function> Env<'a, F> {
         // Recompute bundle properties for all new bundles and enqueue
         // them.
         for bundle in new_bundles {
-            if self.bundles[bundle.index()].ranges.len() > 0 {
+            if !self.bundles[bundle.index()].ranges.is_empty() {
                 self.recompute_bundle_properties(bundle);
                 let prio = self.bundles[bundle.index()].prio;
                 self.allocation_queue

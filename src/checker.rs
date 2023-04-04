@@ -182,10 +182,11 @@ pub enum CheckerError {
 /// Equivalent to a set of virtual register names, with the
 /// universe-set as top and empty set as bottom lattice element. The
 /// meet-function is thus set intersection.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 enum CheckerValue {
     /// The lattice top-value: this value could be equivalent to any
     /// vreg (i.e., the universe set).
+    #[default]
     Universe,
     /// The set of VRegs that this value is equal to.
     VRegs(FxHashSet<VReg>),
@@ -204,12 +205,6 @@ impl CheckerValue {
             CheckerValue::Universe => None,
             CheckerValue::VRegs(vregs) => Some(vregs),
         }
-    }
-}
-
-impl Default for CheckerValue {
-    fn default() -> CheckerValue {
-        CheckerValue::Universe
     }
 }
 
@@ -286,8 +281,9 @@ fn visit_all_vregs<F: Function, V: FnMut(VReg)>(f: &F, mut v: V) {
 }
 
 /// State that steps through program points as we scan over the instruction stream.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 enum CheckerState {
+    #[default]
     Top,
     Allocations(FxHashMap<Allocation, CheckerValue>),
 }
@@ -366,12 +362,6 @@ impl CheckerState {
 
     fn initial() -> Self {
         CheckerState::Allocations(FxHashMap::default())
-    }
-}
-
-impl Default for CheckerState {
-    fn default() -> CheckerState {
-        CheckerState::Top
     }
 }
 
@@ -590,7 +580,7 @@ impl CheckerState {
                     self.set_value(into, val);
                 }
             }
-            &CheckerInst::ParallelMove { ref moves } => {
+            CheckerInst::ParallelMove { moves } => {
                 // First, build map of actions for each vreg in an
                 // alloc. If an alloc has a reg V_i before a parallel
                 // move, then for each use of V_i as a source (V_i ->
@@ -627,10 +617,10 @@ impl CheckerState {
                     }
                 }
             }
-            &CheckerInst::Op {
-                ref operands,
-                ref allocs,
-                ref clobbers,
+            CheckerInst::Op {
+                operands,
+                allocs,
+                clobbers,
                 ..
             } => {
                 // For each def, (i) update alloc to reflect defined
@@ -648,12 +638,12 @@ impl CheckerState {
                     self.remove_value(&Allocation::reg(*clobber));
                 }
             }
-            &CheckerInst::Safepoint { ref allocs, .. } => {
+            CheckerInst::Safepoint { allocs, .. } => {
                 for (alloc, value) in self.get_mappings_mut() {
                     if alloc.is_reg() {
                         continue;
                     }
-                    if !allocs.contains(&alloc) {
+                    if !allocs.contains(alloc) {
                         // Remove all reftyped vregs as labels.
                         let new_vregs = value
                             .vregs()
@@ -820,7 +810,7 @@ impl<'a, F: Function> Checker<'a, F> {
         for &(progpoint, slot) in &out.safepoint_slots {
             safepoint_slots
                 .entry(progpoint.inst())
-                .or_insert_with(|| vec![])
+                .or_insert_with(Vec::new)
                 .push(slot);
         }
 
@@ -850,7 +840,7 @@ impl<'a, F: Function> Checker<'a, F> {
     ) {
         // If this is a safepoint, then check the spillslots at this point.
         if self.f.requires_refs_on_stack(inst) {
-            let allocs = safepoint_slots.remove(&inst).unwrap_or_else(|| vec![]);
+            let allocs = safepoint_slots.remove(&inst).unwrap_or_default();
 
             let checkinst = CheckerInst::Safepoint { inst, allocs };
             self.bb_insts.get_mut(&block).unwrap().push(checkinst);
@@ -860,8 +850,8 @@ impl<'a, F: Function> Checker<'a, F> {
         // not exist in post-regalloc code, and the edge-moves have to
         // be inserted before the branch rather than after.
         if !self.f.is_branch(inst) {
-            let operands: Vec<_> = self.f.inst_operands(inst).iter().cloned().collect();
-            let allocs: Vec<_> = out.inst_allocs(inst).iter().cloned().collect();
+            let operands: Vec<_> = self.f.inst_operands(inst).to_vec();
+            let allocs: Vec<_> = out.inst_allocs(inst).to_vec();
             let clobbers: Vec<_> = self.f.inst_clobbers(inst).into_iter().collect();
             let checkinst = CheckerInst::Op {
                 inst,
@@ -887,7 +877,7 @@ impl<'a, F: Function> Checker<'a, F> {
                     args.len(),
                     params.len()
                 );
-                if args.len() > 0 {
+                if !args.is_empty() {
                     let moves = params.iter().cloned().zip(args.iter().cloned()).collect();
                     self.edge_insts
                         .get_mut(&(block, succ))
@@ -1049,7 +1039,7 @@ impl<'a, F: Function> Checker<'a, F> {
                     &CheckerInst::Move { from, into } => {
                         trace!("    {} -> {}", from, into);
                     }
-                    &CheckerInst::Safepoint { ref allocs, .. } => {
+                    CheckerInst::Safepoint { allocs, .. } => {
                         let mut slotargs = vec![];
                         for &slot in allocs {
                             slotargs.push(format!("{}", slot));
@@ -1069,7 +1059,7 @@ impl<'a, F: Function> Checker<'a, F> {
                 let mut state = state.clone();
                 for edge_inst in self.edge_insts.get(&(bb, succ)).unwrap() {
                     match edge_inst {
-                        &CheckerInst::ParallelMove { ref moves } => {
+                        CheckerInst::ParallelMove { moves } => {
                             let moves = moves
                                 .iter()
                                 .map(|(dest, src)| format!("{} -> {}", src, dest))

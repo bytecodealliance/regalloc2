@@ -108,7 +108,7 @@ impl CFGInfo {
 
             approx_loop_depth.push(cur_depth);
 
-            while backedge_stack.len() > 0 && backedge_out[block] > 0 {
+            while !backedge_stack.is_empty() && backedge_out[block] > 0 {
                 backedge_out[block] -= 1;
                 *backedge_stack.last_mut().unwrap() -= 1;
                 if *backedge_stack.last().unwrap() == 0 {
