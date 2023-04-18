@@ -1161,35 +1161,10 @@ approach of doing only an intra-block analysis. This turns out to be
 sufficient to remove most redundant moves, especially in the common
 case of a single use of an otherwise-spilled value.
 
-Note that we could do better *if* we accepted only SSA code, because
-we would know that a value could not be redefined once written. We
-should consider this again once we clean up and remove the non-SSA
-support.
+Note that there is an opportunity to do better: as we only accept SSA
+code we would know that a value could not be redefined once written.
 
 # Future Plans
-
-## SSA-Only Cleanup
-
-When the major user (Cranelift via the regalloc.rs shim) migrates to
-generate SSA code and native regalloc2 operands, there are many bits
-of complexity we can remove, as noted throughout this
-writeup. Briefly, we could (i) remove special handling of program
-moves, (ii) remove the pinned-vreg hack, (iii) simplify redundant-move
-elimination, (iv) remove special handling of "mod" operands, and (v)
-probably simplify plenty of code given the invariant that a def always
-starts a range.
-
-More importantly, we expect this change to result in potentially much
-better allocation performance. The use of special pinned vregs and
-moves to/from them instead of fixed-reg constraints, explicit moves
-for every reused-input constraint, and already-sequentialized series
-of move instructions on edges for phi nodes, are all expensive ways of
-encoding regalloc2's native input primitives that have to be
-reverse-engineered. Removing that translation layer would be
-ideal. Also, allowing regalloc2 to handle phi-node (blockparam)
-lowering in a way that is integrated with other moves will likely
-generate better code than the way that program-move handling interacts
-with Cranelift's manually lowered phi-moves at the moment.
 
 ## Better Split Heuristics
 
@@ -1197,17 +1172,6 @@ We have spent quite some effort trying to improve splitting behavior,
 and it is now generally decent, but more work could be done here,
 especially with regard to the interaction between splits and the loop
 nest.
-
-## Native Debuginfo Output
-
-Cranelift currently computes value locations (in registers and
-stack-slots) for detailed debuginfo with an expensive post-pass, after
-regalloc is complete. This is because the existing register allocator
-does not support returning this information directly. However,
-providing such information by generating it while we scan over
-liveranges in each vreg would be relatively simple, and has the
-potential to be much faster and more reliable for Cranelift. We should
-investigate adding an interface for this to regalloc2 and using it.
 
 # Appendix: Comparison to IonMonkey Allocator
 
