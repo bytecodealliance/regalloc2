@@ -49,9 +49,8 @@ successors.
 
 Instructions are opaque to the allocator except for a few important
 bits: (1) `is_ret` (is a return instruction); (2) `is_branch` (is a
-branch instruction); (3) `is_move` (is a move between registers), and
-(4) a vector of Operands, covered below. Every block must end in a
-return or branch.
+branch instruction); and (3) a vector of Operands, covered below.
+Every block must end in a return or branch.
 
 Both instructions and blocks are named by indices in contiguous index
 spaces. A block's instructions must be a contiguous range of
@@ -103,9 +102,6 @@ consists of the following fields:
     available in a way that does not conflict with outputs, the use
     should be placed at the "after" position.
 
-This operand-specification design allows for SSA and non-SSA code (see
-section below for details).
-
 VRegs, or virtual registers, are specified by an index and a register
 class (Float or Int). The classes are not given separately; they are
 encoded on every mention of the vreg. (In a sense, the class is an
@@ -133,9 +129,7 @@ thus imperative that we support this pattern well in the register
 allocator.
 
 This instruction-set design is somewhat at odds with an SSA
-representation, where a value cannot be redefined. Even in non-SSA
-code, it is awkward to overwrite a vreg that may need to be used again
-later.
+representation, where a value cannot be redefined.
 
 Thus, the allocator supports a useful fiction of sorts: the
 instruction can be described as if it has three register mentions --
@@ -151,31 +145,12 @@ We will see below how the allocator makes this work by doing some
 preprocessing so that the core allocation algorithms do not need to
 worry about this constraint.
 
-Note that some non-SSA clients, such as Cranelift using the
-regalloc.rs-to-regalloc2 compatibility shim, will instead generate
-their own copies (copying to the output vreg first) and then use "mod"
-operand kinds, which allow the output vreg to be both read and
-written. regalloc2 works hard to make this as efficient as the
-reused-input scheme by treating moves specially (see below).
-
 ## SSA
 
-regalloc2 was originally designed to take an SSA IR as input, where
-the usual definitions apply: every vreg is defined exactly once, and
-every vreg use is dominated by its one def. (Useing blockparams means
-that we do not need additional conditions for phi-nodes.)
-
-The allocator then evolved to support non-SSA inputs as well. As a
-result, the input is maximally flexible right now: it does not check
-for and enforce, nor try to take advantage of, the single-def
-rule. However, blockparams are still available.
-
-In the future, we hope to change this, however, once compilation of
-non-SSA inputs is no longer needed. Specifically, if we can migrate
-Cranelift to the native regalloc2 API rather than the regalloc.rs
-compatibility shim, we will be able to remove "mod" operand kinds,
-assume (and verify) single defs, and take advantage of this when
-reasoning about various algorithms in the allocator.
+regalloc2 takes an SSA IR as input, where the usual definitions apply:
+every vreg is defined exactly once, and every vreg use is dominated by
+its one def. (Useing blockparams means that we do not need additional
+conditions for phi-nodes.)
 
 ## Block Parameters
 
@@ -197,52 +172,6 @@ and put all the defs at the top of the block as a separate kind of
 def. The tradeoff is that a vreg's def now has two possibilities --
 ordinary instruction def or blockparam def -- but this is fairly
 reasonable to handle.
-
-## Non-SSA
-
-As mentioned, regalloc2 supports non-SSA inputs as well. No special
-flag is needed to place the allocator in this mode or disable SSA
-verification. However, we hope to eventually remove this functionality
-when it is no longer needed.
-
-## Program Moves
-
-As an especially useful feature for non-SSA IR, regalloc2 supports
-special handling of "move" instructions: it will try to merge the
-input and output allocations to elide the move altogether.
-
-It turns out that moves are used frequently in the non-SSA input that
-we observe from Cranelift via the regalloc.rs compatibility shim. They
-are used in three different ways:
-
-- Moves to or from physical registers, used to implement ABI details
-  or place values in particular registers required by certain
-  instructions.
-- Moves between vregs on program edges, as lowered from phi/blockparam
-  dataflow in the higher-level SSA IR (CLIF).
-- Moves just prior to two-address-form instructions that modify an
-  input to form an output: the input is moved to the output vreg to
-  avoid clobbering the input.
-  
-Note that, strictly speaking, special handling of program moves is
-redundant because each of these kinds of uses has an equivalent in the
-"native" regalloc2 API:
-
-- Moves to/from physical registers can become operand constraints,
-  either on a particular instruction that requires/produces the values
-  in certain registers (e.g., a call or ret with args/results in regs,
-  or a special instruction with fixed register args), or on a ghost
-  instruction at the top of function that defs vregs for all in-reg
-  args.
-  
-- Moves between vregs as a lowering of blockparams/phi nodes can be
-  replaced with use of regalloc2's native blockparam support.
-  
-- Moves prior to two-address-form instructions can be replaced with
-  the reused-input mechanism.
-  
-Thus, eventually, special handling of program moves should be
-removed. However, it is very important for performance at the moment.
 
 ## Output
 
@@ -335,25 +264,6 @@ to-block, to-vreg), and has an entry for every parameter on every
 branch that ends a block. There is exactly one "out" tuple for every
 "in" tuple. As mentioned above, we will later scan over both to
 generate moves.
-
-### Program-Move Vectors: Source-Side and Dest-Side
-
-Similar to blockparams, we handle moves specially. In fact, we ingest
-all moves in the input program into a set of vectors -- "move sources"
-and "move dests", analogous to the "ins" and "outs" blockparam vectors
-described above -- and then completely ignore the moves in the program
-thereafter. The semantics of the API are such that all program moves
-will be recreated with regalloc-inserted edits, and should not still
-be emitted after regalloc. This may seem inefficient, but in fact it
-allows for better code because it integrates program-moves with the
-move resolution that handles other forms of vreg movement. We
-previously took the simpler approach of handling program-moves as
-opaque instructions with a source and dest, and we found that there
-were many redundant move-chains (A->B, B->C) that are eliminated when
-everything is handled centrally.
-
-We also construct a `prog_move_merges` vector of live-range index pairs
-to attempt to merge when we reach that stage of allocation.
 
 ## Core Allocation State: Ranges, Uses, Bundles, VRegs, PRegs
 
@@ -571,31 +481,14 @@ For each instruction, we process its effects on the scan state:
   instruction), add a single-program-point liverange to each clobbered
   preg.
 
-- If not a move:
-  - for each program point [after, before], for each operand at
-    this point(\*):
-    - if a def or mod:
-      - if not currently live, this is a dead def; create an empty
-        LR.
-    - if a def:
-      - set the start of the LR for this vreg to this point.
-      - set as dead.
-    - if a use:
-      - create LR if not live, with start at beginning of block.
-      
-- Else, if a move:
-  - simple case (no pinned vregs): 
-    - add to `prog_move` data structures, and update LRs as above.
-    - effective point for the use is *after* the move, and for the mod
-      is *before* the *next* instruction. Why not more conventional
-      use-before, def-after? Because this allows the move to happen in
-      parallel with other moves that the move-resolution inserts
-      (between split fragments of a vreg); these moves always happen
-      at the gaps between instructions. We place it after, not before,
-      because before may land at a block-start and interfere with edge
-      moves, while after is always a "normal" gap (a move cannot end a
-      block).
-  - otherwise: see below (pinned vregs).
+- For each program point [after, before], for each operand at
+  this point(\*):
+  - if a def:
+    - if not currently live, this is a dead def; create an empty LR.
+    - set the start of the LR for this vreg to this point.
+    - set as dead.
+  - if a use:
+    - create LR if not live, with start at beginning of block.
 
 
 (\*) an instruction operand's effective point is adjusted in a few
@@ -608,62 +501,6 @@ We then treat blockparams as defs at the end of the scan (beginning of
 the block), and create the "ins" tuples. (The uses for the other side
 of the edge are already handled as normal uses on a branch
 instruction.)
-
-### Optimization: Pinned VRegs and Moves
-
-In order to efficiently handle the translation from the regalloc.rs
-API, which uses named RealRegs that are distinct from VirtualRegs
-rather than operand constraints, we need to implement a few
-optimizations. The translation layer translates RealRegs as particular
-vregs at the regalloc2 layer, because we need to track their liveness
-properly. Handling these as "normal" vregs, with massive bundles of
-many liveranges throughout the function, turns out to be a very
-inefficient solution. So we mark them as "pinned" with a hook in the
-RA2 API. Semantically, this means they are always assigned to a
-particular preg whenever mentioned in an operand (but *NOT* between
-those points; it is possible for a pinned vreg to move all about
-registers and stackslots as long as it eventually makes it back to its
-home preg in time for its next use).
-
-This has a few implications during liverange construction. First, when
-we see an operand that mentions a pinned vreg, we translate this to an
-operand constraint that names a fixed preg. Later, when we build
-bundles, we will not create a bundle for the pinned vreg; instead we
-will transfer its liveranges directly as unmoveable reservations in
-pregs' allocation maps. Finally, we need to handle moves specially.
-
-With the caveat that "this is a massive hack and I am very very
-sorry", here is how it works. A move between two pinned vregs is easy:
-we add that to the inserted-moves vector right away because we know the
-Allocation on both sides. A move from a pinned vreg to a normal vreg
-is the first interesting case. In this case, we (i) create a ghost def
-with a fixed-register policy on the normal vreg, doing the other
-liverange-maintenance bits as above, and (ii) adjust the liveranges on
-the pinned vreg (so the preg) in a particular way. If the preg is live
-flowing downward, then this move implies a copy, because the normal
-vreg and the pinned vreg are both used in the future and cannot
-overlap. But we cannot keep the preg continuously live, because at
-exactly one program point, the normal vreg is pinned to it. So we cut
-the downward-flowing liverange just *after* the normal vreg's
-fixed-reg ghost def. Then, whether it is live downward or not, we
-create an upward-flowing liverange on the pinned vreg that ends just
-*before* the ghost def.
-
-The move-from-normal-to-pinned case is similar. First, we create a
-ghost use on the normal vreg that pins its value at this program point
-to the fixed preg. Then, if the preg is live flowing downward, we trim
-its downward liverange to start just after the fixed use.
-
-There are also some tricky metadata-maintenance records that we emit
-so that the checker can keep this all straight.
-
-The outcome of this hack, together with the operand-constraint
-translation on normal uses/defs/mods on pinned vregs, is that we
-essentially are translating regalloc.rs's means of referring to real
-registers to regalloc2's preferred abstractions by doing a bit of
-reverse-engineering. It is not perfect, but it works. Still, we hope
-to rip it all out once we get rid of the need for the compatibility
-shim.
 
 ### Handling Reused Inputs
 
@@ -710,9 +547,8 @@ splitting later), and then try out assignments, backtrack via
 eviction, and split continuously to chip away at the problem until we
 have a working set of allocation assignments.
 
-We attempt to merge three kinds of bundle pairs: reused-input to
-corresponding output; across program moves; and across blockparam
-assignments.
+We attempt to merge two kinds of bundle pairs: reused-input to
+corresponding output; and across blockparam assignments.
 
 To merge two bundles, we traverse over both their sorted liverange
 vectors at once, checking for overlaps. Note that we can do this without
@@ -1016,18 +852,6 @@ stack spill, and if this is the case, it is better to do the store
 just after the last use and reload just before the first use of the
 respective bundles.
 
-Unfortunately, this heuristic choice does interact somewhat poorly
-with program moves: moves between two normal (non-pinned) vregs do not
-create ghost uses or defs, and so these points of the ranges can be
-spilled, turning a normal register move into a move from or to the
-stack. However, empirically, we have found that adding such ghost
-uses/defs actually regresses some cases as well, because it pulls
-values back into registers when we could have had a stack-to-stack
-move (that might even be a no-op if the same spillset); overall, it
-seems better to trim. It also improves allocation performance by
-reducing contention in the registers during the core loop (before
-second-chance allocation).
-
 ## Second-Chance Allocation: Spilled Bundles
 
 Once the main allocation loop terminates, when all bundles have either
@@ -1111,11 +935,8 @@ There are two sources of moves that we must generate. The first are
 moves between different ranges of the same vreg, as the split pieces
 of that vreg's original bundle may have been assigned to different
 locations. The second are moves that result from move semantics in the
-input program: either assignments from blockparam args on branches to
-the target block's params, or program move instructions. (Recall that
-we reify program moves in a unified way with all other moves, so the
-client should not generate any machine code for their original moves
-in the pre-allocation program.)
+input program: assignments from blockparam args on branches to the
+target block's params.
 
 Moves are tricky to handle efficiently because they join two
 potentially very different locations in the program (in the case of
@@ -1157,23 +978,11 @@ This completes the "edge-moves". We sort the half-move array and then
 have all of the alloc-to-alloc pairs on a given (from-block, to-block)
 edge.
 
-There are also two kinds of moves that happen within blocks. First,
-when a live-range ends and another begins for the same vreg in the
-same block (i.e., a split in the middle of a block), we know both
+Next, when a live-range ends and another begins for the same vreg in
+the same block (i.e., a split in the middle of a block), we know both
 sides of the move immediately (because it is the same vreg and we can
 look up the adjacent allocation easily), and we can generate that
 move.
-
-Second, program moves occur within blocks. Here we need to do a
-similar thing as for block-edge half-moves, but keyed on program point
-instead. This is why the `prog_move_srcs` and `prog_move_dsts` arrays
-are initially sorted by their (vreg, inst) keys: we can directly fill
-in their allocation slots during our main scan. Note that when sorted
-this way, the source and dest for a given move instruction will be at
-different indices. After the main scan, we *re-sort* the arrays by
-just the instruction, so the two sides of a move line up at the same
-index; we can then traverse both arrays, zipped together, and generate
-moves.
 
 Finally, we generate moves to fix up multi-fixed-reg-constraint
 situations, and make reused inputs work, as described earlier.
@@ -1206,9 +1015,7 @@ priorities:
 
 - In-edge moves, to place edge-moves before the first instruction in a
   block.
-- Block-param metadata, used for the checker only.
 - Regular, used for vreg movement between allocations.
-- Post-regular, used for checker metadata related to pinned-vreg moves.
 - Multi-fixed-reg, used for moves that handle the
   single-vreg-in-multiple-fixed-pregs constraint case.
 - Reused-input, used for implementing outputs with reused-input policies.
@@ -1354,35 +1161,10 @@ approach of doing only an intra-block analysis. This turns out to be
 sufficient to remove most redundant moves, especially in the common
 case of a single use of an otherwise-spilled value.
 
-Note that we could do better *if* we accepted only SSA code, because
-we would know that a value could not be redefined once written. We
-should consider this again once we clean up and remove the non-SSA
-support.
+Note that there is an opportunity to do better: as we only accept SSA
+code we would know that a value could not be redefined once written.
 
 # Future Plans
-
-## SSA-Only Cleanup
-
-When the major user (Cranelift via the regalloc.rs shim) migrates to
-generate SSA code and native regalloc2 operands, there are many bits
-of complexity we can remove, as noted throughout this
-writeup. Briefly, we could (i) remove special handling of program
-moves, (ii) remove the pinned-vreg hack, (iii) simplify redundant-move
-elimination, (iv) remove special handling of "mod" operands, and (v)
-probably simplify plenty of code given the invariant that a def always
-starts a range.
-
-More importantly, we expect this change to result in potentially much
-better allocation performance. The use of special pinned vregs and
-moves to/from them instead of fixed-reg constraints, explicit moves
-for every reused-input constraint, and already-sequentialized series
-of move instructions on edges for phi nodes, are all expensive ways of
-encoding regalloc2's native input primitives that have to be
-reverse-engineered. Removing that translation layer would be
-ideal. Also, allowing regalloc2 to handle phi-node (blockparam)
-lowering in a way that is integrated with other moves will likely
-generate better code than the way that program-move handling interacts
-with Cranelift's manually lowered phi-moves at the moment.
 
 ## Better Split Heuristics
 
@@ -1390,17 +1172,6 @@ We have spent quite some effort trying to improve splitting behavior,
 and it is now generally decent, but more work could be done here,
 especially with regard to the interaction between splits and the loop
 nest.
-
-## Native Debuginfo Output
-
-Cranelift currently computes value locations (in registers and
-stack-slots) for detailed debuginfo with an expensive post-pass, after
-regalloc is complete. This is because the existing register allocator
-does not support returning this information directly. However,
-providing such information by generating it while we scan over
-liveranges in each vreg would be relatively simple, and has the
-potential to be much faster and more reliable for Cranelift. We should
-investigate adding an interface for this to regalloc2 and using it.
 
 # Appendix: Comparison to IonMonkey Allocator
 
