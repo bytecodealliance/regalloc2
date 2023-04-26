@@ -68,17 +68,18 @@ use serde::{Deserialize, Serialize};
 /// class; i.e., they are disjoint.
 ///
 /// For tight bit-packing throughout our data structures, we support
-/// only two classes, "int" and "float". This will usually be enough
-/// on modern machines, as they have one class of general-purpose
+/// only three classes, "int", "float" and "vector". Usually two will
+/// be enough on modern machines, as they have one class of general-purpose
 /// integer registers of machine width (e.g. 64 bits), and another
 /// class of float/vector registers used both for FP and for vector
-/// operations. If needed, we could adjust bitpacking to allow for
-/// more classes in the future.
+/// operations. Additionally for machines with totally separate vector
+/// registers a third class is provided.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "enable-serde", derive(Serialize, Deserialize))]
 pub enum RegClass {
     Int = 0,
     Float = 1,
+    Vector = 2,
 }
 
 /// A physical register. Contains a physical register number and a class.
@@ -104,7 +105,7 @@ pub struct PReg {
 impl PReg {
     pub const MAX_BITS: usize = 6;
     pub const MAX: usize = (1 << Self::MAX_BITS) - 1;
-    pub const NUM_INDEX: usize = 1 << (Self::MAX_BITS + 1); // including RegClass bit
+    pub const NUM_INDEX: usize = 1 << (Self::MAX_BITS + 2); // including RegClass bits
 
     /// Create a new PReg. The `hw_enc` range is 6 bits.
     #[inline(always)]
@@ -124,10 +125,11 @@ impl PReg {
     /// The register class.
     #[inline(always)]
     pub const fn class(self) -> RegClass {
-        if self.bits & (1 << Self::MAX_BITS) == 0 {
-            RegClass::Int
-        } else {
-            RegClass::Float
+        match self.bits & (0b11 << Self::MAX_BITS) {
+            0 => RegClass::Int,
+            1 => RegClass::Float,
+            2 => RegClass::Vector,
+            _ => unreachable!(),
         }
     }
 
@@ -172,6 +174,7 @@ impl core::fmt::Display for PReg {
         let class = match self.class() {
             RegClass::Int => "i",
             RegClass::Float => "f",
+            RegClass::Vector => "v",
         };
         write!(f, "p{}{}", self.hw_enc(), class)
     }
@@ -299,21 +302,22 @@ impl VReg {
     pub const fn new(virt_reg: usize, class: RegClass) -> Self {
         debug_assert!(virt_reg <= VReg::MAX);
         VReg {
-            bits: ((virt_reg as u32) << 1) | (class as u8 as u32),
+            bits: ((virt_reg as u32) << 2) | (class as u8 as u32),
         }
     }
 
     #[inline(always)]
     pub const fn vreg(self) -> usize {
-        let vreg = (self.bits >> 1) as usize;
+        let vreg = (self.bits >> 2) as usize;
         vreg
     }
 
     #[inline(always)]
     pub const fn class(self) -> RegClass {
-        match self.bits & 1 {
+        match self.bits & 0b11 {
             0 => RegClass::Int,
             1 => RegClass::Float,
+            2 => RegClass::Vector,
             _ => unreachable!(),
         }
     }
@@ -734,6 +738,7 @@ impl Operand {
         match class_field {
             0 => RegClass::Int,
             1 => RegClass::Float,
+            2 => RegClass::Vector,
             _ => unreachable!(),
         }
     }
@@ -832,6 +837,7 @@ impl core::fmt::Display for Operand {
             match self.class() {
                 RegClass::Int => "i",
                 RegClass::Float => "f",
+                RegClass::Vector => "v",
             },
             self.constraint()
         )
@@ -1337,7 +1343,7 @@ pub struct MachineEnv {
     ///
     /// If an explicit scratch register is provided in `scratch_by_class` then
     /// it must not appear in this list.
-    pub preferred_regs_by_class: [Vec<PReg>; 2],
+    pub preferred_regs_by_class: [Vec<PReg>; 3],
 
     /// Non-preferred physical registers for each class. These are the
     /// registers that will be allocated if a preferred register is
@@ -1346,7 +1352,7 @@ pub struct MachineEnv {
     ///
     /// If an explicit scratch register is provided in `scratch_by_class` then
     /// it must not appear in this list.
-    pub non_preferred_regs_by_class: [Vec<PReg>; 2],
+    pub non_preferred_regs_by_class: [Vec<PReg>; 3],
 
     /// Optional dedicated scratch register per class. This is needed to perform
     /// moves between registers when cyclic move patterns occur. The
@@ -1363,7 +1369,7 @@ pub struct MachineEnv {
     /// If a scratch register is not provided then the register allocator will
     /// automatically allocate one as needed, spilling a value to the stack if
     /// necessary.
-    pub scratch_by_class: [Option<PReg>; 2],
+    pub scratch_by_class: [Option<PReg>; 3],
 
     /// Some `PReg`s can be designated as locations on the stack rather than
     /// actual registers. These can be used to tell the register allocator about

@@ -146,7 +146,7 @@ impl Function for Func {
     fn spillslot_size(&self, regclass: RegClass) -> usize {
         match regclass {
             RegClass::Int => 1,
-            RegClass::Float => 2,
+            RegClass::Float | RegClass::Vector => 2,
         }
     }
 }
@@ -659,9 +659,9 @@ pub fn machine_env() -> MachineEnv {
     fn regs(r: core::ops::Range<usize>) -> Vec<PReg> {
         r.map(|i| PReg::new(i, RegClass::Int)).collect()
     }
-    let preferred_regs_by_class: [Vec<PReg>; 2] = [regs(0..24), vec![]];
-    let non_preferred_regs_by_class: [Vec<PReg>; 2] = [regs(24..32), vec![]];
-    let scratch_by_class: [Option<PReg>; 2] = [None, None];
+    let preferred_regs_by_class: [Vec<PReg>; 3] = [regs(0..24), vec![], vec![]];
+    let non_preferred_regs_by_class: [Vec<PReg>; 3] = [regs(24..32), vec![], vec![]];
+    let scratch_by_class: [Option<PReg>; 3] = [None, None, None];
     let fixed_stack_slots = regs(32..63);
     // Register 63 is reserved for use as a fixed non-allocatable register.
     MachineEnv {

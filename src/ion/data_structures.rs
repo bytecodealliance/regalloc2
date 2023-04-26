@@ -404,8 +404,8 @@ pub struct Env<'a, F: Function> {
     pub spillslots: Vec<SpillSlotData>,
     pub slots_by_size: Vec<SpillSlotList>,
 
-    pub extra_spillslots_by_class: [SmallVec<[Allocation; 2]>; 2],
-    pub preferred_victim_by_class: [PReg; 2],
+    pub extra_spillslots_by_class: [SmallVec<[Allocation; 2]>; 3],
+    pub preferred_victim_by_class: [PReg; 3],
 
     // When multiple fixed-register constraints are present on a
     // single VReg at a single program point (this can happen for,
