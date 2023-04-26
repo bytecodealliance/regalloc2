@@ -70,8 +70,8 @@ impl<'a, F: Function> Env<'a, F> {
             slots_by_size: vec![],
             allocated_bundle_count: 0,
 
-            extra_spillslots_by_class: [smallvec![], smallvec![]],
-            preferred_victim_by_class: [PReg::invalid(), PReg::invalid()],
+            extra_spillslots_by_class: [smallvec![], smallvec![], smallvec![]],
+            preferred_victim_by_class: [PReg::invalid(), PReg::invalid(), PReg::invalid()],
 
             multi_fixed_reg_fixups: vec![],
             inserted_moves: vec![],

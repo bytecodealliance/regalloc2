@@ -812,14 +812,15 @@ impl<'a, F: Function> Env<'a, F> {
             redundant_move_process_side_effects(self, &mut redundant_moves, last_pos, pos_prio.pos);
             last_pos = pos_prio.pos;
 
-            // Gather all the moves with Int class and Float class
-            // separately. These cannot interact, so it is safe to
-            // have two separate ParallelMove instances. They need to
-            // be separate because moves between the two classes are
-            // impossible. (We could enhance ParallelMoves to
-            // understand register classes, but this seems simpler.)
+            // Gather all the moves in each RegClass separately.
+            // These cannot interact, so it is safe to have separate
+            // ParallelMove instances. They need to be separate because
+            // moves between the classes are impossible. (We could
+            // enhance ParallelMoves to understand register classes, but
+            // this seems simpler.)
             let mut int_moves: SmallVec<[InsertedMove; 8]> = smallvec![];
             let mut float_moves: SmallVec<[InsertedMove; 8]> = smallvec![];
+            let mut vec_moves: SmallVec<[InsertedMove; 8]> = smallvec![];
 
             for m in moves {
                 if m.from_alloc == m.to_alloc {
@@ -832,12 +833,17 @@ impl<'a, F: Function> Env<'a, F> {
                     RegClass::Float => {
                         float_moves.push(m.clone());
                     }
+                    RegClass::Vector => {
+                        vec_moves.push(m.clone());
+                    }
                 }
             }
 
-            for &(regclass, moves) in
-                &[(RegClass::Int, &int_moves), (RegClass::Float, &float_moves)]
-            {
+            for &(regclass, moves) in &[
+                (RegClass::Int, &int_moves),
+                (RegClass::Float, &float_moves),
+                (RegClass::Vector, &vec_moves),
+            ] {
                 // All moves in `moves` semantically happen in
                 // parallel. Let's resolve these to a sequence of moves
                 // that can be done one at a time.
