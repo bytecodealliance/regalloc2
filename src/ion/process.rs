@@ -196,10 +196,14 @@ impl<'a, F: Function> Env<'a, F> {
         trace!("  -> bundle {:?} assigned to preg {:?}", bundle, preg);
         self.bundles[bundle.index()].allocation = Allocation::reg(preg);
         for entry in &self.bundles[bundle.index()].ranges {
-            self.pregs[reg.index()]
+            let key = LiveRangeKey::from_range(&entry.range);
+            let res = self.pregs[reg.index()]
                 .allocations
                 .btree
-                .insert(LiveRangeKey::from_range(&entry.range), entry.index);
+                .insert(key, entry.index);
+
+            // We disallow LR overlap within bundles, so this should never be possible.
+            debug_assert!(res.is_none());
         }
 
         AllocRegResult::Allocated(Allocation::reg(preg))
