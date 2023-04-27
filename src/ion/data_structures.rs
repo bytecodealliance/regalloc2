@@ -38,7 +38,7 @@ pub struct CodeRange {
 impl CodeRange {
     #[inline(always)]
     pub fn is_empty(&self) -> bool {
-        self.from == self.to
+        self.from >= self.to
     }
     #[inline(always)]
     pub fn contains(&self, other: &Self) -> bool {

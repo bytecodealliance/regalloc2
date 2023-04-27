@@ -51,6 +51,11 @@ impl<'a, F: Function> Env<'a, F> {
             for entry in &self.vregs[vreg.index()].ranges {
                 let range = entry.range;
                 let alloc = self.get_alloc_for_range(entry.index);
+
+                if !alloc.as_stack().is_some() {
+                    continue;
+                }
+
                 trace!(" -> range {:?}: alloc {}", range, alloc);
                 while safepoint_idx < safepoints.len() && safepoints[safepoint_idx] < range.to {
                     if safepoints[safepoint_idx] < range.from {
