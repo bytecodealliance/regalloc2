@@ -795,9 +795,7 @@ impl<'a, F: Function> Env<'a, F> {
         let mut last_inst: Option<Inst> = None;
         let mut last_vreg: Option<VRegIndex> = None;
 
-        for entry_idx in 0..self.bundles[bundle.index()].ranges.len() {
-            // Iterate manually; don't borrow `self`.
-            let entry = self.bundles[bundle.index()].ranges[entry_idx];
+        for entry in core::mem::take(&mut self.bundles[bundle.index()].ranges) {
             let lr_from = entry.range.from;
             let lr_to = entry.range.to;
 
@@ -807,8 +805,7 @@ impl<'a, F: Function> Env<'a, F> {
             trace!(" -> removing old LR {:?} for vreg {:?}", entry.index, vreg);
 
             let mut last_live_pos = entry.range.from;
-            for use_idx in 0..self.ranges[entry.index.index()].uses.len() {
-                let u = self.ranges[entry.index.index()].uses[use_idx];
+            for u in core::mem::take(&mut self.ranges[entry.index.index()].uses) {
                 trace!("   -> use {:?} (last_live_pos {:?})", u, last_live_pos);
 
                 // If we just created a LR for this inst at the last
@@ -930,9 +927,6 @@ impl<'a, F: Function> Env<'a, F> {
                 last_vreg = Some(vreg);
             }
 
-            // Clear the use-list from the original LR.
-            self.ranges[entry.index.index()].uses = Default::default();
-
             // If there is space from the last use to the end of the
             // LR, put that in the spill bundle too.
             if entry.range.to > last_live_pos {
@@ -957,10 +951,6 @@ impl<'a, F: Function> Env<'a, F> {
                 );
             }
         }
-
-        // Clear the LR list in the original bundle.
-        self.bundles[bundle.index()].ranges.clear();
-        self.bundles[bundle.index()].ranges.shrink_to_fit();
 
         // Remove all of the removed LRs from respective vregs' lists.
         for vreg in removed_lrs_vregs {
