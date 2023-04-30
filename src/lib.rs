@@ -822,6 +822,9 @@ impl core::fmt::Debug for Operand {
 
 impl core::fmt::Display for Operand {
     fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        if let Some(preg) = self.as_fixed_nonallocatable() {
+            return write!(f, "Fixed: {preg}");
+        }
         match (self.kind(), self.pos()) {
             (OperandKind::Def, OperandPos::Late) | (OperandKind::Use, OperandPos::Early) => {
                 write!(f, "{:?}", self.kind())?;
