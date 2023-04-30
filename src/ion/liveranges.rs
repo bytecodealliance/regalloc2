@@ -577,7 +577,7 @@ impl<'a, F: Function> Env<'a, F> {
                                 if late_def_fixed.contains(&preg)
                                     || self.func.inst_clobbers(inst).contains(preg)
                                 {
-                                    log::trace!(
+                                    trace!(
                                         concat!(
                                             "-> operand {:?} is fixed to preg {:?}, ",
                                             "is downward live, and there is also a ",
