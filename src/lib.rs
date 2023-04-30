@@ -125,7 +125,7 @@ impl PReg {
     /// The register class.
     #[inline(always)]
     pub const fn class(self) -> RegClass {
-        match self.bits & (0b11 << Self::MAX_BITS) {
+        match (self.bits >> Self::MAX_BITS) & 0b11 {
             0 => RegClass::Int,
             1 => RegClass::Float,
             2 => RegClass::Vector,
