@@ -16,8 +16,7 @@ use super::{
     Env, LiveBundleIndex, LiveRangeIndex, SpillSet, SpillSetIndex, SpillSlotIndex, VRegIndex,
 };
 use crate::{
-    ion::data_structures::{BlockparamOut, LiveRangeFlag},
-    Function, Inst, OperandConstraint, OperandKind, PReg,
+    ion::data_structures::BlockparamOut, Function, Inst, OperandConstraint, OperandKind, PReg,
 };
 use alloc::format;
 use smallvec::smallvec;
@@ -39,6 +38,14 @@ impl<'a, F: Function> Env<'a, F> {
         let to_rc = self.spillsets[self.bundles[to.index()].spillset.index()].class;
         if from_rc != to_rc {
             trace!(" -> mismatching reg classes");
+            return false;
+        }
+
+        // If either bundle is already assigned (due to a pinned vreg), don't merge.
+        if self.bundles[from.index()].allocation.is_some()
+            || self.bundles[to.index()].allocation.is_some()
+        {
+            trace!("one of the bundles is already assigned (pinned)");
             return false;
         }
 
@@ -235,49 +242,16 @@ impl<'a, F: Function> Env<'a, F> {
             let bundle = self.create_bundle();
             let mut range = self.vregs[vreg.index()].ranges.first().unwrap().range;
 
-            // self.bundles[bundle.index()].ranges = self.vregs[vreg.index()].ranges.clone();
+            self.bundles[bundle.index()].ranges = self.vregs[vreg.index()].ranges.clone();
             trace!("vreg v{} gets bundle{}", vreg.index(), bundle.index());
-            for entry_ix in 0..self.vregs[vreg.index()].ranges.len() {
-                let entry = self.vregs[vreg.index()].ranges[entry_ix];
+            for entry in &self.bundles[bundle.index()].ranges {
                 trace!(
                     " -> with LR range{}: {:?}",
                     entry.index.index(),
                     entry.range
                 );
-
-                let lr = entry.index.index();
-                let bundle = if self.ranges[lr].has_flag(LiveRangeFlag::Overlap) {
-                    let bundle = self.create_bundle();
-                    self.bundles[bundle.index()].set_cached_fixed();
-                    self.bundles[bundle.index()].set_cached_fixed_def();
-                    self.bundles[bundle.index()].set_cached_stack();
-
-                    let reg = self.vreg(vreg);
-                    let size = self.func.spillslot_size(reg.class()) as u8;
-                    let ssidx = SpillSetIndex::new(self.spillsets.len());
-                    self.spillsets.push(SpillSet {
-                        slot: SpillSlotIndex::invalid(),
-                        size,
-                        required: false,
-                        class: reg.class(),
-                        reg_hint: PReg::invalid(),
-                        spill_bundle: LiveBundleIndex::invalid(),
-                        splits: 0,
-
-                        // As entry overlaps another and will get its own bundle, the range for the
-                        // spillset is exactly the range of the entry.
-                        range: entry.range,
-                    });
-                    self.bundles[bundle.index()].spillset = ssidx;
-
-                    bundle
-                } else {
-                    range = range.join(entry.range);
-                    bundle
-                };
-
-                self.ranges[lr].bundle = bundle;
-                self.bundles[bundle.index()].ranges.push(entry);
+                range = range.join(entry.range);
+                self.ranges[entry.index.index()].bundle = bundle;
             }
 
             let mut fixed = false;

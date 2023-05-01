@@ -64,14 +64,6 @@ impl CodeRange {
             to: pos.next(),
         }
     }
-    /// Returns the range covering just one instruction.
-    #[inline(always)]
-    pub fn single_inst(inst: Inst) -> CodeRange {
-        CodeRange {
-            from: ProgPoint::before(inst),
-            to: ProgPoint::before(inst.next()),
-        }
-    }
 
     /// Join two [CodeRange] values together, producing a [CodeRange] that includes both.
     #[inline(always)]
@@ -135,14 +127,10 @@ pub struct LiveRange {
     pub merged_into: LiveRangeIndex,
 }
 
-/// Flags for LiveRanges. The values of these enums are bit patterns, not indices. There are
-/// currently only three bits free in `uses_spill_weight_and_flags` in `LiveRange`, so there is at
-/// most one additional flag that can be added here, with the value `4`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u32)]
 pub enum LiveRangeFlag {
     StartsAtDef = 1,
-    Overlap = 2,
 }
 
 impl LiveRange {
@@ -194,7 +182,6 @@ pub struct Use {
     pub pos: ProgPoint,
     pub slot: u8,
     pub weight: u16,
-    tombstoned: bool,
 }
 
 impl Use {
@@ -206,18 +193,7 @@ impl Use {
             slot,
             // Weight is updated on insertion into LR.
             weight: 0,
-            tombstoned: false,
         }
-    }
-
-    /// Mark this use as tombstoned.
-    pub fn tombstone(&mut self) {
-        self.tombstoned = true;
-    }
-
-    /// Has this use been tombstoned?
-    pub fn is_tombstoned(&self) -> bool {
-        self.tombstoned
     }
 }
 
