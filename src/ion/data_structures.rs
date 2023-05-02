@@ -312,7 +312,7 @@ pub struct SpillSet {
     pub range: CodeRange,
 }
 
-pub(crate) const MAX_SPLITS_PER_SPILLSET: u8 = 10;
+pub(crate) const MAX_SPLITS_PER_SPILLSET: u8 = 2;
 
 #[derive(Clone, Debug)]
 pub struct VRegData {
