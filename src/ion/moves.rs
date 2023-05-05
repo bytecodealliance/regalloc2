@@ -17,8 +17,8 @@ use super::{
     VRegIndex, SLOT_NONE,
 };
 use crate::ion::data_structures::{
-    BlockparamIn, BlockparamOut, CodeRange, FixedRegFixupLevel, LiveRangeKey, LiveRangeListEntry,
-    PosWithPrio,
+    u128_key, u64_key, BlockparamIn, BlockparamOut, CodeRange, FixedRegFixupLevel, LiveRangeKey,
+    LiveRangeListEntry, PosWithPrio,
 };
 use crate::ion::reg_traversal::RegTraversalIter;
 use crate::moves::{MoveAndScratchResolver, ParallelMoves};
@@ -28,7 +28,6 @@ use crate::{
 };
 use alloc::vec::Vec;
 use alloc::{format, vec};
-use core::fmt::Debug;
 use smallvec::{smallvec, SmallVec};
 
 impl<'a, F: Function> Env<'a, F> {
@@ -114,64 +113,6 @@ impl<'a, F: Function> Env<'a, F> {
                 entry.range = self.ranges[entry.index.index()].range;
             }
             vreg.ranges.sort_unstable_by_key(|entry| entry.range.from);
-        }
-
-        /// We create "half-moves" in order to allow a single-scan
-        /// strategy with a subsequent sort. Basically, the key idea
-        /// is that as our single scan through a range for a vreg hits
-        /// upon the source or destination of an edge-move, we emit a
-        /// "half-move". These half-moves are carefully keyed in a
-        /// particular sort order (the field order below is
-        /// significant!) so that all half-moves on a given (from, to)
-        /// block-edge appear contiguously, and then all moves from a
-        /// given vreg appear contiguously. Within a given from-vreg,
-        /// pick the first `Source` (there should only be one, but
-        /// imprecision in liveranges due to loop handling sometimes
-        /// means that a blockparam-out is also recognized as a normal-out),
-        /// and then for each `Dest`, copy the source-alloc to that
-        /// dest-alloc.
-        #[derive(Clone, Debug, PartialEq, Eq)]
-        struct HalfMove {
-            key: u64,
-            alloc: Allocation,
-        }
-        #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-        #[repr(u8)]
-        enum HalfMoveKind {
-            Source = 0,
-            Dest = 1,
-        }
-        fn half_move_key(
-            from_block: Block,
-            to_block: Block,
-            to_vreg: VRegIndex,
-            kind: HalfMoveKind,
-        ) -> u64 {
-            debug_assert!(from_block.index() < 1 << 21);
-            debug_assert!(to_block.index() < 1 << 21);
-            debug_assert!(to_vreg.index() < 1 << 21);
-            ((from_block.index() as u64) << 43)
-                | ((to_block.index() as u64) << 22)
-                | ((to_vreg.index() as u64) << 1)
-                | (kind as u8 as u64)
-        }
-        impl HalfMove {
-            fn from_block(&self) -> Block {
-                Block::new(((self.key >> 43) & ((1 << 21) - 1)) as usize)
-            }
-            fn to_block(&self) -> Block {
-                Block::new(((self.key >> 22) & ((1 << 21) - 1)) as usize)
-            }
-            fn to_vreg(&self) -> VRegIndex {
-                VRegIndex::new(((self.key >> 1) & ((1 << 21) - 1)) as usize)
-            }
-            fn kind(&self) -> HalfMoveKind {
-                if self.key & 1 == 1 {
-                    HalfMoveKind::Dest
-                } else {
-                    HalfMoveKind::Source
-                }
-            }
         }
 
         /// Buffered information about the previous liverange that was processed.
@@ -308,9 +249,46 @@ impl<'a, F: Function> Env<'a, F> {
         let mut inter_block_sources = FxHashMap::default();
         let mut inter_block_dests = Vec::with_capacity(self.func.num_blocks());
 
+        // This is the same data as BlockparamOut, but the fields are in a different order to
+        // prefer sorting by destination vreg first. This allows us to advance two pointers
+        // simultaneously into block_param_sources and block_param_dests when generating moves.
+        struct BlockparamSource {
+            from_vreg: VRegIndex,
+            from_block: Block,
+            to_block: Block,
+            to_vreg: VRegIndex,
+            alloc: Allocation,
+        }
+
+        impl BlockparamSource {
+            fn key(&self) -> u128 {
+                u128_key(
+                    self.to_vreg.raw_u32(),
+                    self.to_block.raw_u32(),
+                    self.from_block.raw_u32(),
+                    self.from_vreg.raw_u32(),
+                )
+            }
+        }
+
+        struct BlockparamDest {
+            from_block: Block,
+            to_block: Block,
+            to_vreg: VRegIndex,
+            alloc: Allocation,
+        }
+
+        impl BlockparamDest {
+            fn key(&self) -> u64 {
+                u64_key(self.to_block.raw_u32(), self.from_block.raw_u32())
+            }
+        }
+
+        let mut block_param_sources = Vec::with_capacity(3 * self.func.num_insts());
+        let mut block_param_dests = Vec::with_capacity(3 * self.func.num_insts());
+
         let debug_labels = self.func.debug_value_labels();
 
-        let mut half_moves: Vec<HalfMove> = Vec::with_capacity(6 * self.func.num_insts());
         let mut reuse_input_insts = Vec::with_capacity(self.func.num_insts() / 2);
 
         let mut blockparam_in_idx = 0;
@@ -328,6 +306,7 @@ impl<'a, F: Function> Env<'a, F> {
             // `blockparam_outs`, which are sorted by (block, vreg),
             // to fill in allocations.
             let mut prev = PrevBuffer::new(blockparam_in_idx);
+            let dests_start = block_param_dests.len();
             for range_idx in 0..self.vregs[vreg.index()].ranges.len() {
                 let entry = self.vregs[vreg.index()].ranges[range_idx];
                 let alloc = self.get_alloc_for_range(entry.index);
@@ -453,13 +432,12 @@ impl<'a, F: Function> Env<'a, F> {
                                 to_vreg.index(),
                                 to_vreg.index()
                             );
-                            half_moves.push(HalfMove {
-                                key: half_move_key(
-                                    from_block,
-                                    to_block,
-                                    to_vreg,
-                                    HalfMoveKind::Source,
-                                ),
+
+                            block_param_sources.push(BlockparamSource {
+                                from_block,
+                                to_block,
+                                to_vreg,
+                                from_vreg: vreg,
                                 alloc,
                             });
 
@@ -515,13 +493,10 @@ impl<'a, F: Function> Env<'a, F> {
                             break;
                         }
                         if (to_vreg, to_block) == (vreg, block) {
-                            half_moves.push(HalfMove {
-                                key: half_move_key(
-                                    from_block,
-                                    to_block,
-                                    to_vreg,
-                                    HalfMoveKind::Dest,
-                                ),
+                            block_param_dests.push(BlockparamDest {
+                                from_block,
+                                to_block,
+                                to_vreg,
                                 alloc,
                             });
                             trace!(
@@ -691,69 +666,41 @@ impl<'a, F: Function> Env<'a, F> {
             blockparam_in_idx = prev.blockparam_ins_idx();
         }
 
-        // Sort the half-moves list. For each (from, to,
-        // from-vreg) tuple, find the from-alloc and all the
-        // to-allocs, and insert moves on the block edge.
-        half_moves.sort_unstable_by_key(|h| h.key);
+        if !block_param_dests.is_empty() {
+            self.stats.halfmoves_count += block_param_sources.len();
+            self.stats.halfmoves_count += block_param_dests.len();
 
-        if cfg!(feature = "trace-log") {
-            trace!("halfmoves:");
-            for half_move in &half_moves {
-                trace!(
-                    "from: {:?}, to: {:?}, vreg: {:?}, kind: {:?}",
-                    half_move.from_block(),
-                    half_move.to_block(),
-                    half_move.to_vreg(),
-                    half_move.kind()
-                );
-            }
-        }
+            // Sort the sources to mirror the destinations now, ordering by dest vreg/dest
+            // block/source block.
+            block_param_sources.sort_unstable_by_key(|h| h.key());
 
-        self.stats.halfmoves_count = half_moves.len();
+            let mut src_ix = 0;
+            let mut last_dest = None;
+            trace!("processing block-param moves");
+            for dest in block_param_dests {
+                // Find the source for the current destination
+                loop {
+                    let src = &block_param_sources[src_ix];
+                    if src.to_vreg == dest.to_vreg
+                        && src.from_block == dest.from_block
+                        && src.to_block == dest.to_block
+                    {
+                        if last_dest == Some(dest.alloc) {
+                            trace!(" -> skipping redundant move");
+                            break;
+                        }
 
-        let mut i = 0;
-        while i < half_moves.len() {
-            // Find a Source.
-            while i < half_moves.len() && half_moves[i].kind() != HalfMoveKind::Source {
-                i += 1;
-            }
-            if i >= half_moves.len() {
-                break;
-            }
-            let src = &half_moves[i];
-            i += 1;
+                        trace!(" -> moving from {} to {}", src.alloc, dest.alloc);
+                        last_dest = Some(dest.alloc);
 
-            // Find all Dests.
-            let dest_key = src.key | 1;
-            let first_dest = i;
-            while i < half_moves.len() && half_moves[i].key == dest_key {
-                i += 1;
-            }
-            let last_dest = i;
-
-            trace!(
-                "halfmove match: src {:?} dests {:?}",
-                src,
-                &half_moves[first_dest..last_dest]
-            );
-
-            let (insertion_point, prio) =
-                choose_move_location(self, src.from_block(), src.to_block());
-
-            let mut last = None;
-            for dest in first_dest..last_dest {
-                let dest = &half_moves[dest];
-                if last == Some(dest.alloc) {
-                    continue;
+                        let (pos, prio) =
+                            choose_move_location(self, dest.from_block, dest.to_block);
+                        self.insert_move(pos, prio, src.alloc, dest.alloc, self.vreg(dest.to_vreg));
+                        break;
+                    }
+                    src_ix += 1;
+                    last_dest = None;
                 }
-                self.insert_move(
-                    insertion_point,
-                    prio,
-                    src.alloc,
-                    dest.alloc,
-                    self.vreg(dest.to_vreg()),
-                );
-                last = Some(dest.alloc);
             }
         }
 
