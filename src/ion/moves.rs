@@ -236,6 +236,78 @@ impl<'a, F: Function> Env<'a, F> {
             }
         }
 
+        // Determine the ProgPoint where moves on this (from, to)
+        // edge should go:
+        // - If there is more than one in-edge to `to`, then
+        //   `from` must have only one out-edge; moves go at tail of
+        //   `from` just before last Branch/Ret.
+        // - Otherwise, there must be at most one in-edge to `to`,
+        //   and moves go at start of `to`.
+        #[inline(always)]
+        fn choose_move_location<'a, F: Function>(
+            env: &Env<'a, F>,
+            from: Block,
+            to: Block,
+        ) -> (ProgPoint, InsertMovePrio) {
+            let from_last_insn = env.func.block_insns(from).last();
+            let to_first_insn = env.func.block_insns(to).first();
+            let from_is_ret = env.func.is_ret(from_last_insn);
+            let to_is_entry = env.func.entry_block() == to;
+            let from_outs = env.func.block_succs(from).len() + if from_is_ret { 1 } else { 0 };
+            let to_ins = env.func.block_preds(to).len() + if to_is_entry { 1 } else { 0 };
+
+            if to_ins > 1 && from_outs <= 1 {
+                (
+                    // N.B.: though semantically the edge moves happen
+                    // after the branch, we must insert them before
+                    // the branch because otherwise, of course, they
+                    // would never execute. This is correct even in
+                    // the presence of branches that read register
+                    // inputs (e.g. conditional branches on some RISCs
+                    // that branch on reg zero/not-zero, or any
+                    // indirect branch), but for a very subtle reason:
+                    // all cases of such branches will (or should)
+                    // have multiple successors, and thus due to
+                    // critical-edge splitting, their successors will
+                    // have only the single predecessor, and we prefer
+                    // to insert at the head of the successor in that
+                    // case (rather than here). We make this a
+                    // requirement, in fact: the user of this library
+                    // shall not read registers in a branch
+                    // instruction of there is only one successor per
+                    // the given CFG information.
+                    ProgPoint::before(from_last_insn),
+                    InsertMovePrio::OutEdgeMoves,
+                )
+            } else if to_ins <= 1 {
+                (
+                    ProgPoint::before(to_first_insn),
+                    InsertMovePrio::InEdgeMoves,
+                )
+            } else {
+                panic!(
+                    "Critical edge: can't insert moves between blocks {:?} and {:?}",
+                    from, to
+                );
+            }
+        }
+
+        #[derive(PartialEq)]
+        struct InterBlockDest {
+            to: Block,
+            from: Block,
+            alloc: Allocation,
+        }
+
+        impl InterBlockDest {
+            fn key(&self) -> u64 {
+                u64_key(self.from.raw_u32(), self.to.raw_u32())
+            }
+        }
+
+        let mut inter_block_sources = FxHashMap::default();
+        let mut inter_block_dests = Vec::with_capacity(self.func.num_blocks());
+
         let debug_labels = self.func.debug_value_labels();
 
         let mut half_moves: Vec<HalfMove> = Vec::with_capacity(6 * self.func.num_insts());
@@ -248,6 +320,8 @@ impl<'a, F: Function> Env<'a, F> {
             if !self.is_vreg_used(vreg) {
                 continue;
             }
+
+            inter_block_sources.clear();
 
             // For each range in each vreg, insert moves or
             // half-moves.  We also scan over `blockparam_ins` and
@@ -350,21 +424,7 @@ impl<'a, F: Function> Env<'a, F> {
                         break;
                     }
                     trace!("examining block with end in range: block{}", block.index());
-                    for &succ in self.func.block_succs(block) {
-                        trace!(
-                            " -> has succ block {} with entry {:?}",
-                            succ.index(),
-                            self.cfginfo.block_entry[succ.index()]
-                        );
-                        trace!(" -> out of this range, requires half-move if live");
-                        if self.is_live_in(succ, vreg) {
-                            trace!("  -> live at input to succ, adding halfmove");
-                            half_moves.push(HalfMove {
-                                key: half_move_key(block, succ, vreg, HalfMoveKind::Source),
-                                alloc,
-                            });
-                        }
-                    }
+                    inter_block_sources.insert(block, alloc);
 
                     // Scan forward in `blockparam_outs`, adding all
                     // half-moves for outgoing values to blockparams
@@ -512,11 +572,12 @@ impl<'a, F: Function> Env<'a, F> {
                         if range.contains_point(self.cfginfo.block_exit[pred.index()]) {
                             continue;
                         }
-                        trace!(" -> requires half-move");
-                        half_moves.push(HalfMove {
-                            key: half_move_key(pred, block, vreg, HalfMoveKind::Dest),
+
+                        inter_block_dests.push(InterBlockDest {
+                            from: pred,
+                            to: block,
                             alloc,
-                        });
+                        })
                     }
 
                     block = block.next();
@@ -586,6 +647,47 @@ impl<'a, F: Function> Env<'a, F> {
                 }
             }
 
+            // Sort the newly added block_param destinations. The key function ignores the vreg,
+            // which is why we sort here: we preserve the vreg order automatically, and sort
+            // smaller slices of the dests according to their source/destination blocks.
+            block_param_dests[dests_start..].sort_unstable_by_key(|d| d.key());
+
+            if !inter_block_dests.is_empty() {
+                self.stats.halfmoves_count += inter_block_dests.len() * 2;
+
+                inter_block_dests.sort_unstable_by_key(|d| d.key());
+
+                let vreg = self.vreg(vreg);
+                let mut last = None;
+                trace!("processing inter-block moves for {}", vreg);
+                for dest in inter_block_dests.drain(..) {
+                    if last.as_ref().map_or(false, |d| dest.eq(d)) {
+                        trace!(
+                            " -> skipping redundant move to {} between {:?} and {:?}",
+                            dest.alloc,
+                            dest.from,
+                            dest.to
+                        );
+                        continue;
+                    }
+
+                    let src = inter_block_sources[&dest.from];
+
+                    trace!(
+                        " -> moving from {} to {} between {:?} and {:?}",
+                        src,
+                        dest.alloc,
+                        dest.from,
+                        dest.to
+                    );
+
+                    let (pos, prio) = choose_move_location(self, dest.from, dest.to);
+                    self.insert_move(pos, prio, src, dest.alloc, vreg);
+
+                    last.replace(dest);
+                }
+            }
+
             blockparam_in_idx = prev.blockparam_ins_idx();
         }
 
@@ -635,57 +737,8 @@ impl<'a, F: Function> Env<'a, F> {
                 &half_moves[first_dest..last_dest]
             );
 
-            // Determine the ProgPoint where moves on this (from, to)
-            // edge should go:
-            // - If there is more than one in-edge to `to`, then
-            //   `from` must have only one out-edge; moves go at tail of
-            //   `from` just before last Branch/Ret.
-            // - Otherwise, there must be at most one in-edge to `to`,
-            //   and moves go at start of `to`.
-            let from_last_insn = self.func.block_insns(src.from_block()).last();
-            let to_first_insn = self.func.block_insns(src.to_block()).first();
-            let from_is_ret = self.func.is_ret(from_last_insn);
-            let to_is_entry = self.func.entry_block() == src.to_block();
-            let from_outs =
-                self.func.block_succs(src.from_block()).len() + if from_is_ret { 1 } else { 0 };
-            let to_ins =
-                self.func.block_preds(src.to_block()).len() + if to_is_entry { 1 } else { 0 };
-
-            let (insertion_point, prio) = if to_ins > 1 && from_outs <= 1 {
-                (
-                    // N.B.: though semantically the edge moves happen
-                    // after the branch, we must insert them before
-                    // the branch because otherwise, of course, they
-                    // would never execute. This is correct even in
-                    // the presence of branches that read register
-                    // inputs (e.g. conditional branches on some RISCs
-                    // that branch on reg zero/not-zero, or any
-                    // indirect branch), but for a very subtle reason:
-                    // all cases of such branches will (or should)
-                    // have multiple successors, and thus due to
-                    // critical-edge splitting, their successors will
-                    // have only the single predecessor, and we prefer
-                    // to insert at the head of the successor in that
-                    // case (rather than here). We make this a
-                    // requirement, in fact: the user of this library
-                    // shall not read registers in a branch
-                    // instruction of there is only one successor per
-                    // the given CFG information.
-                    ProgPoint::before(from_last_insn),
-                    InsertMovePrio::OutEdgeMoves,
-                )
-            } else if to_ins <= 1 {
-                (
-                    ProgPoint::before(to_first_insn),
-                    InsertMovePrio::InEdgeMoves,
-                )
-            } else {
-                panic!(
-                    "Critical edge: can't insert moves between blocks {:?} and {:?}",
-                    src.from_block(),
-                    src.to_block()
-                );
-            };
+            let (insertion_point, prio) =
+                choose_move_location(self, src.from_block(), src.to_block());
 
             let mut last = None;
             for dest in first_dest..last_dest {
