@@ -633,19 +633,8 @@ impl<'a, F: Function> Env<'a, F> {
                 inter_block_dests.sort_unstable_by_key(|d| d.key());
 
                 let vreg = self.vreg(vreg);
-                let mut last = None;
                 trace!("processing inter-block moves for {}", vreg);
                 for dest in inter_block_dests.drain(..) {
-                    if last.as_ref().map_or(false, |d| dest.eq(d)) {
-                        trace!(
-                            " -> skipping redundant move to {} between {:?} and {:?}",
-                            dest.alloc,
-                            dest.from,
-                            dest.to
-                        );
-                        continue;
-                    }
-
                     let src = inter_block_sources[&dest.from];
 
                     trace!(
@@ -658,8 +647,6 @@ impl<'a, F: Function> Env<'a, F> {
 
                     let (pos, prio) = choose_move_location(self, dest.from, dest.to);
                     self.insert_move(pos, prio, src, dest.alloc, vreg);
-
-                    last.replace(dest);
                 }
             }
 
@@ -675,7 +662,6 @@ impl<'a, F: Function> Env<'a, F> {
             block_param_sources.sort_unstable_by_key(|h| h.key());
 
             let mut src_ix = 0;
-            let mut last_dest = None;
             trace!("processing block-param moves");
             for dest in block_param_dests {
                 // Find the source for the current destination
@@ -685,13 +671,7 @@ impl<'a, F: Function> Env<'a, F> {
                         && src.from_block == dest.from_block
                         && src.to_block == dest.to_block
                     {
-                        if last_dest == Some(dest.alloc) {
-                            trace!(" -> skipping redundant move");
-                            break;
-                        }
-
                         trace!(" -> moving from {} to {}", src.alloc, dest.alloc);
-                        last_dest = Some(dest.alloc);
 
                         let (pos, prio) =
                             choose_move_location(self, dest.from_block, dest.to_block);
@@ -699,7 +679,6 @@ impl<'a, F: Function> Env<'a, F> {
                         break;
                     }
                     src_ix += 1;
-                    last_dest = None;
                 }
             }
         }
