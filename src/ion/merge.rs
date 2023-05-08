@@ -19,6 +19,7 @@ use crate::{
     ion::data_structures::BlockparamOut, Function, Inst, OperandConstraint, OperandKind, PReg,
 };
 use alloc::format;
+use core::convert::TryFrom;
 use smallvec::smallvec;
 
 impl<'a, F: Function> Env<'a, F> {
@@ -289,7 +290,8 @@ impl<'a, F: Function> Env<'a, F> {
             // Create a spillslot for this bundle.
             let ssidx = SpillSetIndex::new(self.spillsets.len());
             let reg = self.vreg(vreg);
-            let size = self.func.spillslot_size(reg.class()) as u8;
+            let size =
+                u8::try_from(self.func.spillslot_size(reg.class())).expect("Spillslot too large");
             self.spillsets.push(SpillSet {
                 vregs: smallvec![vreg],
                 slot: SpillSlotIndex::invalid(),
