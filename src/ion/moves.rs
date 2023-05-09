@@ -63,11 +63,8 @@ impl<'a, F: Function> Env<'a, F> {
         if let Some(to) = to_alloc.as_reg() {
             debug_assert_eq!(to.class(), to_vreg.class());
         }
-        self.inserted_moves.push(InsertedMove {
-            pos_prio: PosWithPrio {
-                pos,
-                prio: prio as u32,
-            },
+        self.inserted_moves[prio as usize].push(InsertedMove {
+            pos,
             from_alloc,
             to_alloc,
             to_vreg,
@@ -838,12 +835,6 @@ impl<'a, F: Function> Env<'a, F> {
     }
 
     pub fn resolve_inserted_moves(&mut self) {
-        // For each program point, gather all moves together. Then
-        // resolve (see cases below).
-        let mut i = 0;
-        self.inserted_moves
-            .sort_unstable_by_key(|m| m.pos_prio.key());
-
         // Redundant-move elimination state tracker.
         let mut redundant_moves = RedundantMoveEliminator::default();
 
@@ -895,156 +886,162 @@ impl<'a, F: Function> Env<'a, F> {
             }
         }
 
-        let mut last_pos = ProgPoint::before(Inst::new(0));
+        let mut inserted_moves = core::mem::take(&mut self.inserted_moves);
+        for (moves_at_prio, prio) in inserted_moves
+            .iter_mut()
+            .zip(InsertMovePrio::all().iter().copied())
+        {
+            moves_at_prio.sort_unstable_by_key(|m| m.pos);
 
-        while i < self.inserted_moves.len() {
-            let start = i;
-            let pos_prio = self.inserted_moves[i].pos_prio;
-            while i < self.inserted_moves.len() && self.inserted_moves[i].pos_prio == pos_prio {
-                i += 1;
-            }
-            let moves = &self.inserted_moves[start..i];
-
-            redundant_move_process_side_effects(self, &mut redundant_moves, last_pos, pos_prio.pos);
-            last_pos = pos_prio.pos;
-
-            // Gather all the moves in each RegClass separately.
-            // These cannot interact, so it is safe to have separate
-            // ParallelMove instances. They need to be separate because
-            // moves between the classes are impossible. (We could
-            // enhance ParallelMoves to understand register classes, but
-            // this seems simpler.)
-            let mut int_moves: SmallVec<[InsertedMove; 8]> = smallvec![];
-            let mut float_moves: SmallVec<[InsertedMove; 8]> = smallvec![];
-            let mut vec_moves: SmallVec<[InsertedMove; 8]> = smallvec![];
-
-            for m in moves {
-                if m.from_alloc == m.to_alloc {
-                    continue;
+            // For each program point, gather all moves together. Then
+            // resolve (see cases below).
+            let mut i = 0;
+            let mut last_pos = ProgPoint::before(Inst::new(0));
+            while i < moves_at_prio.len() {
+                let start = i;
+                let pos = moves_at_prio[i].pos;
+                while i < moves_at_prio.len() && moves_at_prio[i].pos == pos {
+                    i += 1;
                 }
-                match m.to_vreg.class() {
-                    RegClass::Int => {
-                        int_moves.push(m.clone());
-                    }
-                    RegClass::Float => {
-                        float_moves.push(m.clone());
-                    }
-                    RegClass::Vector => {
-                        vec_moves.push(m.clone());
-                    }
-                }
-            }
+                let moves = &moves_at_prio[start..i];
 
-            for &(regclass, moves) in &[
-                (RegClass::Int, &int_moves),
-                (RegClass::Float, &float_moves),
-                (RegClass::Vector, &vec_moves),
-            ] {
-                // All moves in `moves` semantically happen in
-                // parallel. Let's resolve these to a sequence of moves
-                // that can be done one at a time.
-                let mut parallel_moves = ParallelMoves::new();
-                trace!(
-                    "parallel moves at pos {:?} prio {:?}",
-                    pos_prio.pos,
-                    pos_prio.prio
-                );
+                redundant_move_process_side_effects(self, &mut redundant_moves, last_pos, pos);
+                last_pos = pos;
+
+                // Gather all the moves in each RegClass separately.
+                // These cannot interact, so it is safe to have separate
+                // ParallelMove instances. They need to be separate because
+                // moves between the classes are impossible. (We could
+                // enhance ParallelMoves to understand register classes, but
+                // this seems simpler.)
+                let mut int_moves: SmallVec<[InsertedMove; 8]> = smallvec![];
+                let mut float_moves: SmallVec<[InsertedMove; 8]> = smallvec![];
+                let mut vec_moves: SmallVec<[InsertedMove; 8]> = smallvec![];
+
                 for m in moves {
-                    trace!(" {} -> {}", m.from_alloc, m.to_alloc);
-                    parallel_moves.add(m.from_alloc, m.to_alloc, Some(m.to_vreg));
-                }
-
-                let resolved = parallel_moves.resolve();
-                let mut scratch_iter = RegTraversalIter::new(
-                    self.env,
-                    regclass,
-                    PReg::invalid(),
-                    PReg::invalid(),
-                    0,
-                    None,
-                );
-                let key = LiveRangeKey::from_range(&CodeRange {
-                    from: pos_prio.pos,
-                    to: pos_prio.pos.next(),
-                });
-                let get_reg = || {
-                    if let Some(reg) = self.env.scratch_by_class[regclass as usize] {
-                        return Some(Allocation::reg(reg));
+                    if m.from_alloc == m.to_alloc {
+                        continue;
                     }
-                    while let Some(preg) = scratch_iter.next() {
-                        if !self.pregs[preg.index()]
-                            .allocations
-                            .btree
-                            .contains_key(&key)
-                        {
-                            let alloc = Allocation::reg(preg);
-                            if moves
-                                .iter()
-                                .any(|m| m.from_alloc == alloc || m.to_alloc == alloc)
-                            {
-                                // Skip pregs used by moves in this
-                                // parallel move set, even if not
-                                // marked used at progpoint: edge move
-                                // liveranges meet but don't overlap
-                                // so otherwise we may incorrectly
-                                // overwrite a source reg.
-                                continue;
-                            }
-                            return Some(alloc);
+                    match m.to_vreg.class() {
+                        RegClass::Int => {
+                            int_moves.push(m.clone());
+                        }
+                        RegClass::Float => {
+                            float_moves.push(m.clone());
+                        }
+                        RegClass::Vector => {
+                            vec_moves.push(m.clone());
                         }
                     }
-                    None
-                };
-                let mut stackslot_idx = 0;
-                let get_stackslot = || {
-                    let idx = stackslot_idx;
-                    stackslot_idx += 1;
-                    // We can't borrow `self` as mutable, so we create
-                    // these placeholders then allocate the actual
-                    // slots if needed with `self.allocate_spillslot`
-                    // below.
-                    Allocation::stack(SpillSlot::new(SpillSlot::MAX - idx))
-                };
-                let is_stack_alloc = |alloc: Allocation| {
-                    if let Some(preg) = alloc.as_reg() {
-                        self.pregs[preg.index()].is_stack
-                    } else {
-                        alloc.is_stack()
-                    }
-                };
-                let preferred_victim = self.preferred_victim_by_class[regclass as usize];
-
-                let scratch_resolver = MoveAndScratchResolver::new(
-                    get_reg,
-                    get_stackslot,
-                    is_stack_alloc,
-                    preferred_victim,
-                );
-
-                let resolved = scratch_resolver.compute(resolved);
-
-                let mut rewrites = FxHashMap::default();
-                for i in 0..stackslot_idx {
-                    if i >= self.extra_spillslots_by_class[regclass as usize].len() {
-                        let slot =
-                            self.allocate_spillslot(self.func.spillslot_size(regclass) as u32);
-                        self.extra_spillslots_by_class[regclass as usize].push(slot);
-                    }
-                    rewrites.insert(
-                        Allocation::stack(SpillSlot::new(SpillSlot::MAX - i)),
-                        self.extra_spillslots_by_class[regclass as usize][i],
-                    );
                 }
 
-                for (src, dst, to_vreg) in resolved {
-                    let src = rewrites.get(&src).cloned().unwrap_or(src);
-                    let dst = rewrites.get(&dst).cloned().unwrap_or(dst);
-                    trace!("  resolved: {} -> {} ({:?})", src, dst, to_vreg);
-                    let action = redundant_moves.process_move(src, dst, to_vreg);
-                    if !action.elide {
-                        self.add_move_edit(pos_prio, src, dst);
-                    } else {
-                        trace!("    -> redundant move elided");
+                for &(regclass, moves) in &[
+                    (RegClass::Int, &int_moves),
+                    (RegClass::Float, &float_moves),
+                    (RegClass::Vector, &vec_moves),
+                ] {
+                    // All moves in `moves` semantically happen in
+                    // parallel. Let's resolve these to a sequence of moves
+                    // that can be done one at a time.
+                    let mut parallel_moves = ParallelMoves::new();
+                    trace!("parallel moves at pos {:?} prio {:?}", pos, prio);
+                    for m in moves {
+                        trace!(" {} -> {}", m.from_alloc, m.to_alloc);
+                        parallel_moves.add(m.from_alloc, m.to_alloc, Some(m.to_vreg));
+                    }
+
+                    let resolved = parallel_moves.resolve();
+                    let mut scratch_iter = RegTraversalIter::new(
+                        self.env,
+                        regclass,
+                        PReg::invalid(),
+                        PReg::invalid(),
+                        0,
+                        None,
+                    );
+                    let key = LiveRangeKey::from_range(&CodeRange {
+                        from: pos,
+                        to: pos.next(),
+                    });
+                    let get_reg = || {
+                        if let Some(reg) = self.env.scratch_by_class[regclass as usize] {
+                            return Some(Allocation::reg(reg));
+                        }
+                        while let Some(preg) = scratch_iter.next() {
+                            if !self.pregs[preg.index()]
+                                .allocations
+                                .btree
+                                .contains_key(&key)
+                            {
+                                let alloc = Allocation::reg(preg);
+                                if moves
+                                    .iter()
+                                    .any(|m| m.from_alloc == alloc || m.to_alloc == alloc)
+                                {
+                                    // Skip pregs used by moves in this
+                                    // parallel move set, even if not
+                                    // marked used at progpoint: edge move
+                                    // liveranges meet but don't overlap
+                                    // so otherwise we may incorrectly
+                                    // overwrite a source reg.
+                                    continue;
+                                }
+                                return Some(alloc);
+                            }
+                        }
+                        None
+                    };
+                    let mut stackslot_idx = 0;
+                    let get_stackslot = || {
+                        let idx = stackslot_idx;
+                        stackslot_idx += 1;
+                        // We can't borrow `self` as mutable, so we create
+                        // these placeholders then allocate the actual
+                        // slots if needed with `self.allocate_spillslot`
+                        // below.
+                        Allocation::stack(SpillSlot::new(SpillSlot::MAX - idx))
+                    };
+                    let is_stack_alloc = |alloc: Allocation| {
+                        if let Some(preg) = alloc.as_reg() {
+                            self.pregs[preg.index()].is_stack
+                        } else {
+                            alloc.is_stack()
+                        }
+                    };
+                    let preferred_victim = self.preferred_victim_by_class[regclass as usize];
+
+                    let scratch_resolver = MoveAndScratchResolver::new(
+                        get_reg,
+                        get_stackslot,
+                        is_stack_alloc,
+                        preferred_victim,
+                    );
+
+                    let resolved = scratch_resolver.compute(resolved);
+
+                    let mut rewrites = FxHashMap::default();
+                    for i in 0..stackslot_idx {
+                        if i >= self.extra_spillslots_by_class[regclass as usize].len() {
+                            let slot =
+                                self.allocate_spillslot(self.func.spillslot_size(regclass) as u32);
+                            self.extra_spillslots_by_class[regclass as usize].push(slot);
+                        }
+                        rewrites.insert(
+                            Allocation::stack(SpillSlot::new(SpillSlot::MAX - i)),
+                            self.extra_spillslots_by_class[regclass as usize][i],
+                        );
+                    }
+
+                    for (src, dst, to_vreg) in resolved {
+                        let src = rewrites.get(&src).cloned().unwrap_or(src);
+                        let dst = rewrites.get(&dst).cloned().unwrap_or(dst);
+                        trace!("  resolved: {} -> {} ({:?})", src, dst, to_vreg);
+                        let action = redundant_moves.process_move(src, dst, to_vreg);
+                        if !action.elide {
+                            self.add_move_edit(prio, pos, src, dst);
+                        } else {
+                            trace!("    -> redundant move elided");
+                        }
                     }
                 }
             }
@@ -1070,12 +1067,24 @@ impl<'a, F: Function> Env<'a, F> {
         }
     }
 
-    pub fn add_move_edit(&mut self, pos_prio: PosWithPrio, from: Allocation, to: Allocation) {
+    pub fn add_move_edit(
+        &mut self,
+        prio: InsertMovePrio,
+        pos: ProgPoint,
+        from: Allocation,
+        to: Allocation,
+    ) {
         if from != to {
             if from.is_reg() && to.is_reg() {
                 debug_assert_eq!(from.as_reg().unwrap().class(), to.as_reg().unwrap().class());
             }
-            self.edits.push((pos_prio, Edit::Move { from, to }));
+            self.edits.push((
+                PosWithPrio {
+                    pos,
+                    prio: prio as u32,
+                },
+                Edit::Move { from, to },
+            ));
         }
     }
 }

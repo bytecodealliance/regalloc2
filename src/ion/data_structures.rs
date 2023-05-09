@@ -434,7 +434,7 @@ pub struct Env<'a, F: Function> {
     // was to the approprate PReg.
     pub multi_fixed_reg_fixups: Vec<MultiFixedRegFixup>,
 
-    pub inserted_moves: Vec<InsertedMove>,
+    pub inserted_moves: [Vec<InsertedMove>; InsertMovePrio::Count as usize],
 
     // Output:
     pub edits: Vec<(PosWithPrio, Edit)>,
@@ -636,13 +636,14 @@ impl LiveRangeSet {
 
 #[derive(Clone, Debug)]
 pub struct InsertedMove {
-    pub pos_prio: PosWithPrio,
+    pub pos: ProgPoint,
     pub from_alloc: Allocation,
     pub to_alloc: Allocation,
     pub to_vreg: VReg,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(u8)]
 pub enum InsertMovePrio {
     InEdgeMoves,
     Regular,
@@ -650,6 +651,22 @@ pub enum InsertMovePrio {
     MultiFixedRegSecondary,
     ReusedInput,
     OutEdgeMoves,
+
+    /// The number of priorities, used to determine the length of the Env::inserted_moves array.
+    Count,
+}
+
+impl InsertMovePrio {
+    pub fn all() -> &'static [InsertMovePrio] {
+        &[
+            InsertMovePrio::InEdgeMoves,
+            InsertMovePrio::Regular,
+            InsertMovePrio::MultiFixedRegInitial,
+            InsertMovePrio::MultiFixedRegSecondary,
+            InsertMovePrio::ReusedInput,
+            InsertMovePrio::OutEdgeMoves,
+        ]
+    }
 }
 
 /// The fields in this struct are reversed in sort order so that the entire
