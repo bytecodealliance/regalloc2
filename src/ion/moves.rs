@@ -28,6 +28,7 @@ use crate::{
 };
 use alloc::vec::Vec;
 use alloc::{format, vec};
+use hashbrown::hash_map::Entry;
 use smallvec::{smallvec, SmallVec};
 
 impl<'a, F: Function> Env<'a, F> {
@@ -257,7 +258,7 @@ impl<'a, F: Function> Env<'a, F> {
             }
         }
 
-        let mut inter_block_sources = FxHashMap::default();
+        let mut inter_block_sources: FxHashMap<Block, Allocation> = FxHashMap::default();
         let mut inter_block_dests = Vec::with_capacity(self.func.num_blocks());
 
         // This is the same data as BlockparamOut, but the fields are in a different order to
@@ -414,7 +415,19 @@ impl<'a, F: Function> Env<'a, F> {
                         break;
                     }
                     trace!("examining block with end in range: block{}", block.index());
-                    inter_block_sources.insert(block, alloc);
+
+                    match inter_block_sources.entry(block) {
+                        // If the entry is already present in the map, we'll try to prefer a
+                        // register allocation.
+                        Entry::Occupied(mut entry) => {
+                            if !entry.get().is_reg() {
+                                entry.insert(alloc);
+                            }
+                        }
+                        Entry::Vacant(entry) => {
+                            entry.insert(alloc);
+                        }
+                    }
 
                     // Scan forward in `blockparam_outs`, adding all
                     // half-moves for outgoing values to blockparams
