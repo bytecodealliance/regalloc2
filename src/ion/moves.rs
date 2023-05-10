@@ -119,8 +119,8 @@ impl<'a, F: Function> Env<'a, F> {
         struct PrevBuffer {
             prev: Option<LiveRangeListEntry>,
             prev_ins_idx: usize,
-            next: Option<LiveRangeListEntry>,
-            next_ins_idx: usize,
+            buffered: Option<LiveRangeListEntry>,
+            buffered_ins_idx: usize,
         }
 
         impl PrevBuffer {
@@ -128,19 +128,28 @@ impl<'a, F: Function> Env<'a, F> {
                 Self {
                     prev: None,
                     prev_ins_idx,
-                    next: None,
-                    next_ins_idx: prev_ins_idx,
+                    buffered: None,
+                    buffered_ins_idx: prev_ins_idx,
                 }
             }
 
+            /// Returns the previous `LiveRangeListEntry` when it's present.
             #[inline(always)]
             fn is_valid(&self) -> Option<LiveRangeListEntry> {
                 self.prev
             }
 
+            /// Fetch the current index into the `Env::blockparam_ins` vector.
             #[inline(always)]
             fn blockparam_ins_idx(&self) -> usize {
                 self.prev_ins_idx
+            }
+
+            /// Record this index as the next index to use when the previous liverange buffer
+            /// anvances.
+            #[inline(always)]
+            fn update_blockparam_ins_idx(&mut self, idx: usize) {
+                self.buffered_ins_idx = idx;
             }
 
             /// As overlapping liveranges might start at the same program point, we buffer the
@@ -159,20 +168,22 @@ impl<'a, F: Function> Env<'a, F> {
                 // Advance the `prev` pointer to the `next` pointer, as long as the `next` pointer
                 // does not start at the same time as the current LR we're processing.
                 if self
-                    .next
-                    .map_or(false, |entry| entry.range.from < current.range.from)
+                    .buffered
+                    .map(|entry| entry.range.from < current.range.from)
+                    .unwrap_or(false)
                 {
-                    self.prev = self.next;
-                    self.prev_ins_idx = self.next_ins_idx;
+                    self.prev = self.buffered;
+                    self.prev_ins_idx = self.buffered_ins_idx;
                 }
 
                 // Advance the `next` pointer to the currently processed LR, as long as it ends
                 // later than the current `next`.
                 if self
-                    .next
-                    .map_or(true, |entry| entry.range.to < current.range.to)
+                    .buffered
+                    .map(|entry| entry.range.to < current.range.to)
+                    .unwrap_or(true)
                 {
-                    self.next = Some(current);
+                    self.buffered = Some(current);
                 }
             }
         }
@@ -523,7 +534,7 @@ impl<'a, F: Function> Env<'a, F> {
                         idx += 1;
                     }
 
-                    prev.next_ins_idx = idx;
+                    prev.update_blockparam_ins_idx(idx);
 
                     if !self.is_live_in(block, vreg) {
                         block = block.next();
