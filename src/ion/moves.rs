@@ -672,12 +672,10 @@ impl<'a, F: Function> Env<'a, F> {
             // block/source block.
             block_param_sources.sort_unstable_by_key(|h| h.key());
 
-            let mut src_ix = 0;
             trace!("processing block-param moves");
-            for dest in block_param_dests {
-                // Find the source for the current destination
-                loop {
-                    let src = &block_param_sources[src_ix];
+            let mut block_param_sources = block_param_sources.into_iter().peekable();
+            'outer: for dest in block_param_dests {
+                while let Some(src) = block_param_sources.peek() {
                     if src.to_vreg == dest.to_vreg
                         && src.from_block == dest.from_block
                         && src.to_block == dest.to_block
@@ -687,10 +685,17 @@ impl<'a, F: Function> Env<'a, F> {
                         let (pos, prio) =
                             choose_move_location(self, dest.from_block, dest.to_block);
                         self.insert_move(pos, prio, src.alloc, dest.alloc, self.vreg(dest.to_vreg));
-                        break;
+
+                        // We don't advance the block_param_sources iterator here because there
+                        // could be additional destinations that would take from that source. Thus,
+                        // we continue the outer loop to keep the iterator unchanged.
+                        continue 'outer;
                     }
-                    src_ix += 1;
+
+                    block_param_sources.next();
                 }
+
+                panic!("Ran out of block-param sources");
             }
         }
 
