@@ -672,6 +672,19 @@ impl<'a, F: Function> Env<'a, F> {
             // block/source block.
             block_param_sources.sort_unstable_by_key(BlockparamSource::key);
 
+            // We traverse the `block_param_sources` and `block_param_dests` vectors in parallel,
+            // advancing a pointer into the sources vector as we disocver dests that don't match
+            // it. There are two places that we ensure that the order of those two vectors enables
+            // this traversal: above when we sort `block_param_sources` according to its key; at
+            // the end of the main vreg loop above when we sort a slice of `block_param_dests` by
+            // its key.
+            //
+            // In both cases, the key function will order entries lexicographically according to
+            // (destination vreg, destination block, source block). One implication of this is that
+            // if there are multiple sources available for a destination, we'll always pick the one
+            // with the lowest source vreg. We could potentially improve this by selecting from the
+            // range of possible sources based on some heuristic (prefer registers, for example).
+
             trace!("processing block-param moves");
             let mut block_param_sources = block_param_sources.into_iter().peekable();
             'outer: for dest in block_param_dests {
