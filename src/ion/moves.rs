@@ -636,12 +636,12 @@ impl<'a, F: Function> Env<'a, F> {
             // Sort the newly added block_param destinations. The key function ignores the vreg,
             // which is why we sort here: we preserve the vreg order automatically, and sort
             // smaller slices of the dests according to their source/destination blocks.
-            block_param_dests[dests_start..].sort_unstable_by_key(|d| d.key());
+            block_param_dests[dests_start..].sort_unstable_by_key(BlockparamDest::key);
 
             if !inter_block_dests.is_empty() {
                 self.stats.halfmoves_count += inter_block_dests.len() * 2;
 
-                inter_block_dests.sort_unstable_by_key(|d| d.key());
+                inter_block_dests.sort_unstable_by_key(InterBlockDest::key);
 
                 let vreg = self.vreg(vreg);
                 trace!("processing inter-block moves for {}", vreg);
@@ -670,7 +670,7 @@ impl<'a, F: Function> Env<'a, F> {
 
             // Sort the sources to mirror the destinations now, ordering by dest vreg/dest
             // block/source block.
-            block_param_sources.sort_unstable_by_key(|h| h.key());
+            block_param_sources.sort_unstable_by_key(BlockparamSource::key);
 
             trace!("processing block-param moves");
             let mut block_param_sources = block_param_sources.into_iter().peekable();
