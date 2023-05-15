@@ -642,6 +642,10 @@ pub struct InsertedMove {
     pub to_vreg: VReg,
 }
 
+/// Move priority levels, for resolving move dependency order.
+///
+/// NOTE: new priority values should be added before `Count`, and `InsertMovePrio::all` should be
+/// updated to include the new priority.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u8)]
 pub enum InsertMovePrio {
