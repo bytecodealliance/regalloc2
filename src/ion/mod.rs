@@ -74,7 +74,7 @@ impl<'a, F: Function> Env<'a, F> {
             preferred_victim_by_class: [PReg::invalid(), PReg::invalid(), PReg::invalid()],
 
             multi_fixed_reg_fixups: vec![],
-            inserted_moves: [vec![], vec![], vec![], vec![], vec![], vec![]],
+            inserted_moves: vec![],
             edits: Vec::with_capacity(n),
             allocs: Vec::with_capacity(4 * n),
             inst_alloc_offsets: vec![],
