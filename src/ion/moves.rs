@@ -13,8 +13,8 @@
 //! Move resolution.
 
 use super::{
-    Env, InsertMovePrio, InsertedMove, LiveRangeFlag, LiveRangeIndex, RedundantMoveEliminator,
-    VRegIndex, SLOT_NONE,
+    Env, InsertMovePrio, InsertedMove, InsertedMoves, LiveRangeFlag, LiveRangeIndex,
+    RedundantMoveEliminator, VRegIndex, SLOT_NONE,
 };
 use crate::ion::data_structures::{
     u128_key, u64_key, BlockparamIn, BlockparamOut, CodeRange, FixedRegFixupLevel, LiveRangeKey,
@@ -24,7 +24,7 @@ use crate::ion::reg_traversal::RegTraversalIter;
 use crate::moves::{MoveAndScratchResolver, ParallelMoves};
 use crate::{
     Allocation, Block, Edit, Function, FxHashMap, Inst, InstPosition, OperandConstraint,
-    OperandKind, OperandPos, PReg, ProgPoint, RegClass, SpillSlot, VReg,
+    OperandKind, OperandPos, PReg, ProgPoint, RegClass, SpillSlot,
 };
 use alloc::vec::Vec;
 use alloc::{format, vec};
@@ -39,39 +39,6 @@ impl<'a, F: Function> Env<'a, F> {
     pub fn is_end_of_block(&self, pos: ProgPoint) -> bool {
         let block = self.cfginfo.insn_block[pos.inst().index()];
         pos == self.cfginfo.block_exit[block.index()]
-    }
-
-    pub fn insert_move(
-        &mut self,
-        pos: ProgPoint,
-        prio: InsertMovePrio,
-        from_alloc: Allocation,
-        to_alloc: Allocation,
-        to_vreg: VReg,
-    ) {
-        trace!(
-            "insert_move: pos {:?} prio {:?} from_alloc {:?} to_alloc {:?} to_vreg {:?}",
-            pos,
-            prio,
-            from_alloc,
-            to_alloc,
-            to_vreg
-        );
-        if let Some(from) = from_alloc.as_reg() {
-            debug_assert_eq!(from.class(), to_vreg.class());
-        }
-        if let Some(to) = to_alloc.as_reg() {
-            debug_assert_eq!(to.class(), to_vreg.class());
-        }
-        self.inserted_moves.push(InsertedMove {
-            pos_prio: PosWithPrio {
-                pos,
-                prio: prio as u32,
-            },
-            from_alloc,
-            to_alloc,
-            to_vreg,
-        });
     }
 
     pub fn get_alloc(&self, inst: Inst, slot: usize) -> Allocation {
@@ -102,10 +69,12 @@ impl<'a, F: Function> Env<'a, F> {
         }
     }
 
-    pub fn apply_allocations_and_insert_moves(&mut self) {
+    pub fn apply_allocations_and_insert_moves(&mut self) -> InsertedMoves {
         trace!("apply_allocations_and_insert_moves");
         trace!("blockparam_ins: {:?}", self.blockparam_ins);
         trace!("blockparam_outs: {:?}", self.blockparam_outs);
+
+        let mut inserted_moves = InsertedMoves::default();
 
         // Now that all splits are done, we can pay the cost once to
         // sort VReg range lists and update with the final ranges.
@@ -394,7 +363,7 @@ impl<'a, F: Function> Env<'a, F> {
                             vreg.index()
                         );
                         debug_assert_eq!(range.from.pos(), InstPosition::Before);
-                        self.insert_move(
+                        inserted_moves.push(
                             range.from,
                             InsertMovePrio::Regular,
                             prev_alloc,
@@ -670,7 +639,7 @@ impl<'a, F: Function> Env<'a, F> {
                     );
 
                     let (pos, prio) = choose_move_location(self, dest.from, dest.to);
-                    self.insert_move(pos, prio, src, dest.alloc, vreg);
+                    inserted_moves.push(pos, prio, src, dest.alloc, vreg);
                 }
             }
 
@@ -710,7 +679,13 @@ impl<'a, F: Function> Env<'a, F> {
 
                         let (pos, prio) =
                             choose_move_location(self, dest.from_block, dest.to_block);
-                        self.insert_move(pos, prio, src.alloc, dest.alloc, self.vreg(dest.to_vreg));
+                        inserted_moves.push(
+                            pos,
+                            prio,
+                            src.alloc,
+                            dest.alloc,
+                            self.vreg(dest.to_vreg),
+                        );
 
                         // We don't advance the block_param_sources iterator here because there
                         // could be additional destinations that would take from that source. Thus,
@@ -740,7 +715,7 @@ impl<'a, F: Function> Env<'a, F> {
                 FixedRegFixupLevel::Initial => InsertMovePrio::MultiFixedRegInitial,
                 FixedRegFixupLevel::Secondary => InsertMovePrio::MultiFixedRegSecondary,
             };
-            self.insert_move(fixup.pos, prio, from_alloc, to_alloc, self.vreg(fixup.vreg));
+            inserted_moves.push(fixup.pos, prio, from_alloc, to_alloc, self.vreg(fixup.vreg));
             self.set_alloc(
                 fixup.pos.inst(),
                 fixup.to_slot as usize,
@@ -819,7 +794,7 @@ impl<'a, F: Function> Env<'a, F> {
                             );
                         }
                         let input_operand = self.func.inst_operands(inst)[input_idx];
-                        self.insert_move(
+                        inserted_moves.push(
                             ProgPoint::before(inst),
                             InsertMovePrio::ReusedInput,
                             input_alloc,
@@ -835,13 +810,16 @@ impl<'a, F: Function> Env<'a, F> {
         // Sort the debug-locations vector; we provide this
         // invariant to the client.
         self.debug_locations.sort_unstable();
+
+        inserted_moves
     }
 
-    pub fn resolve_inserted_moves(&mut self) {
+    pub fn resolve_inserted_moves(&mut self, mut inserted_moves: InsertedMoves) {
         // For each program point, gather all moves together. Then
         // resolve (see cases below).
         let mut i = 0;
-        self.inserted_moves
+        inserted_moves
+            .moves
             .sort_unstable_by_key(|m| m.pos_prio.key());
 
         // Redundant-move elimination state tracker.
@@ -897,13 +875,13 @@ impl<'a, F: Function> Env<'a, F> {
 
         let mut last_pos = ProgPoint::before(Inst::new(0));
 
-        while i < self.inserted_moves.len() {
+        while i < inserted_moves.moves.len() {
             let start = i;
-            let pos_prio = self.inserted_moves[i].pos_prio;
-            while i < self.inserted_moves.len() && self.inserted_moves[i].pos_prio == pos_prio {
+            let pos_prio = inserted_moves.moves[i].pos_prio;
+            while i < inserted_moves.moves.len() && inserted_moves.moves[i].pos_prio == pos_prio {
                 i += 1;
             }
-            let moves = &self.inserted_moves[start..i];
+            let moves = &inserted_moves.moves[start..i];
 
             redundant_move_process_side_effects(self, &mut redundant_moves, last_pos, pos_prio.pos);
             last_pos = pos_prio.pos;

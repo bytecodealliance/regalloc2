@@ -434,8 +434,6 @@ pub struct Env<'a, F: Function> {
     // was to the approprate PReg.
     pub multi_fixed_reg_fixups: Vec<MultiFixedRegFixup>,
 
-    pub inserted_moves: Vec<InsertedMove>,
-
     // Output:
     pub edits: Vec<(PosWithPrio, Edit)>,
     pub allocs: Vec<Allocation>,
@@ -650,6 +648,46 @@ pub enum InsertMovePrio {
     MultiFixedRegSecondary,
     ReusedInput,
     OutEdgeMoves,
+}
+
+#[derive(Debug, Default)]
+pub struct InsertedMoves {
+    pub moves: Vec<InsertedMove>,
+}
+
+impl InsertedMoves {
+    pub fn push(
+        &mut self,
+        pos: ProgPoint,
+        prio: InsertMovePrio,
+        from_alloc: Allocation,
+        to_alloc: Allocation,
+        to_vreg: VReg,
+    ) {
+        trace!(
+            "insert_move: pos {:?} prio {:?} from_alloc {:?} to_alloc {:?} to_vreg {:?}",
+            pos,
+            prio,
+            from_alloc,
+            to_alloc,
+            to_vreg
+        );
+        if let Some(from) = from_alloc.as_reg() {
+            debug_assert_eq!(from.class(), to_vreg.class());
+        }
+        if let Some(to) = to_alloc.as_reg() {
+            debug_assert_eq!(to.class(), to_vreg.class());
+        }
+        self.moves.push(InsertedMove {
+            pos_prio: PosWithPrio {
+                pos,
+                prio: prio as u32,
+            },
+            from_alloc,
+            to_alloc,
+            to_vreg,
+        });
+    }
 }
 
 /// The fields in this struct are reversed in sort order so that the entire
