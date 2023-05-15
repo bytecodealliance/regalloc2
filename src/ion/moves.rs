@@ -897,9 +897,6 @@ impl<'a, F: Function> Env<'a, F> {
             let mut vec_moves: SmallVec<[InsertedMove; 8]> = smallvec![];
 
             for m in moves {
-                if m.from_alloc == m.to_alloc {
-                    continue;
-                }
                 match m.to_vreg.class() {
                     RegClass::Int => {
                         int_moves.push(m.clone());

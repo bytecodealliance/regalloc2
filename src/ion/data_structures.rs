@@ -672,6 +672,10 @@ impl InsertedMoves {
             to_alloc,
             to_vreg
         );
+        if from_alloc == to_alloc {
+            trace!(" -> skipping move with same source and  dest");
+            return;
+        }
         if let Some(from) = from_alloc.as_reg() {
             debug_assert_eq!(from.class(), to_vreg.class());
         }
