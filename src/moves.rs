@@ -32,7 +32,7 @@ pub struct ParallelMoves<T: Clone + Copy + Default> {
     parallel_moves: MoveVec<T>,
 }
 
-impl<T: Clone + Copy + Default> ParallelMoves<T> {
+impl<T: Clone + Copy + Default + PartialEq> ParallelMoves<T> {
     pub fn new() -> Self {
         Self {
             parallel_moves: smallvec![],
@@ -105,6 +105,7 @@ impl<T: Clone + Copy + Default> ParallelMoves<T> {
         // Sort moves by destination and check that each destination
         // has only one writer.
         self.parallel_moves.sort_by_key(|&(_, dst, _)| dst);
+        self.parallel_moves.dedup();
         if cfg!(debug_assertions) {
             let mut last_dst = None;
             for &(_, dst, _) in &self.parallel_moves {

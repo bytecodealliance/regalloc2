@@ -38,7 +38,7 @@ pub struct CodeRange {
 impl CodeRange {
     #[inline(always)]
     pub fn is_empty(&self) -> bool {
-        self.from == self.to
+        self.from >= self.to
     }
     #[inline(always)]
     pub fn contains(&self, other: &Self) -> bool {
@@ -62,6 +62,15 @@ impl CodeRange {
         CodeRange {
             from: pos,
             to: pos.next(),
+        }
+    }
+
+    /// Join two [CodeRange] values together, producing a [CodeRange] that includes both.
+    #[inline(always)]
+    pub fn join(&self, other: CodeRange) -> Self {
+        CodeRange {
+            from: self.from.min(other.from),
+            to: self.to.max(other.to),
         }
     }
 }
@@ -153,6 +162,9 @@ impl LiveRange {
     }
     #[inline(always)]
     pub fn uses_spill_weight(&self) -> SpillWeight {
+        // NOTE: the spill weight is technically stored in 29 bits, but we ignore the sign bit as
+        // we will always be dealing with positive values. Thus we mask out the top 3 bits to
+        // ensure that the sign bit is clear, then shift left by only two.
         let bits = (self.uses_spill_weight_and_flags & 0x1fff_ffff) << 2;
         SpillWeight::from_f32(f32::from_bits(bits))
     }
@@ -285,7 +297,6 @@ const fn no_bloat_capacity<T>() -> usize {
 
 #[derive(Clone, Debug)]
 pub struct SpillSet {
-    pub vregs: SmallVec<[VRegIndex; no_bloat_capacity::<VRegIndex>()]>,
     pub slot: SpillSlotIndex,
     pub reg_hint: PReg,
     pub class: RegClass,
@@ -293,9 +304,15 @@ pub struct SpillSet {
     pub required: bool,
     pub size: u8,
     pub splits: u8,
+
+    /// The aggregate [`CodeRange`] of all involved [`LiveRange`]s. The effect of this abstraction
+    /// is that we attempt to allocate one spill slot for the extent of a bundle. For fragmented
+    /// bundles with lots of open space this abstraction is pessimistic, but when bundles are small
+    /// or dense this yields similar results to tracking individual live ranges.
+    pub range: CodeRange,
 }
 
-pub(crate) const MAX_SPLITS_PER_SPILLSET: u8 = 10;
+pub(crate) const MAX_SPLITS_PER_SPILLSET: u8 = 2;
 
 #[derive(Clone, Debug)]
 pub struct VRegData {
@@ -467,8 +484,21 @@ impl<'a, F: Function> Env<'a, F> {
 }
 
 #[derive(Clone, Debug)]
+pub struct SpillSetRanges {
+    pub btree: BTreeMap<LiveRangeKey, SpillSetIndex>,
+}
+
+impl SpillSetRanges {
+    pub fn new() -> Self {
+        Self {
+            btree: BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct SpillSlotData {
-    pub ranges: LiveRangeSet,
+    pub ranges: SpillSetRanges,
     pub slots: u32,
     pub alloc: Allocation,
 }

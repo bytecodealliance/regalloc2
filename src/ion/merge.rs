@@ -214,16 +214,10 @@ impl<'a, F: Function> Env<'a, F> {
         }
 
         if self.bundles[from.index()].spillset != self.bundles[to.index()].spillset {
-            let from_vregs = core::mem::replace(
-                &mut self.spillsets[self.bundles[from.index()].spillset.index()].vregs,
-                smallvec![],
-            );
-            let to_vregs = &mut self.spillsets[self.bundles[to.index()].spillset.index()].vregs;
-            for vreg in from_vregs {
-                if !to_vregs.contains(&vreg) {
-                    to_vregs.push(vreg);
-                }
-            }
+            // Widen the range for the target spillset to include the one being merged in.
+            let from_range = self.spillsets[self.bundles[from.index()].spillset.index()].range;
+            let to_range = &mut self.spillsets[self.bundles[to.index()].spillset.index()].range;
+            *to_range = to_range.join(from_range);
         }
 
         if self.bundles[from.index()].cached_stack() {
@@ -246,6 +240,8 @@ impl<'a, F: Function> Env<'a, F> {
             }
 
             let bundle = self.create_bundle();
+            let mut range = self.vregs[vreg.index()].ranges.first().unwrap().range;
+
             self.bundles[bundle.index()].ranges = self.vregs[vreg.index()].ranges.clone();
             trace!("vreg v{} gets bundle{}", vreg.index(), bundle.index());
             for entry in &self.bundles[bundle.index()].ranges {
@@ -254,6 +250,7 @@ impl<'a, F: Function> Env<'a, F> {
                     entry.index.index(),
                     entry.range
                 );
+                range = range.join(entry.range);
                 self.ranges[entry.index.index()].bundle = bundle;
             }
 
@@ -291,7 +288,6 @@ impl<'a, F: Function> Env<'a, F> {
             let reg = self.vreg(vreg);
             let size = self.func.spillslot_size(reg.class()) as u8;
             self.spillsets.push(SpillSet {
-                vregs: smallvec![vreg],
                 slot: SpillSlotIndex::invalid(),
                 size,
                 required: false,
@@ -299,6 +295,7 @@ impl<'a, F: Function> Env<'a, F> {
                 reg_hint: PReg::invalid(),
                 spill_bundle: LiveBundleIndex::invalid(),
                 splits: 0,
+                range,
             });
             self.bundles[bundle.index()].spillset = ssidx;
         }

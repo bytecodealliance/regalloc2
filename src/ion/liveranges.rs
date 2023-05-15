@@ -309,10 +309,11 @@ impl<'a, F: Function> Env<'a, F> {
     pub fn add_liverange_to_preg(&mut self, range: CodeRange, reg: PReg) {
         trace!("adding liverange to preg: {:?} to {}", range, reg);
         let preg_idx = PRegIndex::new(reg.index());
-        self.pregs[preg_idx.index()]
+        let res = self.pregs[preg_idx.index()]
             .allocations
             .btree
             .insert(LiveRangeKey::from_range(&range), LiveRangeIndex::invalid());
+        debug_assert!(res.is_none());
     }
 
     pub fn is_live_in(&mut self, block: Block, vreg: VRegIndex) -> bool {

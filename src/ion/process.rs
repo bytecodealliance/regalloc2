@@ -196,10 +196,14 @@ impl<'a, F: Function> Env<'a, F> {
         trace!("  -> bundle {:?} assigned to preg {:?}", bundle, preg);
         self.bundles[bundle.index()].allocation = Allocation::reg(preg);
         for entry in &self.bundles[bundle.index()].ranges {
-            self.pregs[reg.index()]
+            let key = LiveRangeKey::from_range(&entry.range);
+            let res = self.pregs[reg.index()]
                 .allocations
                 .btree
-                .insert(LiveRangeKey::from_range(&entry.range), entry.index);
+                .insert(key, entry.index);
+
+            // We disallow LR overlap within bundles, so this should never be possible.
+            debug_assert!(res.is_none());
         }
 
         AllocRegResult::Allocated(Allocation::reg(preg))
@@ -780,6 +784,7 @@ impl<'a, F: Function> Env<'a, F> {
         let mut new_lrs: SmallVec<[(VRegIndex, LiveRangeIndex); 16]> = smallvec![];
         let mut new_bundles: SmallVec<[LiveBundleIndex; 16]> = smallvec![];
 
+        let spillset = self.bundles[bundle.index()].spillset;
         let spill = self
             .get_or_create_spill_bundle(bundle, /* create_if_absent = */ true)
             .unwrap();
@@ -795,18 +800,48 @@ impl<'a, F: Function> Env<'a, F> {
         let mut last_inst: Option<Inst> = None;
         let mut last_vreg: Option<VRegIndex> = None;
 
+        let mut spill_uses = UseList::new();
+
         for entry in core::mem::take(&mut self.bundles[bundle.index()].ranges) {
             let lr_from = entry.range.from;
             let lr_to = entry.range.to;
+            let vreg = self.ranges[entry.index.index()].vreg;
 
             removed_lrs.insert(entry.index);
-            let vreg = self.ranges[entry.index.index()].vreg;
             removed_lrs_vregs.insert(vreg);
             trace!(" -> removing old LR {:?} for vreg {:?}", entry.index, vreg);
+
+            let mut spill_range = entry.range;
+            let mut spill_starts_def = false;
 
             let mut last_live_pos = entry.range.from;
             for u in core::mem::take(&mut self.ranges[entry.index.index()].uses) {
                 trace!("   -> use {:?} (last_live_pos {:?})", u, last_live_pos);
+
+                let is_def = u.operand.kind() == OperandKind::Def;
+
+                // If this use has an `any` constraint, eagerly migrate it to the spill range. The
+                // reasoning here is that in the second-chance allocation for the spill bundle,
+                // any-constrained uses will be easy to satisfy. Solving those constraints earlier
+                // could create unnecessary conflicts with existing bundles that need to fit in a
+                // register, more strict requirements, so we delay them eagerly.
+                if u.operand.constraint() == OperandConstraint::Any {
+                    trace!("    -> migrating this any-constrained use to the spill range");
+                    spill_uses.push(u);
+
+                    // Remember if we're moving the def of this vreg into the spill range, so that
+                    // we can set the appropriate flags on it later.
+                    spill_starts_def = spill_starts_def || is_def;
+
+                    continue;
+                }
+
+                // If this is a def of the vreg the entry cares about, make sure that the spill
+                // range starts right before the next instruction so that the value is available.
+                if is_def {
+                    trace!("    -> moving the spill range forward by one");
+                    spill_range.from = ProgPoint::before(u.pos.inst().next());
+                }
 
                 // If we just created a LR for this inst at the last
                 // pos, add this use to the same LR.
@@ -869,7 +904,7 @@ impl<'a, F: Function> Env<'a, F> {
                 // Create a new bundle that contains only this LR.
                 let new_bundle = self.create_bundle();
                 self.ranges[lr.index()].bundle = new_bundle;
-                self.bundles[new_bundle.index()].spillset = self.bundles[bundle.index()].spillset;
+                self.bundles[new_bundle.index()].spillset = spillset;
                 self.bundles[new_bundle.index()]
                     .ranges
                     .push(LiveRangeListEntry {
@@ -878,13 +913,8 @@ impl<'a, F: Function> Env<'a, F> {
                     });
                 new_bundles.push(new_bundle);
 
-                // If this use was a Def, set the StartsAtDef flag for
-                // the new LR. (N.B.: *not* Mod, only Def, because Mod
-                // needs an input. This flag specifically indicates
-                // that the LR does not require the value to be moved
-                // into location at start because it (re)defines the
-                // value.)
-                if u.operand.kind() == OperandKind::Def {
+                // If this use was a Def, set the StartsAtDef flag for the new LR.
+                if is_def {
                     self.ranges[lr.index()].set_flag(LiveRangeFlag::StartsAtDef);
                 }
 
@@ -895,30 +925,6 @@ impl<'a, F: Function> Env<'a, F> {
                     new_bundle
                 );
 
-                // If there was any intervening range in the LR not
-                // covered by the minimal new LR above, add it to the
-                // spillset.
-                if pos > last_live_pos {
-                    let cr = CodeRange {
-                        from: last_live_pos,
-                        to: pos,
-                    };
-                    let spill_lr = self.create_liverange(cr);
-                    self.ranges[spill_lr.index()].vreg = vreg;
-                    self.ranges[spill_lr.index()].bundle = spill;
-                    new_lrs.push((vreg, spill_lr));
-                    self.bundles[spill.index()].ranges.push(LiveRangeListEntry {
-                        range: cr,
-                        index: spill_lr,
-                    });
-                    self.ranges[spill_lr.index()].bundle = spill;
-                    trace!(
-                        "    -> put intervening range {:?} in new LR {:?} in spill bundle {:?}",
-                        cr,
-                        spill_lr,
-                        spill
-                    );
-                }
                 last_live_pos = ProgPoint::before(u.pos.inst().next());
 
                 last_lr = Some(lr);
@@ -927,28 +933,35 @@ impl<'a, F: Function> Env<'a, F> {
                 last_vreg = Some(vreg);
             }
 
-            // If there is space from the last use to the end of the
-            // LR, put that in the spill bundle too.
-            if entry.range.to > last_live_pos {
-                let cr = CodeRange {
-                    from: last_live_pos,
-                    to: entry.range.to,
-                };
-                let spill_lr = self.create_liverange(cr);
+            if !spill_range.is_empty() {
+                // Make one entry in the spill bundle that covers the whole range.
+                // TODO: it might be worth tracking enough state to only create this LR when there is
+                // open space in the original LR.
+                let spill_lr = self.create_liverange(spill_range);
                 self.ranges[spill_lr.index()].vreg = vreg;
                 self.ranges[spill_lr.index()].bundle = spill;
+                self.ranges[spill_lr.index()]
+                    .uses
+                    .extend(spill_uses.drain(..));
                 new_lrs.push((vreg, spill_lr));
+
+                if spill_starts_def {
+                    self.ranges[spill_lr.index()].set_flag(LiveRangeFlag::StartsAtDef);
+                }
+
                 self.bundles[spill.index()].ranges.push(LiveRangeListEntry {
-                    range: cr,
+                    range: spill_range,
                     index: spill_lr,
                 });
                 self.ranges[spill_lr.index()].bundle = spill;
                 trace!(
-                    "    -> put trailing range {:?} in new LR {:?} in spill bundle {:?}",
-                    cr,
+                    "  -> added spill range {:?} in new LR {:?} in spill bundle {:?}",
+                    spill_range,
                     spill_lr,
                     spill
                 );
+            } else {
+                assert!(spill_uses.is_empty());
             }
         }
 
@@ -998,6 +1011,7 @@ impl<'a, F: Function> Env<'a, F> {
         let req = match self.compute_requirement(bundle) {
             Ok(req) => req,
             Err(conflict) => {
+                trace!("conflict!: {:?}", conflict);
                 // We have to split right away. We'll find a point to
                 // split that would allow at least the first half of the
                 // split to be conflict-free.
