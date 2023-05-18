@@ -17,7 +17,7 @@ use super::{
     RedundantMoveEliminator, VRegIndex, SLOT_NONE,
 };
 use crate::ion::data_structures::{
-    u128_key, u64_key, BlockparamIn, BlockparamOut, CodeRange, FixedRegFixupLevel, LiveRangeKey,
+    u64_key, BlockparamIn, BlockparamOut, CodeRange, FixedRegFixupLevel, LiveRangeKey,
     LiveRangeListEntry, PosWithPrio,
 };
 use crate::ion::reg_traversal::RegTraversalIter;
@@ -230,25 +230,16 @@ impl<'a, F: Function> Env<'a, F> {
         let mut inter_block_sources: FxHashMap<Block, Allocation> = FxHashMap::default();
         let mut inter_block_dests = Vec::with_capacity(self.func.num_blocks());
 
-        // This is the same data as BlockparamOut, but the fields are in a different order to
-        // prefer sorting by destination vreg first. This allows us to advance two pointers
-        // simultaneously into block_param_sources and block_param_dests when generating moves.
-        struct BlockparamSource {
-            from_vreg: VRegIndex,
-            from_block: Block,
-            to_block: Block,
-            to_vreg: VRegIndex,
-            alloc: Allocation,
+        #[derive(Hash, Eq, PartialEq)]
+        struct BlockparamSourceKey {
+            bits: u64,
         }
 
-        impl BlockparamSource {
-            fn key(&self) -> u128 {
-                u128_key(
-                    self.to_vreg.raw_u32(),
-                    self.to_block.raw_u32(),
-                    self.from_block.raw_u32(),
-                    self.from_vreg.raw_u32(),
-                )
+        impl BlockparamSourceKey {
+            fn new(from_block: Block, to_vreg: VRegIndex) -> Self {
+                BlockparamSourceKey {
+                    bits: u64_key(from_block.raw_u32(), to_vreg.raw_u32()),
+                }
             }
         }
 
@@ -263,9 +254,17 @@ impl<'a, F: Function> Env<'a, F> {
             fn key(&self) -> u64 {
                 u64_key(self.to_block.raw_u32(), self.from_block.raw_u32())
             }
+
+            fn source(&self) -> BlockparamSourceKey {
+                BlockparamSourceKey::new(self.from_block, self.to_vreg)
+            }
         }
 
-        let mut block_param_sources = Vec::with_capacity(3 * self.func.num_insts());
+        let mut block_param_sources =
+            FxHashMap::<BlockparamSourceKey, Allocation>::with_capacity_and_hasher(
+                3 * self.func.num_insts(),
+                Default::default(),
+            );
         let mut block_param_dests = Vec::with_capacity(3 * self.func.num_insts());
 
         let debug_labels = self.func.debug_value_labels();
@@ -287,7 +286,6 @@ impl<'a, F: Function> Env<'a, F> {
             // `blockparam_outs`, which are sorted by (block, vreg),
             // to fill in allocations.
             let mut prev = PrevBuffer::new(blockparam_in_idx);
-            let dests_start = block_param_dests.len();
             for range_idx in 0..self.vregs[vreg.index()].ranges.len() {
                 let entry = self.vregs[vreg.index()].ranges[range_idx];
                 let alloc = self.get_alloc_for_range(entry.index);
@@ -426,13 +424,19 @@ impl<'a, F: Function> Env<'a, F> {
                                 to_vreg.index()
                             );
 
-                            block_param_sources.push(BlockparamSource {
-                                from_block,
-                                to_block,
-                                to_vreg,
-                                from_vreg: vreg,
-                                alloc,
-                            });
+                            let key = BlockparamSourceKey::new(from_block, to_vreg);
+                            match block_param_sources.entry(key) {
+                                // As with inter-block moves, if the entry is already present we'll
+                                // try to prefer a register allocation.
+                                Entry::Occupied(mut entry) => {
+                                    if !entry.get().is_reg() {
+                                        entry.insert(alloc);
+                                    }
+                                }
+                                Entry::Vacant(entry) => {
+                                    entry.insert(alloc);
+                                }
+                            }
 
                             if self.annotations_enabled {
                                 self.annotate(
@@ -615,11 +619,6 @@ impl<'a, F: Function> Env<'a, F> {
                 }
             }
 
-            // Sort the newly added block_param destinations. The key function ignores the vreg,
-            // which is why we sort here: we preserve the vreg order automatically, and sort
-            // smaller slices of the dests according to their source/destination blocks.
-            block_param_dests[dests_start..].sort_unstable_by_key(BlockparamDest::key);
-
             if !inter_block_dests.is_empty() {
                 self.stats.halfmoves_count += inter_block_dests.len() * 2;
 
@@ -650,53 +649,12 @@ impl<'a, F: Function> Env<'a, F> {
             self.stats.halfmoves_count += block_param_sources.len();
             self.stats.halfmoves_count += block_param_dests.len();
 
-            // Sort the sources to mirror the destinations now, ordering by dest vreg/dest
-            // block/source block.
-            block_param_sources.sort_unstable_by_key(BlockparamSource::key);
-
-            // We traverse the `block_param_sources` and `block_param_dests` vectors in parallel,
-            // advancing a pointer into the sources vector as we disocver dests that don't match
-            // it. There are two places that we ensure that the order of those two vectors enables
-            // this traversal: above when we sort `block_param_sources` according to its key; at
-            // the end of the main vreg loop above when we sort a slice of `block_param_dests` by
-            // its key.
-            //
-            // In both cases, the key function will order entries lexicographically according to
-            // (destination vreg, destination block, source block). One implication of this is that
-            // if there are multiple sources available for a destination, we'll always pick the one
-            // with the lowest source vreg. We could potentially improve this by selecting from the
-            // range of possible sources based on some heuristic (prefer registers, for example).
-
             trace!("processing block-param moves");
-            let mut block_param_sources = block_param_sources.into_iter().peekable();
-            'outer: for dest in block_param_dests {
-                while let Some(src) = block_param_sources.peek() {
-                    if src.to_vreg == dest.to_vreg
-                        && src.from_block == dest.from_block
-                        && src.to_block == dest.to_block
-                    {
-                        trace!(" -> moving from {} to {}", src.alloc, dest.alloc);
-
-                        let (pos, prio) =
-                            choose_move_location(self, dest.from_block, dest.to_block);
-                        inserted_moves.push(
-                            pos,
-                            prio,
-                            src.alloc,
-                            dest.alloc,
-                            self.vreg(dest.to_vreg),
-                        );
-
-                        // We don't advance the block_param_sources iterator here because there
-                        // could be additional destinations that would take from that source. Thus,
-                        // we continue the outer loop to keep the iterator unchanged.
-                        continue 'outer;
-                    }
-
-                    block_param_sources.next();
-                }
-
-                panic!("Ran out of block-param sources");
+            for dest in block_param_dests {
+                let src = dest.source();
+                let src_alloc = block_param_sources.get(&src).unwrap();
+                let (pos, prio) = choose_move_location(self, dest.from_block, dest.to_block);
+                inserted_moves.push(pos, prio, *src_alloc, dest.alloc, self.vreg(dest.to_vreg));
             }
         }
 
