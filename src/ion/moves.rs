@@ -260,7 +260,11 @@ impl<'a, F: Function> Env<'a, F> {
             }
         }
 
-        let mut block_param_sources = FxHashMap::<BlockparamSourceKey, Allocation>::default();
+        let mut block_param_sources =
+            FxHashMap::<BlockparamSourceKey, Allocation>::with_capacity_and_hasher(
+                3 * self.func.num_insts(),
+                Default::default(),
+            );
         let mut block_param_dests = Vec::with_capacity(3 * self.func.num_insts());
 
         let debug_labels = self.func.debug_value_labels();
