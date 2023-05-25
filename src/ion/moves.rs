@@ -828,6 +828,13 @@ impl<'a, F: Function> Env<'a, F> {
                 for reg in this.func.inst_clobbers(inst) {
                     redundant_moves.clear_alloc(Allocation::reg(reg));
                 }
+                // The dedicated scratch registers may be clobbered by any
+                // instruction.
+                for reg in this.env.scratch_by_class {
+                    if let Some(reg) = reg {
+                        redundant_moves.clear_alloc(Allocation::reg(reg));
+                    }
+                }
             }
         }
 
