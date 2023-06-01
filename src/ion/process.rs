@@ -25,6 +25,7 @@ use crate::{
     Allocation, Function, FxHashSet, Inst, InstPosition, OperandConstraint, OperandKind, PReg,
     ProgPoint, RegAllocError,
 };
+use alloc::vec::Vec;
 use core::fmt::Debug;
 use smallvec::{smallvec, SmallVec};
 
@@ -800,7 +801,9 @@ impl<'a, F: Function> Env<'a, F> {
         let mut last_inst: Option<Inst> = None;
         let mut last_vreg: Option<VRegIndex> = None;
 
+        let mut spill_ranges = Vec::with_capacity(self.bundles[bundle.index()].ranges.len());
         let mut spill_uses = UseList::new();
+        let mut prev_spill: Option<LiveRangeIndex> = None;
 
         for entry in core::mem::take(&mut self.bundles[bundle.index()].ranges) {
             let lr_from = entry.range.from;
@@ -934,10 +937,29 @@ impl<'a, F: Function> Env<'a, F> {
             }
 
             if !spill_range.is_empty() {
+                // Merge into the previous spill range when possible.
+                if let Some(prev) = prev_spill {
+                    let prev_range = &mut self.ranges[prev.index()];
+                    if prev_range.vreg == vreg && !spill_starts_def {
+                        trace!(
+                            "  -> extending previous spill range {:?} with {:?}",
+                            prev,
+                            spill_range
+                        );
+
+                        prev_range.range = prev_range.range.join(spill_range);
+                        prev_range.uses.extend(spill_uses.drain(..));
+
+                        continue;
+                    }
+                }
+
                 // Make one entry in the spill bundle that covers the whole range.
                 // TODO: it might be worth tracking enough state to only create this LR when there is
                 // open space in the original LR.
                 let spill_lr = self.create_liverange(spill_range);
+                prev_spill = Some(spill_lr);
+
                 self.ranges[spill_lr.index()].vreg = vreg;
                 self.ranges[spill_lr.index()].bundle = spill;
                 self.ranges[spill_lr.index()]
@@ -949,10 +971,7 @@ impl<'a, F: Function> Env<'a, F> {
                     self.ranges[spill_lr.index()].set_flag(LiveRangeFlag::StartsAtDef);
                 }
 
-                self.bundles[spill.index()].ranges.push(LiveRangeListEntry {
-                    range: spill_range,
-                    index: spill_lr,
-                });
+                spill_ranges.push(spill_lr);
                 self.ranges[spill_lr.index()].bundle = spill;
                 trace!(
                     "  -> added spill range {:?} in new LR {:?} in spill bundle {:?}",
@@ -964,6 +983,15 @@ impl<'a, F: Function> Env<'a, F> {
                 assert!(spill_uses.is_empty());
             }
         }
+
+        // Add spill ranges to the spill bundle, now that their ranges have been finalized.
+        let ranges = &self.ranges;
+        self.bundles[spill.index()]
+            .ranges
+            .extend(spill_ranges.drain(..).map(|lr| LiveRangeListEntry {
+                range: ranges[lr.index()].range,
+                index: lr,
+            }));
 
         // Remove all of the removed LRs from respective vregs' lists.
         for vreg in removed_lrs_vregs {
