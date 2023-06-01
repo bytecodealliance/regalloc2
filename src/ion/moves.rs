@@ -13,8 +13,8 @@
 //! Move resolution.
 
 use super::{
-    Env, InsertMovePrio, InsertedMove, InsertedMoves, LiveRangeFlag, LiveRangeIndex,
-    RedundantMoveEliminator, VRegIndex, SLOT_NONE,
+    Env, InsertMovePrio, InsertedMove, InsertedMoves, LiveRangeFlag, LiveRangeIndex, VRegIndex,
+    SLOT_NONE,
 };
 use crate::ion::data_structures::{
     u64_key, BlockparamIn, BlockparamOut, CodeRange, FixedRegFixupLevel, LiveRangeKey,
@@ -24,7 +24,7 @@ use crate::ion::reg_traversal::RegTraversalIter;
 use crate::moves::{MoveAndScratchResolver, ParallelMoves};
 use crate::{
     Allocation, Block, Edit, Function, FxHashMap, Inst, InstPosition, OperandConstraint,
-    OperandKind, OperandPos, PReg, ProgPoint, RegClass, SpillSlot,
+    OperandPos, PReg, ProgPoint, RegClass, SpillSlot,
 };
 use alloc::vec::Vec;
 use alloc::{format, vec};
@@ -780,66 +780,6 @@ impl<'a, F: Function> Env<'a, F> {
             .moves
             .sort_unstable_by_key(|m| m.pos_prio.key());
 
-        // Redundant-move elimination state tracker.
-        let mut redundant_moves = RedundantMoveEliminator::default();
-
-        fn redundant_move_process_side_effects<'a, F: Function>(
-            this: &Env<'a, F>,
-            redundant_moves: &mut RedundantMoveEliminator,
-            from: ProgPoint,
-            to: ProgPoint,
-        ) {
-            // If any safepoints in range, clear and return.
-            // Also, if we cross a block boundary, clear and return.
-            if this.cfginfo.insn_block[from.inst().index()]
-                != this.cfginfo.insn_block[to.inst().index()]
-            {
-                redundant_moves.clear();
-                return;
-            }
-            for inst in from.inst().index()..=to.inst().index() {
-                if this.func.requires_refs_on_stack(Inst::new(inst)) {
-                    redundant_moves.clear();
-                    return;
-                }
-            }
-
-            let start_inst = if from.pos() == InstPosition::Before {
-                from.inst()
-            } else {
-                from.inst().next()
-            };
-            let end_inst = if to.pos() == InstPosition::Before {
-                to.inst()
-            } else {
-                to.inst().next()
-            };
-            for inst in start_inst.index()..end_inst.index() {
-                let inst = Inst::new(inst);
-                for (i, op) in this.func.inst_operands(inst).iter().enumerate() {
-                    match op.kind() {
-                        OperandKind::Def => {
-                            let alloc = this.get_alloc(inst, i);
-                            redundant_moves.clear_alloc(alloc);
-                        }
-                        _ => {}
-                    }
-                }
-                for reg in this.func.inst_clobbers(inst) {
-                    redundant_moves.clear_alloc(Allocation::reg(reg));
-                }
-                // The dedicated scratch registers may be clobbered by any
-                // instruction.
-                for reg in this.env.scratch_by_class {
-                    if let Some(reg) = reg {
-                        redundant_moves.clear_alloc(Allocation::reg(reg));
-                    }
-                }
-            }
-        }
-
-        let mut last_pos = ProgPoint::before(Inst::new(0));
-
         while i < inserted_moves.moves.len() {
             let start = i;
             let pos_prio = inserted_moves.moves[i].pos_prio;
@@ -847,9 +787,6 @@ impl<'a, F: Function> Env<'a, F> {
                 i += 1;
             }
             let moves = &inserted_moves.moves[start..i];
-
-            redundant_move_process_side_effects(self, &mut redundant_moves, last_pos, pos_prio.pos);
-            last_pos = pos_prio.pos;
 
             // Gather all the moves in each RegClass separately.
             // These cannot interact, so it is safe to have separate
@@ -980,12 +917,7 @@ impl<'a, F: Function> Env<'a, F> {
                     let src = rewrites.get(&src).cloned().unwrap_or(src);
                     let dst = rewrites.get(&dst).cloned().unwrap_or(dst);
                     trace!("  resolved: {} -> {} ({:?})", src, dst, to_vreg);
-                    let action = redundant_moves.process_move(src, dst, to_vreg);
-                    if !action.elide {
-                        self.add_move_edit(pos_prio, src, dst);
-                    } else {
-                        trace!("    -> redundant move elided");
-                    }
+                    self.add_move_edit(pos_prio, src, dst);
                 }
             }
         }
