@@ -123,8 +123,6 @@ pub struct LiveRange {
     pub uses_spill_weight_and_flags: u32,
 
     pub uses: UseList,
-
-    pub merged_into: LiveRangeIndex,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

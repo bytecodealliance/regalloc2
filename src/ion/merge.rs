@@ -12,9 +12,7 @@
 
 //! Bundle merging.
 
-use super::{
-    Env, LiveBundleIndex, LiveRangeIndex, SpillSet, SpillSetIndex, SpillSlotIndex, VRegIndex,
-};
+use super::{Env, LiveBundleIndex, SpillSet, SpillSetIndex, SpillSlotIndex, VRegIndex};
 use crate::{
     ion::data_structures::BlockparamOut, Function, Inst, OperandConstraint, OperandKind, PReg,
 };
@@ -350,15 +348,6 @@ impl<'a, F: Function> Env<'a, F> {
         }
 
         trace!("done merging bundles");
-    }
-
-    pub fn resolve_merged_lr(&self, mut lr: LiveRangeIndex) -> LiveRangeIndex {
-        let mut iter = 0;
-        while iter < 100 && self.ranges[lr.index()].merged_into.is_valid() {
-            lr = self.ranges[lr.index()].merged_into;
-            iter += 1;
-        }
-        lr
     }
 
     pub fn compute_bundle_prio(&self, bundle: LiveBundleIndex) -> u32 {

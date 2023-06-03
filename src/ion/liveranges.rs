@@ -175,10 +175,7 @@ impl<'a, F: Function> Env<'a, F> {
             vreg: VRegIndex::invalid(),
             bundle: LiveBundleIndex::invalid(),
             uses_spill_weight_and_flags: 0,
-
             uses: smallvec![],
-
-            merged_into: LiveRangeIndex::invalid(),
         });
 
         LiveRangeIndex::new(idx)
