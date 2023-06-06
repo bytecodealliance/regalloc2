@@ -53,9 +53,9 @@ impl<'a, F: Function> Env<'a, F> {
 
     pub fn get_alloc_for_range(&self, range: LiveRangeIndex) -> Allocation {
         trace!("get_alloc_for_range: {:?}", range);
-        let bundle = self.ranges[range.index()].bundle;
+        let bundle = self.ranges[range].bundle;
         trace!(" -> bundle: {:?}", bundle);
-        let bundledata = &self.bundles[bundle.index()];
+        let bundledata = &self.bundles[bundle];
         trace!(" -> allocation {:?}", bundledata.allocation);
         if bundledata.allocation != Allocation::none() {
             bundledata.allocation
@@ -63,9 +63,9 @@ impl<'a, F: Function> Env<'a, F> {
             trace!(" -> spillset {:?}", bundledata.spillset);
             trace!(
                 " -> spill slot {:?}",
-                self.spillsets[bundledata.spillset.index()].slot
+                self.spillsets[bundledata.spillset].slot
             );
-            self.spillslots[self.spillsets[bundledata.spillset.index()].slot.index()].alloc
+            self.spillslots[self.spillsets[bundledata.spillset].slot.index()].alloc
         }
     }
 
@@ -78,9 +78,9 @@ impl<'a, F: Function> Env<'a, F> {
 
         // Now that all splits are done, we can pay the cost once to
         // sort VReg range lists and update with the final ranges.
-        for vreg in &mut self.vregs {
+        for vreg in self.vregs.iter_mut() {
             for entry in &mut vreg.ranges {
-                entry.range = self.ranges[entry.index.index()].range;
+                entry.range = self.ranges[entry.index].range;
             }
             vreg.ranges.sort_unstable_by_key(|entry| entry.range.from);
         }
@@ -286,8 +286,8 @@ impl<'a, F: Function> Env<'a, F> {
             // `blockparam_outs`, which are sorted by (block, vreg),
             // to fill in allocations.
             let mut prev = PrevBuffer::new(blockparam_in_idx);
-            for range_idx in 0..self.vregs[vreg.index()].ranges.len() {
-                let entry = self.vregs[vreg.index()].ranges[range_idx];
+            for range_idx in 0..self.vregs[vreg].ranges.len() {
+                let entry = self.vregs[vreg].ranges[range_idx];
                 let alloc = self.get_alloc_for_range(entry.index);
                 let range = entry.range;
                 trace!(
@@ -307,7 +307,7 @@ impl<'a, F: Function> Env<'a, F> {
                             vreg.index(),
                             alloc,
                             entry.index.index(),
-                            self.ranges[entry.index.index()].bundle.raw_u32(),
+                            self.ranges[entry.index].bundle.raw_u32(),
                         ),
                     );
                     self.annotate(
@@ -317,7 +317,7 @@ impl<'a, F: Function> Env<'a, F> {
                             vreg.index(),
                             alloc,
                             entry.index.index(),
-                            self.ranges[entry.index.index()].bundle.raw_u32(),
+                            self.ranges[entry.index].bundle.raw_u32(),
                         ),
                     );
                 }
@@ -350,7 +350,7 @@ impl<'a, F: Function> Env<'a, F> {
 
                     if prev.range.to >= range.from
                         && (prev.range.to > range.from || !self.is_start_of_block(range.from))
-                        && !self.ranges[entry.index.index()].has_flag(LiveRangeFlag::StartsAtDef)
+                        && !self.ranges[entry.index].has_flag(LiveRangeFlag::StartsAtDef)
                     {
                         trace!(
                             "prev LR {} abuts LR {} in same block; moving {} -> {} for v{}",
@@ -556,8 +556,8 @@ impl<'a, F: Function> Env<'a, F> {
                 }
 
                 // Scan over def/uses and apply allocations.
-                for use_idx in 0..self.ranges[entry.index.index()].uses.len() {
-                    let usedata = self.ranges[entry.index.index()].uses[use_idx];
+                for use_idx in 0..self.ranges[entry.index].uses.len() {
+                    let usedata = self.ranges[entry.index].uses[use_idx];
                     trace!("applying to use: {:?}", usedata);
                     debug_assert!(range.contains_point(usedata.pos));
                     let inst = usedata.pos.inst();
