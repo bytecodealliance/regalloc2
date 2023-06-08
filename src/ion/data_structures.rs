@@ -433,7 +433,6 @@ pub struct Env<'a, F: Function> {
     pub multi_fixed_reg_fixups: Vec<MultiFixedRegFixup>,
 
     // Output:
-    pub edits: Vec<(PosWithPrio, Edit)>,
     pub allocs: Vec<Allocation>,
     pub inst_alloc_offsets: Vec<u32>,
     pub num_spillslots: u32,
@@ -689,6 +688,39 @@ impl InsertedMoves {
             to_alloc,
             to_vreg,
         });
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Edits {
+    pub edits: Vec<(PosWithPrio, Edit)>,
+}
+
+impl Edits {
+    #[inline(always)]
+    pub fn with_capacity(n: usize) -> Self {
+        Self {
+            edits: Vec::with_capacity(n),
+        }
+    }
+
+    #[inline(always)]
+    pub fn len(&self) -> usize {
+        self.edits.len()
+    }
+
+    #[inline(always)]
+    pub fn iter(&self) -> impl Iterator<Item = &(PosWithPrio, Edit)> {
+        self.edits.iter()
+    }
+
+    pub fn add(&mut self, pos_prio: PosWithPrio, from: Allocation, to: Allocation) {
+        if from != to {
+            if from.is_reg() && to.is_reg() {
+                debug_assert_eq!(from.as_reg().unwrap().class(), to.as_reg().unwrap().class());
+            }
+            self.edits.push((pos_prio, Edit::Move { from, to }));
+        }
     }
 }
 

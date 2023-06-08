@@ -74,7 +74,6 @@ impl<'a, F: Function> Env<'a, F> {
             preferred_victim_by_class: [PReg::invalid(), PReg::invalid(), PReg::invalid()],
 
             multi_fixed_reg_fixups: vec![],
-            edits: Vec::with_capacity(n),
             allocs: Vec::with_capacity(4 * n),
             inst_alloc_offsets: vec![],
             num_spillslots: 0,
@@ -103,14 +102,14 @@ impl<'a, F: Function> Env<'a, F> {
         Ok(())
     }
 
-    pub(crate) fn run(&mut self) -> Result<(), RegAllocError> {
+    pub(crate) fn run(&mut self) -> Result<Edits, RegAllocError> {
         self.process_bundles()?;
         self.try_allocating_regs_for_spilled_bundles();
         self.allocate_spillslots();
         let moves = self.apply_allocations_and_insert_moves();
-        self.resolve_inserted_moves(moves);
+        let edits = self.resolve_inserted_moves(moves);
         self.compute_stackmaps();
-        Ok(())
+        Ok(edits)
     }
 }
 
@@ -129,14 +128,14 @@ pub fn run<F: Function>(
     let mut env = Env::new(func, mach_env, cfginfo, enable_annotations);
     env.init()?;
 
-    env.run()?;
+    let edits = env.run()?;
 
     if enable_annotations {
         env.dump_results();
     }
 
     Ok(Output {
-        edits: env
+        edits: edits
             .edits
             .into_iter()
             .map(|(pos_prio, edit)| (pos_prio.pos, edit))
