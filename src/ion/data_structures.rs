@@ -94,11 +94,11 @@ impl core::cmp::Ord for CodeRange {
     }
 }
 
-define_index!(LiveBundleIndex);
-define_index!(LiveRangeIndex);
-define_index!(SpillSetIndex);
+define_index!(LiveBundleIndex, LiveBundles, LiveBundle);
+define_index!(LiveRangeIndex, LiveRanges, LiveRange);
+define_index!(SpillSetIndex, SpillSets, SpillSet);
 define_index!(UseIndex);
-define_index!(VRegIndex);
+define_index!(VRegIndex, VRegs, VRegData);
 define_index!(PRegIndex);
 define_index!(SpillSlotIndex);
 
@@ -396,38 +396,11 @@ impl BlockparamIn {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct LiveRanges {
-    ranges: Vec<LiveRange>,
-}
-
 impl LiveRanges {
-    #[inline(always)]
-    pub fn with_capacity(n: usize) -> Self {
-        Self {
-            ranges: Vec::with_capacity(n),
-        }
-    }
-
-    #[inline(always)]
-    pub fn len(&self) -> usize {
-        self.ranges.len()
-    }
-
-    #[inline(always)]
-    pub fn iter(&self) -> impl Iterator<Item = &LiveRange> {
-        self.ranges.iter()
-    }
-
-    #[inline(always)]
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut LiveRange> {
-        self.ranges.iter_mut()
-    }
-
     pub fn add(&mut self, range: CodeRange) -> LiveRangeIndex {
-        let idx = self.ranges.len();
+        let idx = self.storage.len();
 
-        self.ranges.push(LiveRange {
+        self.storage.push(LiveRange {
             range,
             vreg: VRegIndex::invalid(),
             bundle: LiveBundleIndex::invalid(),
@@ -440,38 +413,10 @@ impl LiveRanges {
     }
 }
 
-impl core::ops::Index<LiveRangeIndex> for LiveRanges {
-    type Output = LiveRange;
-
-    #[inline(always)]
-    fn index(&self, index: LiveRangeIndex) -> &Self::Output {
-        &self.ranges[index.index()]
-    }
-}
-
-impl core::ops::IndexMut<LiveRangeIndex> for LiveRanges {
-    #[inline(always)]
-    fn index_mut(&mut self, index: LiveRangeIndex) -> &mut Self::Output {
-        &mut self.ranges[index.index()]
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct LiveBundles {
-    bundles: Vec<LiveBundle>,
-}
-
 impl LiveBundles {
-    #[inline(always)]
-    pub fn with_capacity(n: usize) -> Self {
-        Self {
-            bundles: Vec::with_capacity(n),
-        }
-    }
-
     pub fn add(&mut self) -> LiveBundleIndex {
-        let bundle = self.bundles.len();
-        self.bundles.push(LiveBundle {
+        let bundle = self.len();
+        self.storage.push(LiveBundle {
             allocation: Allocation::none(),
             ranges: smallvec![],
             spillset: SpillSetIndex::invalid(),
@@ -480,124 +425,22 @@ impl LiveBundles {
         });
         LiveBundleIndex::new(bundle)
     }
-
-    #[inline(always)]
-    pub fn len(&self) -> usize {
-        self.bundles.len()
-    }
-
-    #[inline(always)]
-    pub fn iter(&self) -> impl Iterator<Item = &LiveBundle> {
-        self.bundles.iter()
-    }
-}
-
-impl core::ops::Index<LiveBundleIndex> for LiveBundles {
-    type Output = LiveBundle;
-
-    #[inline(always)]
-    fn index(&self, idx: LiveBundleIndex) -> &Self::Output {
-        &self.bundles[idx.index()]
-    }
-}
-
-impl core::ops::IndexMut<LiveBundleIndex> for LiveBundles {
-    #[inline(always)]
-    fn index_mut(&mut self, idx: LiveBundleIndex) -> &mut Self::Output {
-        &mut self.bundles[idx.index()]
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct SpillSets {
-    spillsets: Vec<SpillSet>,
 }
 
 impl SpillSets {
-    #[inline(always)]
-    pub fn with_capacity(n: usize) -> Self {
-        Self {
-            spillsets: Vec::with_capacity(n),
-        }
-    }
-
     pub fn add(&mut self, spillset: SpillSet) -> SpillSetIndex {
         let ssidx = SpillSetIndex(self.len() as u32);
-        self.spillsets.push(spillset);
+        self.storage.push(spillset);
         ssidx
     }
-
-    #[inline(always)]
-    pub fn len(&self) -> usize {
-        self.spillsets.len()
-    }
-}
-
-impl core::ops::Index<SpillSetIndex> for SpillSets {
-    type Output = SpillSet;
-
-    #[inline(always)]
-    fn index(&self, idx: SpillSetIndex) -> &Self::Output {
-        &self.spillsets[idx.index()]
-    }
-}
-
-impl core::ops::IndexMut<SpillSetIndex> for SpillSets {
-    #[inline(always)]
-    fn index_mut(&mut self, idx: SpillSetIndex) -> &mut Self::Output {
-        &mut self.spillsets[idx.index()]
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct VRegs {
-    vregs: Vec<VRegData>,
 }
 
 impl VRegs {
-    #[inline(always)]
-    pub fn with_capacity(n: usize) -> Self {
-        Self {
-            vregs: Vec::with_capacity(n),
-        }
-    }
-
     pub fn add(&mut self, reg: VReg, data: VRegData) -> VRegIndex {
-        let idx = self.vregs.len();
+        let idx = self.len();
         debug_assert_eq!(reg.vreg(), idx);
-        self.vregs.push(data);
+        self.storage.push(data);
         VRegIndex::new(idx)
-    }
-
-    #[inline(always)]
-    pub fn len(&self) -> usize {
-        self.vregs.len()
-    }
-
-    #[inline(always)]
-    pub fn iter(&self) -> impl Iterator<Item = &VRegData> {
-        self.vregs.iter()
-    }
-
-    #[inline(always)]
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut VRegData> {
-        self.vregs.iter_mut()
-    }
-}
-
-impl core::ops::Index<VRegIndex> for VRegs {
-    type Output = VRegData;
-
-    #[inline(always)]
-    fn index(&self, idx: VRegIndex) -> &Self::Output {
-        &self.vregs[idx.index()]
-    }
-}
-
-impl core::ops::IndexMut<VRegIndex> for VRegs {
-    #[inline(always)]
-    fn index_mut(&mut self, idx: VRegIndex) -> &mut Self::Output {
-        &mut self.vregs[idx.index()]
     }
 }
 
@@ -606,14 +449,14 @@ impl core::ops::Index<VReg> for VRegs {
 
     #[inline(always)]
     fn index(&self, idx: VReg) -> &Self::Output {
-        &self.vregs[idx.vreg()]
+        &self.storage[idx.vreg()]
     }
 }
 
 impl core::ops::IndexMut<VReg> for VRegs {
     #[inline(always)]
     fn index_mut(&mut self, idx: VReg) -> &mut Self::Output {
-        &mut self.vregs[idx.vreg()]
+        &mut self.storage[idx.vreg()]
     }
 }
 

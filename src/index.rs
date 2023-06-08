@@ -1,5 +1,54 @@
 #[macro_export]
 macro_rules! define_index {
+    ($ix:ident, $storage:ident, $elem:ident) => {
+        define_index!($ix);
+
+        #[derive(Clone, Debug)]
+        pub struct $storage {
+            pub(crate) storage: Vec<$elem>,
+        }
+
+        impl $storage {
+            #[inline(always)]
+            pub fn with_capacity(n: usize) -> Self {
+                Self {
+                    storage: Vec::with_capacity(n),
+                }
+            }
+
+            #[inline(always)]
+            pub fn len(&self) -> usize {
+                self.storage.len()
+            }
+
+            #[inline(always)]
+            pub fn iter(&self) -> impl Iterator<Item = &$elem> {
+                self.storage.iter()
+            }
+
+            #[inline(always)]
+            pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut $elem> {
+                self.storage.iter_mut()
+            }
+        }
+
+        impl core::ops::Index<$ix> for $storage {
+            type Output = $elem;
+
+            #[inline(always)]
+            fn index(&self, i: $ix) -> &Self::Output {
+                &self.storage[i.index()]
+            }
+        }
+
+        impl core::ops::IndexMut<$ix> for $storage {
+            #[inline(always)]
+            fn index_mut(&mut self, i: $ix) -> &mut Self::Output {
+                &mut self.storage[i.index()]
+            }
+        }
+    };
+
     ($ix:ident) => {
         #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
         #[cfg_attr(
