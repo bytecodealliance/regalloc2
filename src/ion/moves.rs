@@ -17,8 +17,8 @@ use super::{
     RedundantMoveEliminator, VRegIndex, SLOT_NONE,
 };
 use crate::ion::data_structures::{
-    u64_key, BlockparamIn, BlockparamOut, CodeRange, FixedRegFixupLevel, LiveRangeKey,
-    LiveRangeListEntry, PosWithPrio,
+    u64_key, BlockparamIn, BlockparamOut, CodeRange, Edits, FixedRegFixupLevel, LiveRangeKey,
+    LiveRangeListEntry,
 };
 use crate::ion::reg_traversal::RegTraversalIter;
 use crate::moves::{MoveAndScratchResolver, ParallelMoves};
@@ -772,7 +772,7 @@ impl<'a, F: Function> Env<'a, F> {
         inserted_moves
     }
 
-    pub fn resolve_inserted_moves(&mut self, mut inserted_moves: InsertedMoves) {
+    pub fn resolve_inserted_moves(&mut self, mut inserted_moves: InsertedMoves) -> Edits {
         // For each program point, gather all moves together. Then
         // resolve (see cases below).
         let mut i = 0;
@@ -839,6 +839,7 @@ impl<'a, F: Function> Env<'a, F> {
         }
 
         let mut last_pos = ProgPoint::before(Inst::new(0));
+        let mut edits = Edits::with_capacity(self.func.num_insts());
 
         while i < inserted_moves.moves.len() {
             let start = i;
@@ -982,7 +983,7 @@ impl<'a, F: Function> Env<'a, F> {
                     trace!("  resolved: {} -> {} ({:?})", src, dst, to_vreg);
                     let action = redundant_moves.process_move(src, dst, to_vreg);
                     if !action.elide {
-                        self.add_move_edit(pos_prio, src, dst);
+                        edits.add(pos_prio, src, dst);
                     } else {
                         trace!("    -> redundant move elided");
                     }
@@ -994,13 +995,12 @@ impl<'a, F: Function> Env<'a, F> {
         // be a stable sort! We have to keep the order produced by the
         // parallel-move resolver for all moves within a single sort
         // key.
-        self.edits.sort_by_key(|&(pos_prio, _)| pos_prio.key());
-        self.stats.edits_count = self.edits.len();
+        edits.sort();
+        self.stats.edits_count = edits.len();
 
         // Add debug annotations.
         if self.annotations_enabled {
-            for i in 0..self.edits.len() {
-                let &(pos_prio, ref edit) = &self.edits[i];
+            for &(pos_prio, ref edit) in edits.iter() {
                 match edit {
                     &Edit::Move { from, to } => {
                         self.annotate(pos_prio.pos, format!("move {} -> {}", from, to));
@@ -1008,14 +1008,7 @@ impl<'a, F: Function> Env<'a, F> {
                 }
             }
         }
-    }
 
-    pub fn add_move_edit(&mut self, pos_prio: PosWithPrio, from: Allocation, to: Allocation) {
-        if from != to {
-            if from.is_reg() && to.is_reg() {
-                debug_assert_eq!(from.as_reg().unwrap().class(), to.as_reg().unwrap().class());
-            }
-            self.edits.push((pos_prio, Edit::Move { from, to }));
-        }
+        edits
     }
 }
