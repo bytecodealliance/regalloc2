@@ -278,7 +278,7 @@ impl<'a, F: Function> Env<'a, F> {
             // Create a spillslot for this bundle.
             let reg = self.vreg(vreg);
             let size = self.func.spillslot_size(reg.class()) as u8;
-            let ssidx = self.spillsets.add(SpillSet {
+            let ssidx = self.spillsets.push(SpillSet {
                 slot: SpillSlotIndex::invalid(),
                 size,
                 required: false,

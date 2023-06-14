@@ -5,7 +5,7 @@ macro_rules! define_index {
 
         #[derive(Clone, Debug)]
         pub struct $storage {
-            pub(crate) storage: Vec<$elem>,
+            storage: Vec<$elem>,
         }
 
         impl $storage {
@@ -29,6 +29,13 @@ macro_rules! define_index {
             #[inline(always)]
             pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut $elem> {
                 self.storage.iter_mut()
+            }
+
+            #[inline(always)]
+            pub fn push(&mut self, value: $elem) -> $ix {
+                let idx = $ix(self.storage.len() as u32);
+                self.storage.push(value);
+                idx
             }
         }
 

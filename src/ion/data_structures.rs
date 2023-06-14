@@ -398,49 +398,34 @@ impl BlockparamIn {
 
 impl LiveRanges {
     pub fn add(&mut self, range: CodeRange) -> LiveRangeIndex {
-        let idx = self.storage.len();
-
-        self.storage.push(LiveRange {
+        self.push(LiveRange {
             range,
             vreg: VRegIndex::invalid(),
             bundle: LiveBundleIndex::invalid(),
             uses_spill_weight_and_flags: 0,
 
             uses: smallvec![],
-        });
-
-        LiveRangeIndex::new(idx)
+        })
     }
 }
 
 impl LiveBundles {
     pub fn add(&mut self) -> LiveBundleIndex {
-        let bundle = self.len();
-        self.storage.push(LiveBundle {
+        self.push(LiveBundle {
             allocation: Allocation::none(),
             ranges: smallvec![],
             spillset: SpillSetIndex::invalid(),
             prio: 0,
             spill_weight_and_props: 0,
-        });
-        LiveBundleIndex::new(bundle)
-    }
-}
-
-impl SpillSets {
-    pub fn add(&mut self, spillset: SpillSet) -> SpillSetIndex {
-        let ssidx = SpillSetIndex(self.len() as u32);
-        self.storage.push(spillset);
-        ssidx
+        })
     }
 }
 
 impl VRegs {
     pub fn add(&mut self, reg: VReg, data: VRegData) -> VRegIndex {
-        let idx = self.len();
-        debug_assert_eq!(reg.vreg(), idx);
-        self.storage.push(data);
-        VRegIndex::new(idx)
+        let idx = self.push(data);
+        debug_assert_eq!(reg.vreg(), idx.index());
+        idx
     }
 }
 
