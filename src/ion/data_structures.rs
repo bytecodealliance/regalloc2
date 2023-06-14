@@ -26,7 +26,7 @@ use alloc::vec::Vec;
 use core::cmp::Ordering;
 use core::fmt::Debug;
 use hashbrown::{HashMap, HashSet};
-use smallvec::SmallVec;
+use smallvec::{smallvec, SmallVec};
 
 /// A range from `from` (inclusive) to `to` (exclusive).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -94,11 +94,11 @@ impl core::cmp::Ord for CodeRange {
     }
 }
 
-define_index!(LiveBundleIndex);
-define_index!(LiveRangeIndex);
-define_index!(SpillSetIndex);
+define_index!(LiveBundleIndex, LiveBundles, LiveBundle);
+define_index!(LiveRangeIndex, LiveRanges, LiveRange);
+define_index!(SpillSetIndex, SpillSets, SpillSet);
 define_index!(UseIndex);
-define_index!(VRegIndex);
+define_index!(VRegIndex, VRegs, VRegData);
 define_index!(PRegIndex);
 define_index!(SpillSlotIndex);
 
@@ -396,6 +396,55 @@ impl BlockparamIn {
     }
 }
 
+impl LiveRanges {
+    pub fn add(&mut self, range: CodeRange) -> LiveRangeIndex {
+        self.push(LiveRange {
+            range,
+            vreg: VRegIndex::invalid(),
+            bundle: LiveBundleIndex::invalid(),
+            uses_spill_weight_and_flags: 0,
+
+            uses: smallvec![],
+        })
+    }
+}
+
+impl LiveBundles {
+    pub fn add(&mut self) -> LiveBundleIndex {
+        self.push(LiveBundle {
+            allocation: Allocation::none(),
+            ranges: smallvec![],
+            spillset: SpillSetIndex::invalid(),
+            prio: 0,
+            spill_weight_and_props: 0,
+        })
+    }
+}
+
+impl VRegs {
+    pub fn add(&mut self, reg: VReg, data: VRegData) -> VRegIndex {
+        let idx = self.push(data);
+        debug_assert_eq!(reg.vreg(), idx.index());
+        idx
+    }
+}
+
+impl core::ops::Index<VReg> for VRegs {
+    type Output = VRegData;
+
+    #[inline(always)]
+    fn index(&self, idx: VReg) -> &Self::Output {
+        &self.storage[idx.vreg()]
+    }
+}
+
+impl core::ops::IndexMut<VReg> for VRegs {
+    #[inline(always)]
+    fn index_mut(&mut self, idx: VReg) -> &mut Self::Output {
+        &mut self.storage[idx.vreg()]
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Env<'a, F: Function> {
     pub func: &'a F,
@@ -406,10 +455,10 @@ pub struct Env<'a, F: Function> {
     pub blockparam_outs: Vec<BlockparamOut>,
     pub blockparam_ins: Vec<BlockparamIn>,
 
-    pub ranges: Vec<LiveRange>,
-    pub bundles: Vec<LiveBundle>,
-    pub spillsets: Vec<SpillSet>,
-    pub vregs: Vec<VRegData>,
+    pub ranges: LiveRanges,
+    pub bundles: LiveBundles,
+    pub spillsets: SpillSets,
+    pub vregs: VRegs,
     pub pregs: Vec<PRegData>,
     pub allocation_queue: PrioQueue,
     pub safepoints: Vec<Inst>, // Sorted list of safepoint insts.
@@ -457,7 +506,7 @@ impl<'a, F: Function> Env<'a, F> {
     /// Get the VReg (with bundled RegClass) from a vreg index.
     #[inline]
     pub fn vreg(&self, index: VRegIndex) -> VReg {
-        let class = self.vregs[index.index()]
+        let class = self.vregs[index]
             .class
             .expect("trying to get a VReg before observing its class");
         VReg::new(index.index(), class)
@@ -466,7 +515,7 @@ impl<'a, F: Function> Env<'a, F> {
     /// Record the class of a VReg. We learn this only when we observe
     /// the VRegs in use.
     pub fn observe_vreg_class(&mut self, vreg: VReg) {
-        let old_class = self.vregs[vreg.vreg()].class.replace(vreg.class());
+        let old_class = self.vregs[vreg].class.replace(vreg.class());
         // We should never observe two different classes for two
         // mentions of a VReg in the source program.
         debug_assert!(old_class == None || old_class == Some(vreg.class()));
@@ -474,7 +523,7 @@ impl<'a, F: Function> Env<'a, F> {
 
     /// Is this vreg actually used in the source program?
     pub fn is_vreg_used(&self, index: VRegIndex) -> bool {
-        self.vregs[index.index()].class.is_some()
+        self.vregs[index].class.is_some()
     }
 }
 

@@ -25,16 +25,16 @@ impl<'a, F: Function> Env<'a, F> {
         for i in 0..self.spilled_bundles.len() {
             let bundle = self.spilled_bundles[i]; // don't borrow self
 
-            if self.bundles[bundle.index()].ranges.is_empty() {
+            if self.bundles[bundle].ranges.is_empty() {
                 continue;
             }
 
-            let class = self.spillsets[self.bundles[bundle.index()].spillset.index()].class;
-            let hint = self.spillsets[self.bundles[bundle.index()].spillset.index()].reg_hint;
+            let class = self.spillsets[self.bundles[bundle].spillset].class;
+            let hint = self.spillsets[self.bundles[bundle].spillset].reg_hint;
 
             // This may be an empty-range bundle whose ranges are not
             // sorted; sort all range-lists again here.
-            self.bundles[bundle.index()]
+            self.bundles[bundle]
                 .ranges
                 .sort_unstable_by_key(|entry| entry.range.from);
 
@@ -57,9 +57,9 @@ impl<'a, F: Function> Env<'a, F> {
                 trace!(
                     "spilling bundle {:?}: marking spillset {:?} as required",
                     bundle,
-                    self.bundles[bundle.index()].spillset
+                    self.bundles[bundle].spillset
                 );
-                self.spillsets[self.bundles[bundle.index()].spillset.index()].required = true;
+                self.spillsets[self.bundles[bundle].spillset].required = true;
             }
         }
     }
@@ -72,9 +72,7 @@ impl<'a, F: Function> Env<'a, F> {
         !self.spillslots[spillslot.index()]
             .ranges
             .btree
-            .contains_key(&LiveRangeKey::from_range(
-                &self.spillsets[spillset.index()].range,
-            ))
+            .contains_key(&LiveRangeKey::from_range(&self.spillsets[spillset].range))
     }
 
     pub fn allocate_spillset_to_spillslot(
@@ -82,10 +80,10 @@ impl<'a, F: Function> Env<'a, F> {
         spillset: SpillSetIndex,
         spillslot: SpillSlotIndex,
     ) {
-        self.spillsets[spillset.index()].slot = spillslot;
+        self.spillsets[spillset].slot = spillslot;
 
         let res = self.spillslots[spillslot.index()].ranges.btree.insert(
-            LiveRangeKey::from_range(&self.spillsets[spillset.index()].range),
+            LiveRangeKey::from_range(&self.spillsets[spillset].range),
             spillset,
         );
 
@@ -98,11 +96,11 @@ impl<'a, F: Function> Env<'a, F> {
         for spillset in 0..self.spillsets.len() {
             trace!("allocate spillslot: {}", spillset);
             let spillset = SpillSetIndex::new(spillset);
-            if !self.spillsets[spillset.index()].required {
+            if !self.spillsets[spillset].required {
                 continue;
             }
             // Get or create the spillslot list for this size.
-            let size = self.spillsets[spillset.index()].size as usize;
+            let size = self.spillsets[spillset].size as usize;
             if size >= self.slots_by_size.len() {
                 self.slots_by_size.resize(
                     size + 1,

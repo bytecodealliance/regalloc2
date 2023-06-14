@@ -128,10 +128,10 @@ impl<'a, F: Function> Env<'a, F> {
         let mut req = Requirement::Any;
         let mut last_pos = ProgPoint::before(Inst::new(0));
         trace!("compute_requirement: {:?}", bundle);
-        let ranges = &self.bundles[bundle.index()].ranges;
+        let ranges = &self.bundles[bundle].ranges;
         for entry in ranges {
             trace!(" -> LR {:?}: {:?}", entry.index, entry.range);
-            for u in &self.ranges[entry.index.index()].uses {
+            for u in &self.ranges[entry.index].uses {
                 trace!("  -> use {:?}", u);
                 let r = self.requirement_from_operand(u.operand);
                 req = req.merge(r).map_err(|_| {

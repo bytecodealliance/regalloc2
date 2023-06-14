@@ -12,7 +12,7 @@
 
 //! Bundle merging.
 
-use super::{Env, LiveBundleIndex, SpillSet, SpillSetIndex, SpillSlotIndex, VRegIndex};
+use super::{Env, LiveBundleIndex, SpillSet, SpillSlotIndex, VRegIndex};
 use crate::{
     ion::data_structures::BlockparamOut, Function, Inst, OperandConstraint, OperandKind, PReg,
 };
@@ -32,17 +32,15 @@ impl<'a, F: Function> Env<'a, F> {
         );
 
         // Both bundles must deal with the same RegClass.
-        let from_rc = self.spillsets[self.bundles[from.index()].spillset.index()].class;
-        let to_rc = self.spillsets[self.bundles[to.index()].spillset.index()].class;
+        let from_rc = self.spillsets[self.bundles[from].spillset].class;
+        let to_rc = self.spillsets[self.bundles[to].spillset].class;
         if from_rc != to_rc {
             trace!(" -> mismatching reg classes");
             return false;
         }
 
         // If either bundle is already assigned (due to a pinned vreg), don't merge.
-        if self.bundles[from.index()].allocation.is_some()
-            || self.bundles[to.index()].allocation.is_some()
-        {
+        if self.bundles[from].allocation.is_some() || self.bundles[to].allocation.is_some() {
             trace!("one of the bundles is already assigned (pinned)");
             return false;
         }
@@ -50,20 +48,20 @@ impl<'a, F: Function> Env<'a, F> {
         #[cfg(debug_assertions)]
         {
             // Sanity check: both bundles should contain only ranges with appropriate VReg classes.
-            for entry in &self.bundles[from.index()].ranges {
-                let vreg = self.ranges[entry.index.index()].vreg;
+            for entry in &self.bundles[from].ranges {
+                let vreg = self.ranges[entry.index].vreg;
                 debug_assert_eq!(from_rc, self.vreg(vreg).class());
             }
-            for entry in &self.bundles[to.index()].ranges {
-                let vreg = self.ranges[entry.index.index()].vreg;
+            for entry in &self.bundles[to].ranges {
+                let vreg = self.ranges[entry.index].vreg;
                 debug_assert_eq!(to_rc, self.vreg(vreg).class());
             }
         }
 
         // Check for overlap in LiveRanges and for conflicting
         // requirements.
-        let ranges_from = &self.bundles[from.index()].ranges[..];
-        let ranges_to = &self.bundles[to.index()].ranges[..];
+        let ranges_from = &self.bundles[from].ranges[..];
+        let ranges_to = &self.bundles[to].ranges[..];
         let mut idx_from = 0;
         let mut idx_to = 0;
         let mut range_count = 0;
@@ -97,18 +95,16 @@ impl<'a, F: Function> Env<'a, F> {
         // result in an impossible-to-solve allocation problem if
         // there is a fixed-reg use in the same reg on the same
         // instruction.
-        if self.bundles[from.index()].cached_fixed_def()
-            || self.bundles[to.index()].cached_fixed_def()
-        {
+        if self.bundles[from].cached_fixed_def() || self.bundles[to].cached_fixed_def() {
             trace!(" -> one bundle has a fixed def; aborting merge");
             return false;
         }
 
         // Check for a requirements conflict.
-        if self.bundles[from.index()].cached_stack()
-            || self.bundles[from.index()].cached_fixed()
-            || self.bundles[to.index()].cached_stack()
-            || self.bundles[to.index()].cached_fixed()
+        if self.bundles[from].cached_stack()
+            || self.bundles[from].cached_fixed()
+            || self.bundles[to].cached_stack()
+            || self.bundles[to].cached_fixed()
         {
             if self.merge_bundle_requirements(from, to).is_err() {
                 trace!(" -> conflicting requirements; aborting merge");
@@ -131,9 +127,9 @@ impl<'a, F: Function> Env<'a, F> {
             // `to` bundle is empty -- just move the list over from
             // `from` and set `bundle` up-link on all ranges.
             trace!(" -> to bundle{} is empty; trivial merge", to.index());
-            let list = core::mem::replace(&mut self.bundles[from.index()].ranges, smallvec![]);
+            let list = core::mem::replace(&mut self.bundles[from].ranges, smallvec![]);
             for entry in &list {
-                self.ranges[entry.index.index()].bundle = to;
+                self.ranges[entry.index].bundle = to;
 
                 if self.annotations_enabled {
                     self.annotate(
@@ -141,20 +137,20 @@ impl<'a, F: Function> Env<'a, F> {
                         format!(
                             " MERGE range{} v{} from bundle{} to bundle{}",
                             entry.index.index(),
-                            self.ranges[entry.index.index()].vreg.index(),
+                            self.ranges[entry.index].vreg.index(),
                             from.index(),
                             to.index(),
                         ),
                     );
                 }
             }
-            self.bundles[to.index()].ranges = list;
+            self.bundles[to].ranges = list;
 
-            if self.bundles[from.index()].cached_stack() {
-                self.bundles[to.index()].set_cached_stack();
+            if self.bundles[from].cached_stack() {
+                self.bundles[to].set_cached_stack();
             }
-            if self.bundles[from.index()].cached_fixed() {
-                self.bundles[to.index()].set_cached_fixed();
+            if self.bundles[from].cached_fixed() {
+                self.bundles[to].set_cached_fixed();
             }
 
             return true;
@@ -169,34 +165,32 @@ impl<'a, F: Function> Env<'a, F> {
         // Two non-empty lists of LiveRanges: concatenate and
         // sort. This is faster than a mergesort-like merge into a new
         // list, empirically.
-        let from_list = core::mem::replace(&mut self.bundles[from.index()].ranges, smallvec![]);
+        let from_list = core::mem::replace(&mut self.bundles[from].ranges, smallvec![]);
         for entry in &from_list {
-            self.ranges[entry.index.index()].bundle = to;
+            self.ranges[entry.index].bundle = to;
         }
-        self.bundles[to.index()]
-            .ranges
-            .extend_from_slice(&from_list[..]);
-        self.bundles[to.index()]
+        self.bundles[to].ranges.extend_from_slice(&from_list[..]);
+        self.bundles[to]
             .ranges
             .sort_unstable_by_key(|entry| entry.range.from);
 
         if self.annotations_enabled {
-            trace!("merging: merged = {:?}", self.bundles[to.index()].ranges);
+            trace!("merging: merged = {:?}", self.bundles[to].ranges);
             let mut last_range = None;
-            for i in 0..self.bundles[to.index()].ranges.len() {
-                let entry = self.bundles[to.index()].ranges[i];
+            for i in 0..self.bundles[to].ranges.len() {
+                let entry = self.bundles[to].ranges[i];
                 if last_range.is_some() {
                     debug_assert!(last_range.unwrap() < entry.range);
                 }
                 last_range = Some(entry.range);
 
-                if self.ranges[entry.index.index()].bundle == from {
+                if self.ranges[entry.index].bundle == from {
                     self.annotate(
                         entry.range.from,
                         format!(
                             " MERGE range{} v{} from bundle{} to bundle{}",
                             entry.index.index(),
-                            self.ranges[entry.index.index()].vreg.index(),
+                            self.ranges[entry.index].vreg.index(),
                             from.index(),
                             to.index(),
                         ),
@@ -211,18 +205,18 @@ impl<'a, F: Function> Env<'a, F> {
             }
         }
 
-        if self.bundles[from.index()].spillset != self.bundles[to.index()].spillset {
+        if self.bundles[from].spillset != self.bundles[to].spillset {
             // Widen the range for the target spillset to include the one being merged in.
-            let from_range = self.spillsets[self.bundles[from.index()].spillset.index()].range;
-            let to_range = &mut self.spillsets[self.bundles[to.index()].spillset.index()].range;
+            let from_range = self.spillsets[self.bundles[from].spillset].range;
+            let to_range = &mut self.spillsets[self.bundles[to].spillset].range;
             *to_range = to_range.join(from_range);
         }
 
-        if self.bundles[from.index()].cached_stack() {
-            self.bundles[to.index()].set_cached_stack();
+        if self.bundles[from].cached_stack() {
+            self.bundles[to].set_cached_stack();
         }
-        if self.bundles[from.index()].cached_fixed() {
-            self.bundles[to.index()].set_cached_fixed();
+        if self.bundles[from].cached_fixed() {
+            self.bundles[to].set_cached_fixed();
         }
 
         true
@@ -233,30 +227,30 @@ impl<'a, F: Function> Env<'a, F> {
         trace!("merge_vreg_bundles: creating vreg bundles");
         for vreg in 0..self.vregs.len() {
             let vreg = VRegIndex::new(vreg);
-            if self.vregs[vreg.index()].ranges.is_empty() {
+            if self.vregs[vreg].ranges.is_empty() {
                 continue;
             }
 
-            let bundle = self.create_bundle();
-            let mut range = self.vregs[vreg.index()].ranges.first().unwrap().range;
+            let bundle = self.bundles.add();
+            let mut range = self.vregs[vreg].ranges.first().unwrap().range;
 
-            self.bundles[bundle.index()].ranges = self.vregs[vreg.index()].ranges.clone();
+            self.bundles[bundle].ranges = self.vregs[vreg].ranges.clone();
             trace!("vreg v{} gets bundle{}", vreg.index(), bundle.index());
-            for entry in &self.bundles[bundle.index()].ranges {
+            for entry in &self.bundles[bundle].ranges {
                 trace!(
                     " -> with LR range{}: {:?}",
                     entry.index.index(),
                     entry.range
                 );
                 range = range.join(entry.range);
-                self.ranges[entry.index.index()].bundle = bundle;
+                self.ranges[entry.index].bundle = bundle;
             }
 
             let mut fixed = false;
             let mut fixed_def = false;
             let mut stack = false;
-            for entry in &self.bundles[bundle.index()].ranges {
-                for u in &self.ranges[entry.index.index()].uses {
+            for entry in &self.bundles[bundle].ranges {
+                for u in &self.ranges[entry.index].uses {
                     if let OperandConstraint::FixedReg(_) = u.operand.constraint() {
                         fixed = true;
                         if u.operand.kind() == OperandKind::Def {
@@ -272,20 +266,19 @@ impl<'a, F: Function> Env<'a, F> {
                 }
             }
             if fixed {
-                self.bundles[bundle.index()].set_cached_fixed();
+                self.bundles[bundle].set_cached_fixed();
             }
             if fixed_def {
-                self.bundles[bundle.index()].set_cached_fixed_def();
+                self.bundles[bundle].set_cached_fixed_def();
             }
             if stack {
-                self.bundles[bundle.index()].set_cached_stack();
+                self.bundles[bundle].set_cached_stack();
             }
 
             // Create a spillslot for this bundle.
-            let ssidx = SpillSetIndex::new(self.spillsets.len());
             let reg = self.vreg(vreg);
             let size = self.func.spillslot_size(reg.class()) as u8;
-            self.spillsets.push(SpillSet {
+            let ssidx = self.spillsets.push(SpillSet {
                 slot: SpillSlotIndex::invalid(),
                 size,
                 required: false,
@@ -295,7 +288,7 @@ impl<'a, F: Function> Env<'a, F> {
                 splits: 0,
                 range,
             });
-            self.bundles[bundle.index()].spillset = ssidx;
+            self.bundles[bundle].spillset = ssidx;
         }
 
         for inst in 0..self.func.num_insts() {
@@ -313,11 +306,9 @@ impl<'a, F: Function> Env<'a, F> {
                         src_vreg,
                         dst_vreg
                     );
-                    let src_bundle =
-                        self.ranges[self.vregs[src_vreg.vreg()].ranges[0].index.index()].bundle;
+                    let src_bundle = self.ranges[self.vregs[src_vreg].ranges[0].index].bundle;
                     debug_assert!(src_bundle.is_valid());
-                    let dest_bundle =
-                        self.ranges[self.vregs[dst_vreg.vreg()].ranges[0].index.index()].bundle;
+                    let dest_bundle = self.ranges[self.vregs[dst_vreg].ranges[0].index].bundle;
                     debug_assert!(dest_bundle.is_valid());
                     self.merge_bundles(/* from */ dest_bundle, /* to */ src_bundle);
                 }
@@ -334,10 +325,9 @@ impl<'a, F: Function> Env<'a, F> {
                 to_vreg.index(),
                 from_vreg.index()
             );
-            let to_bundle = self.ranges[self.vregs[to_vreg.index()].ranges[0].index.index()].bundle;
+            let to_bundle = self.ranges[self.vregs[to_vreg].ranges[0].index].bundle;
             debug_assert!(to_bundle.is_valid());
-            let from_bundle =
-                self.ranges[self.vregs[from_vreg.index()].ranges[0].index.index()].bundle;
+            let from_bundle = self.ranges[self.vregs[from_vreg].ranges[0].index].bundle;
             debug_assert!(from_bundle.is_valid());
             trace!(
                 " -> from bundle{} to bundle{}",
@@ -354,7 +344,7 @@ impl<'a, F: Function> Env<'a, F> {
         // The priority is simply the total "length" -- the number of
         // instructions covered by all LiveRanges.
         let mut total = 0;
-        for entry in &self.bundles[bundle.index()].ranges {
+        for entry in &self.bundles[bundle].ranges {
             total += entry.range.len() as u32;
         }
         total
@@ -363,14 +353,14 @@ impl<'a, F: Function> Env<'a, F> {
     pub fn queue_bundles(&mut self) {
         for bundle in 0..self.bundles.len() {
             trace!("enqueueing bundle{}", bundle);
+            let bundle = LiveBundleIndex::new(bundle);
             if self.bundles[bundle].ranges.is_empty() {
                 trace!(" -> no ranges; skipping");
                 continue;
             }
-            let bundle = LiveBundleIndex::new(bundle);
             let prio = self.compute_bundle_prio(bundle);
             trace!(" -> prio {}", prio);
-            self.bundles[bundle.index()].prio = prio;
+            self.bundles[bundle].prio = prio;
             self.recompute_bundle_properties(bundle);
             self.allocation_queue
                 .insert(bundle, prio as usize, PReg::invalid());

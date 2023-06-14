@@ -1,5 +1,81 @@
 #[macro_export]
 macro_rules! define_index {
+    ($ix:ident, $storage:ident, $elem:ident) => {
+        define_index!($ix);
+
+        #[derive(Clone, Debug)]
+        pub struct $storage {
+            storage: Vec<$elem>,
+        }
+
+        impl $storage {
+            #[inline(always)]
+            pub fn with_capacity(n: usize) -> Self {
+                Self {
+                    storage: Vec::with_capacity(n),
+                }
+            }
+
+            #[inline(always)]
+            pub fn len(&self) -> usize {
+                self.storage.len()
+            }
+
+            #[inline(always)]
+            pub fn iter(&self) -> impl Iterator<Item = &$elem> {
+                self.storage.iter()
+            }
+
+            #[inline(always)]
+            pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut $elem> {
+                self.storage.iter_mut()
+            }
+
+            #[inline(always)]
+            pub fn push(&mut self, value: $elem) -> $ix {
+                let idx = $ix(self.storage.len() as u32);
+                self.storage.push(value);
+                idx
+            }
+        }
+
+        impl core::ops::Index<$ix> for $storage {
+            type Output = $elem;
+
+            #[inline(always)]
+            fn index(&self, i: $ix) -> &Self::Output {
+                &self.storage[i.index()]
+            }
+        }
+
+        impl core::ops::IndexMut<$ix> for $storage {
+            #[inline(always)]
+            fn index_mut(&mut self, i: $ix) -> &mut Self::Output {
+                &mut self.storage[i.index()]
+            }
+        }
+
+        impl<'a> IntoIterator for &'a $storage {
+            type Item = &'a $elem;
+            type IntoIter = core::slice::Iter<'a, $elem>;
+
+            #[inline(always)]
+            fn into_iter(self) -> Self::IntoIter {
+                self.storage.iter()
+            }
+        }
+
+        impl<'a> IntoIterator for &'a mut $storage {
+            type Item = &'a mut $elem;
+            type IntoIter = core::slice::IterMut<'a, $elem>;
+
+            #[inline(always)]
+            fn into_iter(self) -> Self::IntoIter {
+                self.storage.iter_mut()
+            }
+        }
+    };
+
     ($ix:ident) => {
         #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
         #[cfg_attr(

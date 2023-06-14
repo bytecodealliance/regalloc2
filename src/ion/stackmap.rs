@@ -48,7 +48,7 @@ impl<'a, F: Function> Env<'a, F> {
             trace!(" -> live over safepoints: {:?}", safepoints);
 
             let mut safepoint_idx = 0;
-            for entry in &self.vregs[vreg.index()].ranges {
+            for entry in &self.vregs[vreg].ranges {
                 let range = entry.range;
                 let alloc = self.get_alloc_for_range(entry.index);
 

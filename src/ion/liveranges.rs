@@ -13,9 +13,8 @@
 //! Live-range computation.
 
 use super::{
-    CodeRange, Env, LiveBundle, LiveBundleIndex, LiveRange, LiveRangeFlag, LiveRangeIndex,
-    LiveRangeKey, LiveRangeListEntry, LiveRangeSet, PRegData, PRegIndex, RegClass, SpillSetIndex,
-    Use, VRegData, VRegIndex, SLOT_NONE,
+    CodeRange, Env, LiveRangeFlag, LiveRangeIndex, LiveRangeKey, LiveRangeListEntry, LiveRangeSet,
+    PRegData, PRegIndex, RegClass, Use, VRegData, VRegIndex, SLOT_NONE,
 };
 use crate::indexset::IndexSet;
 use crate::ion::data_structures::{
@@ -123,9 +122,8 @@ impl<'a, F: Function> Env<'a, F> {
         // Create VRegs from the vreg count.
         for idx in 0..self.func.num_vregs() {
             // We'll fill in the real details when we see the def.
-            let reg = VReg::new(idx, RegClass::Int);
-            self.add_vreg(
-                reg,
+            self.vregs.add(
+                VReg::new(idx, RegClass::Int),
                 VRegData {
                     ranges: smallvec![],
                     blockparam: Block::invalid(),
@@ -136,7 +134,7 @@ impl<'a, F: Function> Env<'a, F> {
             );
         }
         for v in self.func.reftype_vregs() {
-            self.vregs[v.vreg()].is_ref = true;
+            self.vregs[*v].is_ref = true;
         }
         // Create allocations too.
         for inst in 0..self.func.num_insts() {
@@ -146,39 +144,6 @@ impl<'a, F: Function> Env<'a, F> {
                 self.allocs.push(Allocation::none());
             }
         }
-    }
-
-    pub fn add_vreg(&mut self, reg: VReg, data: VRegData) -> VRegIndex {
-        let idx = self.vregs.len();
-        debug_assert_eq!(reg.vreg(), idx);
-        self.vregs.push(data);
-        VRegIndex::new(idx)
-    }
-
-    pub fn create_bundle(&mut self) -> LiveBundleIndex {
-        let bundle = self.bundles.len();
-        self.bundles.push(LiveBundle {
-            allocation: Allocation::none(),
-            ranges: smallvec![],
-            spillset: SpillSetIndex::invalid(),
-            prio: 0,
-            spill_weight_and_props: 0,
-        });
-        LiveBundleIndex::new(bundle)
-    }
-
-    pub fn create_liverange(&mut self, range: CodeRange) -> LiveRangeIndex {
-        let idx = self.ranges.len();
-
-        self.ranges.push(LiveRange {
-            range,
-            vreg: VRegIndex::invalid(),
-            bundle: LiveBundleIndex::invalid(),
-            uses_spill_weight_and_flags: 0,
-            uses: smallvec![],
-        });
-
-        LiveRangeIndex::new(idx)
     }
 
     /// Mark `range` as live for the given `vreg`.
@@ -202,9 +167,9 @@ impl<'a, F: Function> Env<'a, F> {
         // array, then reverse them at the end of
         // `compute_liveness()`.
 
-        if !self.vregs[vreg.index()].ranges.is_empty() {
-            let last_range_index = self.vregs[vreg.index()].ranges.last().unwrap().index;
-            let last_range = self.ranges[last_range_index.index()].range;
+        if !self.vregs[vreg].ranges.is_empty() {
+            let last_range_index = self.vregs[vreg].ranges.last().unwrap().index;
+            let last_range = self.ranges[last_range_index].range;
             if self.func.allow_multiple_vreg_defs() {
                 if last_range.contains(&range) {
                     // Special case (may occur when multiple defs of pinned
@@ -227,31 +192,26 @@ impl<'a, F: Function> Env<'a, F> {
             );
         }
 
-        if self.vregs[vreg.index()].ranges.is_empty()
+        if self.vregs[vreg].ranges.is_empty()
             || range.to
-                < self.ranges[self.vregs[vreg.index()]
-                    .ranges
-                    .last()
-                    .unwrap()
-                    .index
-                    .index()]
-                .range
-                .from
+                < self.ranges[self.vregs[vreg].ranges.last().unwrap().index]
+                    .range
+                    .from
         {
             // Is not contiguous with previously-added (immediately
             // following) range; create a new range.
-            let lr = self.create_liverange(range);
-            self.ranges[lr.index()].vreg = vreg;
-            self.vregs[vreg.index()]
+            let lr = self.ranges.add(range);
+            self.ranges[lr].vreg = vreg;
+            self.vregs[vreg]
                 .ranges
                 .push(LiveRangeListEntry { range, index: lr });
             lr
         } else {
             // Is contiguous with previously-added range; just extend
             // its range and return it.
-            let lr = self.vregs[vreg.index()].ranges.last().unwrap().index;
-            debug_assert!(range.to == self.ranges[lr.index()].range.from);
-            self.ranges[lr.index()].range.from = range.from;
+            let lr = self.vregs[vreg].ranges.last().unwrap().index;
+            debug_assert!(range.to == self.ranges[lr].range.from);
+            self.ranges[lr].range.from = range.from;
             lr
         }
     }
@@ -279,14 +239,14 @@ impl<'a, F: Function> Env<'a, F> {
         // because those will be computed during the multi-fixed-reg
         // fixup pass later (after all uses are inserted).
 
-        self.ranges[into.index()].uses.push(u);
+        self.ranges[into].uses.push(u);
 
         // Update stats.
-        let range_weight = self.ranges[into.index()].uses_spill_weight() + weight;
-        self.ranges[into.index()].set_uses_spill_weight(range_weight);
+        let range_weight = self.ranges[into].uses_spill_weight() + weight;
+        self.ranges[into].set_uses_spill_weight(range_weight);
         trace!(
             "  -> now range has weight {:?}",
-            self.ranges[into.index()].uses_spill_weight(),
+            self.ranges[into].uses_spill_weight(),
         );
     }
 
@@ -295,7 +255,7 @@ impl<'a, F: Function> Env<'a, F> {
         vreg: VRegIndex,
         pos: ProgPoint,
     ) -> Option<LiveRangeIndex> {
-        for entry in &self.vregs[vreg.index()].ranges {
+        for entry in &self.vregs[vreg].ranges {
             if entry.range.contains_point(pos) {
                 return Some(entry.index);
             }
@@ -477,7 +437,7 @@ impl<'a, F: Function> Env<'a, F> {
 
             // Create vreg data for blockparams.
             for &param in self.func.block_params(block) {
-                self.vregs[param.vreg()].blockparam = block;
+                self.vregs[param].blockparam = block;
             }
 
             // For each instruction, in reverse order, process
@@ -701,14 +661,14 @@ impl<'a, F: Function> Env<'a, F> {
                                     // start of this block (i.e. was not
                                     // merged into some larger LiveRange due
                                     // to out-of-order blocks).
-                                    if self.ranges[lr.index()].range.from
+                                    if self.ranges[lr].range.from
                                         == self.cfginfo.block_entry[block.index()]
                                     {
                                         trace!(" -> started at block start; trimming to {:?}", pos);
-                                        self.ranges[lr.index()].range.from = pos;
+                                        self.ranges[lr].range.from = pos;
                                     }
 
-                                    self.ranges[lr.index()].set_flag(LiveRangeFlag::StartsAtDef);
+                                    self.ranges[lr].set_flag(LiveRangeFlag::StartsAtDef);
 
                                     // Remove from live-set.
                                     live.set(operand.vreg().vreg(), false);
@@ -803,7 +763,7 @@ impl<'a, F: Function> Env<'a, F> {
             for entry in &mut vreg.ranges {
                 // Ranges may have been truncated above at defs. We
                 // need to update with the final range here.
-                entry.range = self.ranges[entry.index.index()].range;
+                entry.range = self.ranges[entry.index].range;
                 // Assert in-order and non-overlapping.
                 debug_assert!(last.is_none() || last.unwrap() <= entry.range.from);
                 last = Some(entry.range.to);
@@ -820,9 +780,8 @@ impl<'a, F: Function> Env<'a, F> {
             let vreg = VRegIndex::new(vreg.vreg());
             let mut inserted = false;
             let mut safepoint_idx = 0;
-            for range_idx in 0..self.vregs[vreg.index()].ranges.len() {
-                let LiveRangeListEntry { range, index } =
-                    self.vregs[vreg.index()].ranges[range_idx];
+            for range_idx in 0..self.vregs[vreg].ranges.len() {
+                let LiveRangeListEntry { range, index } = self.vregs[vreg].ranges[range_idx];
                 while safepoint_idx < self.safepoints.len()
                     && ProgPoint::before(self.safepoints[safepoint_idx]) < range.from
                 {
@@ -854,9 +813,7 @@ impl<'a, F: Function> Env<'a, F> {
                 }
 
                 if inserted {
-                    self.ranges[index.index()]
-                        .uses
-                        .sort_unstable_by_key(|u| u.pos);
+                    self.ranges[index].uses.sort_unstable_by_key(|u| u.pos);
                 }
 
                 if safepoint_idx >= self.safepoints.len() {
@@ -885,20 +842,14 @@ impl<'a, F: Function> Env<'a, F> {
         // disjoint ranges and bundles).
         let mut extra_clobbers: SmallVec<[(PReg, ProgPoint); 8]> = smallvec![];
         for vreg in 0..self.vregs.len() {
+            let vreg = VRegIndex::new(vreg);
             for range_idx in 0..self.vregs[vreg].ranges.len() {
                 let entry = self.vregs[vreg].ranges[range_idx];
                 let range = entry.index;
-                trace!(
-                    "multi-fixed-reg cleanup: vreg {:?} range {:?}",
-                    VRegIndex::new(vreg),
-                    range,
-                );
+                trace!("multi-fixed-reg cleanup: vreg {:?} range {:?}", vreg, range,);
 
                 // Find groups of uses that occur in at the same program point.
-                for uses in self.ranges[range.index()]
-                    .uses
-                    .linear_group_by_key_mut(|u| u.pos)
-                {
+                for uses in self.ranges[range].uses.linear_group_by_key_mut(|u| u.pos) {
                     if uses.len() < 2 {
                         continue;
                     }
