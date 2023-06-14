@@ -757,7 +757,7 @@ impl<'a, F: Function> Env<'a, F> {
         // when needed, here and then again at the end of allocation
         // when resolving moves.
 
-        for vreg in self.vregs.iter_mut() {
+        for vreg in &mut self.vregs {
             vreg.ranges.reverse();
             let mut last = None;
             for entry in &mut vreg.ranges {
@@ -770,7 +770,7 @@ impl<'a, F: Function> Env<'a, F> {
             }
         }
 
-        for range in self.ranges.iter_mut() {
+        for range in &mut self.ranges {
             range.uses.reverse();
             debug_assert!(range.uses.windows(2).all(|win| win[0].pos <= win[1].pos));
         }

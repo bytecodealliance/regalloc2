@@ -78,7 +78,7 @@ impl<'a, F: Function> Env<'a, F> {
 
         // Now that all splits are done, we can pay the cost once to
         // sort VReg range lists and update with the final ranges.
-        for vreg in self.vregs.iter_mut() {
+        for vreg in &mut self.vregs {
             for entry in &mut vreg.ranges {
                 entry.range = self.ranges[entry.index].range;
             }

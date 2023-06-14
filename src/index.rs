@@ -54,6 +54,26 @@ macro_rules! define_index {
                 &mut self.storage[i.index()]
             }
         }
+
+        impl<'a> IntoIterator for &'a $storage {
+            type Item = &'a $elem;
+            type IntoIter = core::slice::Iter<'a, $elem>;
+
+            #[inline(always)]
+            fn into_iter(self) -> Self::IntoIter {
+                self.storage.iter()
+            }
+        }
+
+        impl<'a> IntoIterator for &'a mut $storage {
+            type Item = &'a mut $elem;
+            type IntoIter = core::slice::IterMut<'a, $elem>;
+
+            #[inline(always)]
+            fn into_iter(self) -> Self::IntoIter {
+                self.storage.iter_mut()
+            }
+        }
     };
 
     ($ix:ident) => {
