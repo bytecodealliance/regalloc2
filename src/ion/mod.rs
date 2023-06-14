@@ -135,11 +135,7 @@ pub fn run<F: Function>(
     }
 
     Ok(Output {
-        edits: edits
-            .edits
-            .into_iter()
-            .map(|(pos_prio, edit)| (pos_prio.pos, edit))
-            .collect(),
+        edits: edits.into_edits().collect(),
         allocs: env.allocs,
         inst_alloc_offsets: env.inst_alloc_offsets,
         num_spillslots: env.num_spillslots as usize,

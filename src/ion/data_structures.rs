@@ -714,6 +714,11 @@ impl Edits {
         self.edits.iter()
     }
 
+    #[inline(always)]
+    pub fn into_edits(self) -> impl Iterator<Item = (ProgPoint, Edit)> {
+        self.edits.into_iter().map(|(pos, edit)| (pos.pos, edit))
+    }
+
     pub fn add(&mut self, pos_prio: PosWithPrio, from: Allocation, to: Allocation) {
         if from != to {
             if from.is_reg() && to.is_reg() {
