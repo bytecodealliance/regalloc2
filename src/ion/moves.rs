@@ -995,7 +995,7 @@ impl<'a, F: Function> Env<'a, F> {
         // be a stable sort! We have to keep the order produced by the
         // parallel-move resolver for all moves within a single sort
         // key.
-        edits.edits.sort_by_key(|&(pos_prio, _)| pos_prio.key());
+        edits.sort();
         self.stats.edits_count = edits.len();
 
         // Add debug annotations.

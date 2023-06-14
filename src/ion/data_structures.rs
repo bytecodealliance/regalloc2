@@ -693,7 +693,7 @@ impl InsertedMoves {
 
 #[derive(Clone, Debug)]
 pub struct Edits {
-    pub edits: Vec<(PosWithPrio, Edit)>,
+    edits: Vec<(PosWithPrio, Edit)>,
 }
 
 impl Edits {
@@ -717,6 +717,13 @@ impl Edits {
     #[inline(always)]
     pub fn into_edits(self) -> impl Iterator<Item = (ProgPoint, Edit)> {
         self.edits.into_iter().map(|(pos, edit)| (pos.pos, edit))
+    }
+
+    /// Sort edits by the combination of their program position and priority. This is a stable sort
+    /// to preserve the order of the moves the parallel move resolver inserts.
+    #[inline(always)]
+    pub fn sort(&mut self) {
+        self.edits.sort_by_key(|&(pos_prio, _)| pos_prio.key());
     }
 
     pub fn add(&mut self, pos_prio: PosWithPrio, from: Allocation, to: Allocation) {
