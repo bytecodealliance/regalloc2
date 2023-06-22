@@ -1233,7 +1233,7 @@ impl<'a, F: Function> Env<'a, F> {
                         fixed_assigned,
                         min_bundles_assigned
                     );
-                    if min_bundles_assigned + fixed_assigned >= total_regs {
+                    if min_bundles_assigned + fixed_assigned > total_regs {
                         return Err(RegAllocError::TooManyLiveRegs);
                     }
                 }
