@@ -607,6 +607,51 @@ impl<'a, F: Function> Env<'a, F> {
                             _ => {}
                         }
                     }
+
+                    // If the instruction clobbers everything and this constraint doesn't give us a
+                    // PReg to emit a fixup for, invent one.
+                    let class = operand.vreg().class() as usize;
+                    if matches!(operand.constraint(), OperandConstraint::Reg)
+                        && clobbered_class[class]
+                    {
+                        let preg = next_alloc_by_class[class]
+                            .next()
+                            .expect("Unable to resolve clobber conflict");
+
+                        trace!(
+                            "-> operand {:?} is under constrained and will be clobbered, \
+                            using preg {:?} as a fixup",
+                            operand,
+                            preg
+                        );
+                        let pos = ProgPoint::before(inst);
+                        self.multi_fixed_reg_fixups.push(MultiFixedRegFixup {
+                            pos,
+                            from_slot: i as u8,
+                            to_slot: i as u8,
+                            to_preg: PRegIndex::new(preg.index()),
+                            vreg: VRegIndex::new(operand.vreg().vreg()),
+                            level: FixedRegFixupLevel::Initial,
+                        });
+
+                        // We need to insert a reservation
+                        // at the before-point to reserve
+                        // the reg for the use too.
+                        let range = CodeRange::singleton(pos);
+                        self.add_liverange_to_preg(range, preg);
+
+                        // Remove the fixed-preg
+                        // constraint from the Use.
+                        operand_rewrites.insert(
+                            i,
+                            Operand::new(
+                                operand.vreg(),
+                                OperandConstraint::Any,
+                                operand.kind(),
+                                operand.pos(),
+                            ),
+                        );
+                    }
                 }
 
                 // Process defs and uses.
