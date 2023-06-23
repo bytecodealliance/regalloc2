@@ -446,16 +446,28 @@ impl<'a, F: Function> Env<'a, F> {
                 let mut clobbered_class = [false; 3];
                 let mut allocatable_by_class = self.pregs_by_class.clone();
 
-                let clobbers = self.func.inst_clobbers(inst);
-                if !clobbers.is_empty() {
-                    // Determine if whole classes are clobbered by this instruction.
+                // Determine which physical registers this instruction will definitely modify
+                // (clobbers + fixed reg defs).
+                let mut preg_writes = self.func.inst_clobbers(inst);
+                for operand in self.func.inst_operands(inst) {
+                    if operand.kind() == OperandKind::Def {
+                        if let OperandConstraint::FixedReg(preg) = operand.constraint() {
+                            preg_writes.add(preg);
+                        }
+                    }
+                }
+
+                if !preg_writes.is_empty() {
+                    // Determine if whole register classes are clobbered by this instruction -- all
+                    // physical registers are either clobbered, or written to.
                     for (ix, allocatable) in allocatable_by_class.iter().enumerate() {
                         let mut class = *allocatable;
-                        class.remove_all(clobbers);
+                        class.remove_all(preg_writes);
                         clobbered_class[ix] = class.is_empty();
                     }
 
-                    // Mark clobbers with CodeRanges on PRegs.
+                    // Mark the real inst clobbers with CodeRanges on PRegs. Defs are excluded here
+                    // because adding them now would render them unsatisfiable later.
                     for clobber in self.func.inst_clobbers(inst) {
                         // Clobber range is at After point only: an
                         // instruction can still take an input in a reg
@@ -466,6 +478,7 @@ impl<'a, F: Function> Env<'a, F> {
                             from: ProgPoint::after(inst),
                             to: ProgPoint::before(inst.next()),
                         };
+
                         self.add_liverange_to_preg(range, clobber);
                     }
 
@@ -482,7 +495,9 @@ impl<'a, F: Function> Env<'a, F> {
                     }
                 }
 
-                let mut next_alloc_by_class = [
+                // Generate physical register iterators for quick allocation when a single
+                // instruction has clobbered all registers.
+                let mut next_preg_by_class = [
                     allocatable_by_class[0].into_iter(),
                     allocatable_by_class[1].into_iter(),
                     allocatable_by_class[2].into_iter(),
@@ -563,9 +578,7 @@ impl<'a, F: Function> Env<'a, F> {
                                 // conflicting constraints for the
                                 // same vreg in a separate pass (see
                                 // `fixup_multi_fixed_vregs` below).
-                                if late_def_fixed.contains(&preg)
-                                    || self.func.inst_clobbers(inst).contains(preg)
-                                {
+                                if late_def_fixed.contains(&preg) || preg_writes.contains(preg) {
                                     trace!(
                                         concat!(
                                             "-> operand {:?} is fixed to preg {:?}, ",
@@ -612,9 +625,10 @@ impl<'a, F: Function> Env<'a, F> {
                     // PReg to emit a fixup for, invent one.
                     let class = operand.vreg().class() as usize;
                     if matches!(operand.constraint(), OperandConstraint::Reg)
+                        && operand.pos() == OperandPos::Early
                         && clobbered_class[class]
                     {
-                        let preg = next_alloc_by_class[class]
+                        let preg = next_preg_by_class[class]
                             .next()
                             .expect("Unable to resolve clobber conflict");
 
