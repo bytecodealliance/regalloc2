@@ -443,19 +443,50 @@ impl<'a, F: Function> Env<'a, F> {
             // For each instruction, in reverse order, process
             // operands and clobbers.
             for inst in insns.rev().iter() {
-                // Mark clobbers with CodeRanges on PRegs.
-                for clobber in self.func.inst_clobbers(inst) {
-                    // Clobber range is at After point only: an
-                    // instruction can still take an input in a reg
-                    // that it later clobbers. (In other words, the
-                    // clobber is like a normal def that never gets
-                    // used.)
-                    let range = CodeRange {
-                        from: ProgPoint::after(inst),
-                        to: ProgPoint::before(inst.next()),
-                    };
-                    self.add_liverange_to_preg(range, clobber);
+                let mut clobbered_class = [false; 3];
+                let mut allocatable_by_class = self.pregs_by_class.clone();
+
+                let clobbers = self.func.inst_clobbers(inst);
+                if !clobbers.is_empty() {
+                    // Determine if whole classes are clobbered by this instruction.
+                    for (ix, allocatable) in allocatable_by_class.iter().enumerate() {
+                        let mut class = *allocatable;
+                        class.remove_all(clobbers);
+                        clobbered_class[ix] = class.is_empty();
+                    }
+
+                    // Mark clobbers with CodeRanges on PRegs.
+                    for clobber in self.func.inst_clobbers(inst) {
+                        // Clobber range is at After point only: an
+                        // instruction can still take an input in a reg
+                        // that it later clobbers. (In other words, the
+                        // clobber is like a normal def that never gets
+                        // used.)
+                        let range = CodeRange {
+                            from: ProgPoint::after(inst),
+                            to: ProgPoint::before(inst.next()),
+                        };
+                        self.add_liverange_to_preg(range, clobber);
+                    }
+
+                    // Remove fixed register uses from the allocatable set.
+                    for operand in self.func.inst_operands(inst) {
+                        if operand.kind() == OperandKind::Use {
+                            let class = operand.vreg().class() as usize;
+                            if clobbered_class[class] {
+                                if let OperandConstraint::FixedReg(preg) = operand.constraint() {
+                                    allocatable_by_class[class].remove(preg);
+                                }
+                            }
+                        }
+                    }
                 }
+
+                let mut next_alloc_by_class = [
+                    allocatable_by_class[0].into_iter(),
+                    allocatable_by_class[1].into_iter(),
+                    allocatable_by_class[2].into_iter(),
+                ];
 
                 // Does the instruction have any input-reusing
                 // outputs? This is important below to establish
