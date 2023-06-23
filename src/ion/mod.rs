@@ -15,7 +15,7 @@
 
 use crate::cfg::CFGInfo;
 use crate::ssa::validate_ssa;
-use crate::{Function, MachineEnv, Output, PReg, ProgPoint, RegAllocError, RegClass};
+use crate::{Function, MachineEnv, Output, PReg, PRegSet, ProgPoint, RegAllocError, RegClass};
 use alloc::vec;
 use alloc::vec::Vec;
 use hashbrown::HashMap;
@@ -48,10 +48,35 @@ impl<'a, F: Function> Env<'a, F> {
         annotations_enabled: bool,
     ) -> Self {
         let n = func.num_insts();
+
+        let mut pregs_by_class = [PRegSet::default(); 3];
+
+        for (class, pregs) in env
+            .preferred_regs_by_class
+            .iter()
+            .zip(pregs_by_class.iter_mut())
+        {
+            for preg in class {
+                pregs.add(*preg)
+            }
+        }
+
+        for (class, pregs) in env
+            .non_preferred_regs_by_class
+            .iter()
+            .zip(pregs_by_class.iter_mut())
+        {
+            for preg in class {
+                pregs.add(*preg)
+            }
+        }
+
         Self {
             func,
             env,
             cfginfo,
+
+            pregs_by_class,
 
             liveins: Vec::with_capacity(func.num_blocks()),
             liveouts: Vec::with_capacity(func.num_blocks()),

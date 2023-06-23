@@ -197,6 +197,11 @@ impl PRegSet {
         Self { bits: [0; 2] }
     }
 
+    /// True when this set is empty.
+    pub fn is_empty(&self) -> bool {
+        self.bits[0] == 0 && self.bits[1] == 0
+    }
+
     /// Returns whether the given register is part of the set.
     pub fn contains(&self, reg: PReg) -> bool {
         debug_assert!(reg.index() < 256);
@@ -229,6 +234,12 @@ impl PRegSet {
         let bit = reg.index() & 127;
         let index = reg.index() >> 7;
         self.bits[index] &= !(1u128 << bit);
+    }
+
+    /// Remove all registers that occur in `other`.
+    pub fn remove_all(&mut self, other: PRegSet) {
+        self.bits[0] &= !other.bits[0];
+        self.bits[1] &= !other.bits[1];
     }
 
     /// Add all of the registers in one set to this one, mutating in

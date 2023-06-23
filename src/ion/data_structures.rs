@@ -18,7 +18,7 @@ use crate::index::ContainerComparator;
 use crate::indexset::IndexSet;
 use crate::{
     define_index, Allocation, Block, Edit, Function, FxHashSet, Inst, MachineEnv, Operand, PReg,
-    ProgPoint, RegClass, VReg,
+    PRegSet, ProgPoint, RegClass, VReg,
 };
 use alloc::collections::BTreeMap;
 use alloc::string::String;
@@ -450,6 +450,9 @@ pub struct Env<'a, F: Function> {
     pub func: &'a F,
     pub env: &'a MachineEnv,
     pub cfginfo: CFGInfo,
+
+    pub pregs_by_class: [PRegSet; 3],
+
     pub liveins: Vec<IndexSet>,
     pub liveouts: Vec<IndexSet>,
     pub blockparam_outs: Vec<BlockparamOut>,
