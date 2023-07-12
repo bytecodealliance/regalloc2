@@ -59,6 +59,9 @@ pub mod checker;
 pub mod fuzzing;
 
 #[cfg(feature = "enable-serde")]
+pub mod serialize;
+
+#[cfg(feature = "enable-serde")]
 use serde::{Deserialize, Serialize};
 
 /// Register classes.

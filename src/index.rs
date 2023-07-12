@@ -137,6 +137,10 @@ define_index!(Inst);
 define_index!(Block);
 
 #[derive(Clone, Copy, Debug)]
+#[cfg_attr(
+    feature = "enable-serde",
+    derive(::serde::Serialize, ::serde::Deserialize)
+)]
 pub struct InstRange(Inst, Inst, bool);
 
 impl InstRange {
