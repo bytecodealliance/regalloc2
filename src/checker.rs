@@ -445,7 +445,7 @@ impl CheckerState {
             return Err(CheckerError::MissingAllocation { inst, op });
         }
 
-        if op.as_fixed_nonallocatable().is_none() {
+        if op.kind() == OperandKind::Use && op.as_fixed_nonallocatable().is_none() {
             match val {
                 CheckerValue::Universe => {
                     return Err(CheckerError::UnknownValueInAllocation { inst, op, alloc });
@@ -504,9 +504,6 @@ impl CheckerState {
                         _ => false,
                     };
                     if !is_here {
-                        continue;
-                    }
-                    if op.kind() == OperandKind::Def {
                         continue;
                     }
 
