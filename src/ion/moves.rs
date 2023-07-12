@@ -904,12 +904,15 @@ impl<'a, F: Function> Env<'a, F> {
                     0,
                     None,
                 );
+                let mut dedicated_scratch = self.env.scratch_by_class[regclass as usize];
                 let key = LiveRangeKey::from_range(&CodeRange {
                     from: pos_prio.pos,
                     to: pos_prio.pos.next(),
                 });
                 let get_reg = || {
-                    if let Some(reg) = self.env.scratch_by_class[regclass as usize] {
+                    // Use the dedicated scratch register first if it is
+                    // available.
+                    if let Some(reg) = dedicated_scratch.take() {
                         return Some(Allocation::reg(reg));
                     }
                     while let Some(preg) = scratch_iter.next() {
