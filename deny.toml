@@ -10,8 +10,7 @@ targets = [
 vulnerability = "deny"
 unmaintained = "deny"
 yanked = "deny"
-ignore = [
-]
+ignore = []
 
 # https://embarkstudios.github.io/cargo-deny/checks/licenses/cfg.html
 [licenses]
@@ -19,6 +18,7 @@ allow = [
     "Apache-2.0 WITH LLVM-exception",
     "Apache-2.0",
     "MIT",
+    "Unicode-DFS-2016",
 ]
 
 # https://embarkstudios.github.io/cargo-deny/checks/bans/cfg.html
