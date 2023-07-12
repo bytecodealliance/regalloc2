@@ -1010,6 +1010,9 @@ impl<'a, F: Function> Checker<'a, F> {
 
         trace!("=== CHECKER RESULT ===");
         fn print_state(state: &CheckerState) {
+            if !trace_enabled!() {
+                return;
+            }
             if let CheckerState::Allocations(allocs) = state {
                 let mut s = vec![];
                 for (alloc, state) in allocs {
