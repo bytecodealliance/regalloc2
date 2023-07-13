@@ -30,18 +30,6 @@ pub struct InstData {
 }
 
 impl InstData {
-    pub fn op(def: usize, uses: &[usize]) -> InstData {
-        let mut operands = vec![Operand::reg_def(VReg::new(def, RegClass::Int))];
-        for &u in uses {
-            operands.push(Operand::reg_use(VReg::new(u, RegClass::Int)));
-        }
-        InstData {
-            op: InstOpcode::Op,
-            operands,
-            clobbers: vec![],
-            is_safepoint: false,
-        }
-    }
     pub fn branch() -> InstData {
         InstData {
             op: InstOpcode::Branch,
@@ -145,8 +133,10 @@ impl Function for Func {
 
     fn spillslot_size(&self, regclass: RegClass) -> usize {
         match regclass {
+            // Test the case where 2 classes share the same
             RegClass::Int => 1,
-            RegClass::Float | RegClass::Vector => 2,
+            RegClass::Float => 1,
+            RegClass::Vector => 2,
         }
     }
 }
@@ -231,6 +221,12 @@ impl FuncBuilder {
         }
 
         self.f
+    }
+}
+
+impl Arbitrary<'_> for RegClass {
+    fn arbitrary(u: &mut Unstructured) -> ArbitraryResult<Self> {
+        Ok(*u.choose(&[RegClass::Int, RegClass::Float, RegClass::Vector])?)
     }
 }
 
@@ -380,7 +376,7 @@ impl Func {
         for block in 0..num_blocks {
             let mut vregs = vec![];
             for _ in 0..u.int_in_range(5..=15)? {
-                let vreg = VReg::new(builder.f.num_vregs, RegClass::Int);
+                let vreg = VReg::new(builder.f.num_vregs, RegClass::arbitrary(u)?);
                 builder.f.num_vregs += 1;
                 vregs.push(vreg);
                 if opts.reftypes && bool::arbitrary(u)? {
@@ -476,20 +472,22 @@ impl Func {
                     let op = operands[0];
                     debug_assert_eq!(op.kind(), OperandKind::Def);
                     let reused = u.int_in_range(1..=(operands.len() - 1))?;
-                    operands[0] = Operand::new(
-                        op.vreg(),
-                        OperandConstraint::Reuse(reused),
-                        op.kind(),
-                        OperandPos::Late,
-                    );
-                    // Make sure reused input is a Reg.
-                    let op = operands[reused];
-                    operands[reused] = Operand::new(
-                        op.vreg(),
-                        OperandConstraint::Reg,
-                        op.kind(),
-                        OperandPos::Early,
-                    );
+                    if op.class() == operands[reused].class() {
+                        operands[0] = Operand::new(
+                            op.vreg(),
+                            OperandConstraint::Reuse(reused),
+                            op.kind(),
+                            OperandPos::Late,
+                        );
+                        // Make sure reused input is a Reg.
+                        let op = operands[reused];
+                        operands[reused] = Operand::new(
+                            op.vreg(),
+                            OperandConstraint::Reg,
+                            op.kind(),
+                            OperandPos::Early,
+                        );
+                    }
                 } else if opts.fixed_regs && bool::arbitrary(u)? {
                     let mut fixed_early = vec![];
                     let mut fixed_late = vec![];
@@ -497,7 +495,7 @@ impl Func {
                         // Pick an operand and make it a fixed reg.
                         let i = u.int_in_range(0..=(operands.len() - 1))?;
                         let op = operands[i];
-                        let fixed_reg = PReg::new(u.int_in_range(0..=62)?, RegClass::Int);
+                        let fixed_reg = PReg::new(u.int_in_range(0..=62)?, op.class());
                         let fixed_list = match op.pos() {
                             OperandPos::Early => &mut fixed_early,
                             OperandPos::Late => &mut fixed_late,
@@ -535,10 +533,13 @@ impl Func {
                         if clobbers.iter().any(|r| r.hw_enc() == reg) {
                             break;
                         }
-                        clobbers.push(PReg::new(reg, RegClass::Int));
+                        clobbers.push(PReg::new(reg, RegClass::arbitrary(u)?));
                     }
                 } else if opts.fixed_nonallocatable && bool::arbitrary(u)? {
-                    operands.push(Operand::fixed_nonallocatable(PReg::new(63, RegClass::Int)));
+                    operands.push(Operand::fixed_nonallocatable(PReg::new(
+                        63,
+                        RegClass::arbitrary(u)?,
+                    )));
                 }
 
                 let is_safepoint = opts.reftypes
@@ -565,18 +566,30 @@ impl Func {
                 let mut params = vec![];
                 for &succ in &builder.f.block_succs[block] {
                     let mut args = vec![];
-                    for _ in 0..builder.f.block_params_in[succ.index()].len() {
+                    for i in 0..builder.f.block_params_in[succ.index()].len() {
                         let dom_block = choose_dominating_block(
                             &builder.idom[..],
                             Block::new(block),
                             false,
                             u,
                         )?;
-                        let vreg = if dom_block.is_valid() && bool::arbitrary(u)? {
-                            u.choose(&vregs_by_block[dom_block.index()][..])?
+
+                        // Look for a vreg with a suitable class. If no
+                        // suitable vreg is available then we error out, which
+                        // causes the fuzzer to skip this function.
+                        let vregs = if dom_block.is_valid() && bool::arbitrary(u)? {
+                            &vregs_by_block[dom_block.index()][..]
                         } else {
-                            u.choose(&avail[..])?
+                            &avail[..]
                         };
+                        let suitable_vregs: Vec<_> = vregs
+                            .iter()
+                            .filter(|vreg| {
+                                vreg.class() == builder.f.block_params_in[succ.index()][i].class()
+                            })
+                            .copied()
+                            .collect();
+                        let vreg = u.choose(&suitable_vregs)?;
                         args.push(*vreg);
                     }
                     params.push(args);
@@ -656,13 +669,29 @@ impl core::fmt::Debug for Func {
 }
 
 pub fn machine_env() -> MachineEnv {
-    fn regs(r: core::ops::Range<usize>) -> Vec<PReg> {
-        r.map(|i| PReg::new(i, RegClass::Int)).collect()
+    fn regs(r: core::ops::Range<usize>, c: RegClass) -> Vec<PReg> {
+        r.map(|i| PReg::new(i, c)).collect()
     }
-    let preferred_regs_by_class: [Vec<PReg>; 3] = [regs(0..24), vec![], vec![]];
-    let non_preferred_regs_by_class: [Vec<PReg>; 3] = [regs(24..32), vec![], vec![]];
+    let preferred_regs_by_class: [Vec<PReg>; 3] = [
+        regs(0..24, RegClass::Int),
+        regs(0..24, RegClass::Float),
+        regs(0..24, RegClass::Vector),
+    ];
+    let non_preferred_regs_by_class: [Vec<PReg>; 3] = [
+        regs(24..32, RegClass::Int),
+        regs(24..32, RegClass::Float),
+        regs(24..32, RegClass::Vector),
+    ];
     let scratch_by_class: [Option<PReg>; 3] = [None, None, None];
-    let fixed_stack_slots = regs(32..63);
+    let fixed_stack_slots = (32..63)
+        .flat_map(|i| {
+            [
+                PReg::new(i, RegClass::Int),
+                PReg::new(i, RegClass::Float),
+                PReg::new(i, RegClass::Vector),
+            ]
+        })
+        .collect();
     // Register 63 is reserved for use as a fixed non-allocatable register.
     MachineEnv {
         preferred_regs_by_class,

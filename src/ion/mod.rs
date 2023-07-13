@@ -67,7 +67,11 @@ impl<'a, F: Function> Env<'a, F> {
             safepoints_per_vreg: HashMap::new(),
             spilled_bundles: vec![],
             spillslots: vec![],
-            slots_by_size: vec![],
+            slots_by_class: [
+                SpillSlotList::new(),
+                SpillSlotList::new(),
+                SpillSlotList::new(),
+            ],
             allocated_bundle_count: 0,
 
             extra_spillslots_by_class: [smallvec![], smallvec![], smallvec![]],

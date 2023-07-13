@@ -300,7 +300,6 @@ pub struct SpillSet {
     pub class: RegClass,
     pub spill_bundle: LiveBundleIndex,
     pub required: bool,
-    pub size: u8,
     pub splits: u8,
 
     /// The aggregate [`CodeRange`] of all involved [`LiveRange`]s. The effect of this abstraction
@@ -466,7 +465,7 @@ pub struct Env<'a, F: Function> {
 
     pub spilled_bundles: Vec<LiveBundleIndex>,
     pub spillslots: Vec<SpillSlotData>,
-    pub slots_by_size: Vec<SpillSlotList>,
+    pub slots_by_class: [SpillSlotList; 3],
 
     pub extra_spillslots_by_class: [SmallVec<[Allocation; 2]>; 3],
     pub preferred_victim_by_class: [PReg; 3],
@@ -554,6 +553,13 @@ pub struct SpillSlotList {
 }
 
 impl SpillSlotList {
+    pub fn new() -> Self {
+        SpillSlotList {
+            slots: smallvec![],
+            probe_start: 0,
+        }
+    }
+
     /// Get the next spillslot index in probing order, wrapping around
     /// at the end of the slots list.
     pub(crate) fn next_index(&self, index: usize) -> usize {

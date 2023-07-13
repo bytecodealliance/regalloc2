@@ -14,10 +14,9 @@
 
 use super::{
     AllocRegResult, Env, LiveRangeKey, PReg, PRegIndex, RegTraversalIter, SpillSetIndex,
-    SpillSlotData, SpillSlotIndex, SpillSlotList,
+    SpillSlotData, SpillSlotIndex,
 };
 use crate::{ion::data_structures::SpillSetRanges, Allocation, Function, SpillSlot};
-use smallvec::smallvec;
 
 impl<'a, F: Function> Env<'a, F> {
     pub fn try_allocating_regs_for_spilled_bundles(&mut self) {
@@ -99,23 +98,14 @@ impl<'a, F: Function> Env<'a, F> {
             if !self.spillsets[spillset].required {
                 continue;
             }
-            // Get or create the spillslot list for this size.
-            let size = self.spillsets[spillset].size as usize;
-            if size >= self.slots_by_size.len() {
-                self.slots_by_size.resize(
-                    size + 1,
-                    SpillSlotList {
-                        slots: smallvec![],
-                        probe_start: 0,
-                    },
-                );
-            }
+            let class = self.spillsets[spillset].class as usize;
             // Try a few existing spillslots.
-            let mut i = self.slots_by_size[size].probe_start;
+            let mut i = self.slots_by_class[class].probe_start;
             let mut success = false;
             // Never probe the same element more than once: limit the
             // attempt count to the number of slots in existence.
-            for _attempt in 0..core::cmp::min(self.slots_by_size[size].slots.len(), MAX_ATTEMPTS) {
+            for _attempt in 0..core::cmp::min(self.slots_by_class[class].slots.len(), MAX_ATTEMPTS)
+            {
                 // Note: this indexing of `slots` is always valid
                 // because either the `slots` list is empty and the
                 // iteration limit above consequently means we don't
@@ -123,16 +113,16 @@ impl<'a, F: Function> Env<'a, F> {
                 // in-bounds (because it is made so below when we add
                 // a slot, and it always takes on the last index `i`
                 // after this loop).
-                let spillslot = self.slots_by_size[size].slots[i];
+                let spillslot = self.slots_by_class[class].slots[i];
 
                 if self.spillslot_can_fit_spillset(spillslot, spillset) {
                     self.allocate_spillset_to_spillslot(spillset, spillslot);
                     success = true;
-                    self.slots_by_size[size].probe_start = i;
+                    self.slots_by_class[class].probe_start = i;
                     break;
                 }
 
-                i = self.slots_by_size[size].next_index(i);
+                i = self.slots_by_class[class].next_index(i);
             }
 
             if !success {
@@ -141,10 +131,10 @@ impl<'a, F: Function> Env<'a, F> {
                 self.spillslots.push(SpillSlotData {
                     ranges: SpillSetRanges::new(),
                     alloc: Allocation::none(),
-                    slots: size as u32,
+                    slots: self.func.spillslot_size(self.spillsets[spillset].class) as u32,
                 });
-                self.slots_by_size[size].slots.push(spillslot);
-                self.slots_by_size[size].probe_start = self.slots_by_size[size].slots.len() - 1;
+                self.slots_by_class[class].slots.push(spillslot);
+                self.slots_by_class[class].probe_start = self.slots_by_class[class].slots.len() - 1;
 
                 self.allocate_spillset_to_spillslot(spillset, spillslot);
             }
