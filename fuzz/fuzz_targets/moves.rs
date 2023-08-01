@@ -6,7 +6,7 @@
 #![no_main]
 use regalloc2::fuzzing::arbitrary::{Arbitrary, Result, Unstructured};
 use regalloc2::fuzzing::fuzz_target;
-use regalloc2::fuzzing::moves::{MoveAndScratchResolver, ParallelMoves};
+use regalloc2::moves::{MoveAndScratchResolver, ParallelMoves};
 use regalloc2::{Allocation, PReg, RegClass, SpillSlot};
 use std::collections::{HashMap, HashSet};
 
