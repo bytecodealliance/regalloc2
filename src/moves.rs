@@ -44,11 +44,13 @@ impl<T: Clone + Copy + Default + PartialEq> ParallelMoves<T> {
     }
 
     fn sources_overlap_dests(&self) -> bool {
-        // Assumes `parallel_moves` has already been sorted in `resolve()` below.
-        for &(_, dst, _) in &self.parallel_moves {
+        // Assumes `parallel_moves` has already been sorted in
+        // `resolve()` below. The O(n log n) cost of this loop is no
+        // worse than the sort we already did.
+        for &(src, _, _) in &self.parallel_moves {
             if self
                 .parallel_moves
-                .binary_search_by_key(&dst, |&(src, _, _)| src)
+                .binary_search_by_key(&src, |&(_, dst, _)| dst)
                 .is_ok()
             {
                 return true;
@@ -75,10 +77,17 @@ impl<T: Clone + Copy + Default + PartialEq> ParallelMoves<T> {
             return MoveVecWithScratch::NoScratch(self.parallel_moves);
         }
 
-        // Sort moves by source so that we can efficiently test for
-        // presence.
+        // Sort moves so that we can efficiently test for presence.
+        // For that purpose it doesn't matter whether we sort by
+        // source or destination, but later we'll want them sorted
+        // by destination.
         self.parallel_moves
-            .sort_by_key(|&(src, dst, _)| u64_key(src.bits(), dst.bits()));
+            .sort_by_key(|&(src, dst, _)| u64_key(dst.bits(), src.bits()));
+
+        // Duplicate moves cannot change the semantics of this
+        // parallel move set, so remove them. This is cheap since we
+        // just sorted the list.
+        self.parallel_moves.dedup();
 
         // Do any dests overlap sources? If not, we can also just
         // return the list.
@@ -102,10 +111,7 @@ impl<T: Clone + Copy + Default + PartialEq> ParallelMoves<T> {
         // know we have the full cycle and we can do a cyclic move
         // sequence and continue.
 
-        // Sort moves by destination and check that each destination
-        // has only one writer.
-        self.parallel_moves.sort_by_key(|&(_, dst, _)| dst);
-        self.parallel_moves.dedup();
+        // Check that each destination has only one writer.
         if cfg!(debug_assertions) {
             let mut last_dst = None;
             for &(_, dst, _) in &self.parallel_moves {
