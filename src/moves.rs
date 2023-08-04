@@ -154,69 +154,64 @@ impl<T: Clone + Copy + Default + PartialEq> ParallelMoves<T> {
         let mut state: SmallVec<[State; 16]> = smallvec![State::ToDo; self.parallel_moves.len()];
         let mut scratch_used = false;
 
-        loop {
-            if stack.is_empty() {
-                if let Some(next) = state.iter().position(|&state| state == State::ToDo) {
+        while let Some(next) = state.iter().position(|&state| state == State::ToDo) {
+            stack.push(next);
+            state[next] = State::Pending;
+
+            while let Some(&top) = stack.last() {
+                debug_assert_eq!(state[top], State::Pending);
+                let next = must_come_before[top];
+                if next == NONE || state[next] == State::Done {
+                    ret.push(self.parallel_moves[top]);
+                    state[top] = State::Done;
+                    stack.pop();
+                    while let Some(top) = stack.pop() {
+                        ret.push(self.parallel_moves[top]);
+                        state[top] = State::Done;
+                    }
+                } else if state[next] == State::ToDo {
                     stack.push(next);
                     state[next] = State::Pending;
                 } else {
-                    break;
-                }
-            }
-
-            let top = *stack.last().unwrap();
-            debug_assert_eq!(state[top], State::Pending);
-            let next = must_come_before[top];
-            if next == NONE || state[next] == State::Done {
-                ret.push(self.parallel_moves[top]);
-                state[top] = State::Done;
-                stack.pop();
-                while let Some(top) = stack.pop() {
-                    ret.push(self.parallel_moves[top]);
+                    // Found a cycle -- emit a cyclic-move sequence
+                    // for the cycle on the top of stack, then normal
+                    // moves below it. Recall that these moves will be
+                    // reversed in sequence, so from the original
+                    // parallel move set
+                    //
+                    //     { B := A, C := B, A := B }
+                    //
+                    // we will generate something like:
+                    //
+                    //     A := scratch
+                    //     B := A
+                    //     C := B
+                    //     scratch := C
+                    //
+                    // which will become:
+                    //
+                    //     scratch := C
+                    //     C := B
+                    //     B := A
+                    //     A := scratch
+                    debug_assert_ne!(top, next);
                     state[top] = State::Done;
-                }
-            } else if state[next] == State::ToDo {
-                stack.push(next);
-                state[next] = State::Pending;
-            } else {
-                // Found a cycle -- emit a cyclic-move sequence
-                // for the cycle on the top of stack, then normal
-                // moves below it. Recall that these moves will be
-                // reversed in sequence, so from the original
-                // parallel move set
-                //
-                //     { B := A, C := B, A := B }
-                //
-                // we will generate something like:
-                //
-                //     A := scratch
-                //     B := A
-                //     C := B
-                //     scratch := C
-                //
-                // which will become:
-                //
-                //     scratch := C
-                //     C := B
-                //     B := A
-                //     A := scratch
-                debug_assert_ne!(top, next);
-                state[top] = State::Done;
-                stack.pop();
+                    stack.pop();
 
-                let (scratch_src, dst, dst_t) = self.parallel_moves[top];
-                scratch_used = true;
+                    let (scratch_src, dst, dst_t) = self.parallel_moves[top];
+                    scratch_used = true;
 
-                ret.push((Allocation::none(), dst, dst_t));
-                while let Some(move_idx) = stack.pop() {
-                    state[move_idx] = State::Done;
-                    ret.push(self.parallel_moves[move_idx]);
+                    ret.push((Allocation::none(), dst, dst_t));
+                    while let Some(move_idx) = stack.pop() {
+                        state[move_idx] = State::Done;
+                        ret.push(self.parallel_moves[move_idx]);
 
-                    if move_idx == next {
-                        break;
+                        if move_idx == next {
+                            break;
+                        }
                     }
+                    ret.push((scratch_src, Allocation::none(), T::default()));
                 }
-                ret.push((scratch_src, Allocation::none(), T::default()));
             }
         }
 
