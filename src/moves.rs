@@ -116,6 +116,11 @@ impl<T: Clone + Copy + Default + PartialEq> ParallelMoves<T> {
             }
         }
 
+        // Moving an allocation into itself is technically a cycle but
+        // should have no effect, as long as there are no other writes
+        // into that destination.
+        self.parallel_moves.retain(|&mut (src, dst, _)| src != dst);
+
         // Construct a mapping from move indices to moves they must
         // come before. Any given move must come before a move that
         // overwrites its destination; we have moves sorted by dest
@@ -149,8 +154,6 @@ impl<T: Clone + Copy + Default + PartialEq> ParallelMoves<T> {
         let mut state: SmallVec<[State; 16]> = smallvec![State::ToDo; self.parallel_moves.len()];
         let mut scratch_used = false;
 
-        stack.push(0);
-        state[0] = State::Pending;
         loop {
             if stack.is_empty() {
                 if let Some(next) = state.iter().position(|&state| state == State::ToDo) {
@@ -197,29 +200,23 @@ impl<T: Clone + Copy + Default + PartialEq> ParallelMoves<T> {
                 //     C := B
                 //     B := A
                 //     A := scratch
-                let mut last_dst = None;
-                let mut scratch_src = None;
+                debug_assert_ne!(top, next);
+                state[top] = State::Done;
+                stack.pop();
+
+                let (scratch_src, dst, dst_t) = self.parallel_moves[top];
+                scratch_used = true;
+
+                ret.push((Allocation::none(), dst, dst_t));
                 while let Some(move_idx) = stack.pop() {
                     state[move_idx] = State::Done;
-                    let (mut src, dst, dst_t) = self.parallel_moves[move_idx];
-                    if last_dst.is_none() {
-                        scratch_src = Some(src);
-                        src = Allocation::none();
-                        scratch_used = true;
-                    } else {
-                        debug_assert_eq!(last_dst.unwrap(), src);
-                    }
-                    ret.push((src, dst, dst_t));
-
-                    last_dst = Some(dst);
+                    ret.push(self.parallel_moves[move_idx]);
 
                     if move_idx == next {
                         break;
                     }
                 }
-                if let Some(src) = scratch_src {
-                    ret.push((src, Allocation::none(), T::default()));
-                }
+                ret.push((scratch_src, Allocation::none(), T::default()));
             }
         }
 
