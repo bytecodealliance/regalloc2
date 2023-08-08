@@ -406,9 +406,6 @@ where
                         result.push((scratch_reg, save_slot, T::default()));
                         save_dirty = false;
                     }
-                    // We're about to clobber the scratch register so
-                    // eventually we must move the old contents back.
-                    scratch_dirty = true;
                 }
 
                 // We can't move directly from one stack slot to another
@@ -416,17 +413,25 @@ where
                 // moves must go via a scratch register.
                 result.push((src, scratch_reg, data));
                 result.push((scratch_reg, dst, data));
+                scratch_dirty = true;
             } else {
                 // This is not a stack-to-stack move, but we need to
                 // make sure that the scratch register is in the correct
                 // state if this move interacts with that register.
                 if src == scratch_reg && scratch_dirty {
-                    // We're copying from the scratch register so if it
-                    // was stolen for a stack-to-stack move then we need
-                    // to make sure it has the correct contents, not
-                    // whatever was temporarily copied into it.
+                    // We're copying from the scratch register so if
+                    // it was stolen for a stack-to-stack move then we
+                    // need to make sure it has the correct contents,
+                    // not whatever was temporarily copied into it. If
+                    // we got scratch_reg from find_free_reg then it
+                    // had better not have been used as the source of
+                    // a move. So if we're here it's because we fell
+                    // back to the caller-provided last-resort scratch
+                    // register, and we must therefore have a save-slot
+                    // allocated too.
                     debug_assert!(!save_dirty);
-                    result.push((save_slot.unwrap(), scratch_reg, T::default()));
+                    let save_slot = save_slot.expect("move source should not be a free register");
+                    result.push((save_slot, scratch_reg, T::default()));
                     scratch_dirty = false;
                 }
                 if dst == scratch_reg {
@@ -443,9 +448,11 @@ where
 
         // Now that all the stack-to-stack moves are done, restore the
         // scratch register if necessary.
-        if scratch_dirty {
-            debug_assert!(!save_dirty);
-            result.push((save_slot.unwrap(), scratch_reg, T::default()));
+        if let Some(save_slot) = save_slot {
+            if scratch_dirty {
+                debug_assert!(!save_dirty);
+                result.push((save_slot, scratch_reg, T::default()));
+            }
         }
 
         trace!("scratch resolver: got {:?}", result);
