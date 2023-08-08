@@ -83,7 +83,7 @@ fuzz_target!(|testcase: TestCase| {
     // Resolve uses of scratch reg and stack-to-stack moves with the
     // scratch resolver.
     let mut avail = testcase.available_pregs.clone();
-    let get_reg = || avail.pop();
+    let find_free_reg = || avail.pop();
     let mut next_slot = 32;
     let get_stackslot = || {
         let slot = next_slot;
@@ -91,8 +91,12 @@ fuzz_target!(|testcase: TestCase| {
         Allocation::stack(SpillSlot::new(slot))
     };
     let preferred_victim = PReg::new(0, RegClass::Int);
-    let scratch_resolver =
-        MoveAndScratchResolver::new(get_reg, get_stackslot, is_stack_alloc, preferred_victim);
+    let scratch_resolver = MoveAndScratchResolver {
+        find_free_reg,
+        get_stackslot,
+        is_stack_alloc,
+        victim: preferred_victim,
+    };
     let moves = scratch_resolver.compute(moves);
     log::trace!("resolved moves: {:?}", moves);
 
