@@ -152,6 +152,9 @@ impl<'a, F: Function> Env<'a, F> {
             if self.bundles[from].cached_fixed() {
                 self.bundles[to].set_cached_fixed();
             }
+            if self.bundles[from].cached_fixed_def() {
+                self.bundles[to].set_cached_fixed_def();
+            }
 
             return true;
         }
@@ -217,6 +220,9 @@ impl<'a, F: Function> Env<'a, F> {
         }
         if self.bundles[from].cached_fixed() {
             self.bundles[to].set_cached_fixed();
+        }
+        if self.bundles[from].cached_fixed_def() {
+            self.bundles[to].set_cached_fixed_def();
         }
 
         true
