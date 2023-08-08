@@ -354,7 +354,7 @@ where
         // Do we have any stack-to-stack moves? Fast return if not.
         let stack_to_stack = moves
             .iter()
-            .any(|&(src, dst, _)| (self.is_stack_alloc)(src) && (self.is_stack_alloc)(dst));
+            .any(|&(src, dst, _)| self.is_stack_to_stack_move(src, dst));
         if !stack_to_stack {
             return moves;
         }
@@ -390,7 +390,7 @@ where
         let mut result = smallvec![];
         for &(src, dst, data) in &moves {
             // Do we have a stack-to-stack move? If so, resolve.
-            if (self.is_stack_alloc)(src) && (self.is_stack_alloc)(dst) {
+            if self.is_stack_to_stack_move(src, dst) {
                 trace!("scratch resolver: stack to stack: {:?} -> {:?}", src, dst);
 
                 // If the selected scratch register is stolen from the
@@ -457,5 +457,9 @@ where
 
         trace!("scratch resolver: got {:?}", result);
         result
+    }
+
+    fn is_stack_to_stack_move(&self, src: Allocation, dst: Allocation) -> bool {
+        (self.is_stack_alloc)(src) && (self.is_stack_alloc)(dst)
     }
 }
