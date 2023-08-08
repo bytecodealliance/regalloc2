@@ -44,8 +44,8 @@ impl<T: Clone + Copy + Default + PartialEq> ParallelMoves<T> {
     }
 
     fn sources_overlap_dests(&self) -> bool {
-        // Assumes `parallel_moves` has already been sorted in
-        // `resolve()` below. The O(n log n) cost of this loop is no
+        // Assumes `parallel_moves` has already been sorted by `dst`
+        // in `resolve()` below. The O(n log n) cost of this loop is no
         // worse than the sort we already did.
         for &(src, _, _) in &self.parallel_moves {
             if self
@@ -89,12 +89,6 @@ impl<T: Clone + Copy + Default + PartialEq> ParallelMoves<T> {
         // just sorted the list.
         self.parallel_moves.dedup();
 
-        // Do any dests overlap sources? If not, we can also just
-        // return the list.
-        if !self.sources_overlap_dests() {
-            return MoveVecWithScratch::NoScratch(self.parallel_moves);
-        }
-
         // General case: some moves overwrite dests that other moves
         // read as sources. We'll use a general algorithm.
         //
@@ -126,6 +120,12 @@ impl<T: Clone + Copy + Default + PartialEq> ParallelMoves<T> {
         // should have no effect, as long as there are no other writes
         // into that destination.
         self.parallel_moves.retain(|&mut (src, dst, _)| src != dst);
+
+        // Do any dests overlap sources? If not, we can also just
+        // return the list.
+        if !self.sources_overlap_dests() {
+            return MoveVecWithScratch::NoScratch(self.parallel_moves);
+        }
 
         // Construct a mapping from move indices to moves they must
         // come before. Any given move must come before a move that
