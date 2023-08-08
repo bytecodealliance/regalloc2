@@ -95,7 +95,7 @@ fuzz_target!(|testcase: TestCase| {
         find_free_reg,
         get_stackslot,
         is_stack_alloc,
-        victim: preferred_victim,
+        borrowed_scratch_reg: preferred_victim,
     };
     let moves = scratch_resolver.compute(moves);
     log::trace!("resolved moves: {:?}", moves);

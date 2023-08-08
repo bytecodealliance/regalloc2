@@ -962,7 +962,7 @@ impl<'a, F: Function> Env<'a, F> {
                     find_free_reg,
                     get_stackslot,
                     is_stack_alloc,
-                    victim: preferred_victim,
+                    borrowed_scratch_reg: preferred_victim,
                 };
 
                 let resolved = scratch_resolver.compute(resolved);

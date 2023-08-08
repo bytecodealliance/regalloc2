@@ -304,14 +304,10 @@ impl<T> MoveVecWithScratch<T> {
 ///
 /// Then, we resolve stack-to-stack moves into stack-to-reg /
 /// reg-to-stack pairs. For this, we try to allocate a second free
-/// register. If unavailable, we create another scratch stackslot, and
-/// we pick a "victim" register in the appropriate class, and we
-/// resolve into: victim -> extra-stackslot; stack-src -> victim;
-/// victim -> stack-dst; extra-stackslot -> victim.
-///
-/// Sometimes move elision will be able to clean this up a bit. But,
-/// for simplicity reasons, let's keep the concerns separated! So we
-/// always do the full expansion above.
+/// register. If unavailable, we create a new scratch stackslot to
+/// serve as a backup of one of the in-use registers, then borrow that
+/// register as the scratch register in the middle of stack-to-stack
+/// moves.
 pub struct MoveAndScratchResolver<GetReg, GetStackSlot, IsStackAlloc>
 where
     GetReg: FnMut() -> Option<Allocation>,
@@ -324,11 +320,12 @@ where
     pub get_stackslot: GetStackSlot,
     /// Closure to determine whether an `Allocation` refers to a stack slot.
     pub is_stack_alloc: IsStackAlloc,
-    /// The victim PReg to evict to another stackslot at every
-    /// stack-to-stack move if a free PReg is not otherwise
-    /// available. Provided by caller and statically chosen. This is a
-    /// very last-ditch option, so static choice is OK.
-    pub victim: PReg,
+    /// Use this register if no free register is available to use as a
+    /// temporary in stack-to-stack moves. If we do use this register
+    /// for that purpose, its value will be restored by the end of the
+    /// move sequence. Provided by caller and statically chosen. This is
+    /// a very last-ditch option, so static choice is OK.
+    pub borrowed_scratch_reg: PReg,
 }
 
 impl<GetReg, GetStackSlot, IsStackAlloc> MoveAndScratchResolver<GetReg, GetStackSlot, IsStackAlloc>
@@ -367,13 +364,13 @@ where
             );
             (reg, None)
         } else {
-            let reg = Allocation::reg(self.victim);
+            let reg = Allocation::reg(self.borrowed_scratch_reg);
             // Stackslot into which we need to save the stack-to-stack
             // scratch reg before doing any stack-to-stack moves, if we stole
             // the reg.
             let save = (self.get_stackslot)();
             trace!(
-                "scratch resolver: stack-to-stack using victim {:?} with save stackslot {:?}",
+                "scratch resolver: stack-to-stack borrowing {:?} with save stackslot {:?}",
                 reg,
                 save
             );
