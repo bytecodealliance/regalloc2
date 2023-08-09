@@ -909,7 +909,7 @@ impl<'a, F: Function> Env<'a, F> {
                     from: pos_prio.pos,
                     to: pos_prio.pos.next(),
                 });
-                let get_reg = || {
+                let find_free_reg = || {
                     // Use the dedicated scratch register first if it is
                     // available.
                     if let Some(reg) = dedicated_scratch.take() {
@@ -958,12 +958,12 @@ impl<'a, F: Function> Env<'a, F> {
                 };
                 let preferred_victim = self.preferred_victim_by_class[regclass as usize];
 
-                let scratch_resolver = MoveAndScratchResolver::new(
-                    get_reg,
+                let scratch_resolver = MoveAndScratchResolver {
+                    find_free_reg,
                     get_stackslot,
                     is_stack_alloc,
-                    preferred_victim,
-                );
+                    borrowed_scratch_reg: preferred_victim,
+                };
 
                 let resolved = scratch_resolver.compute(resolved);
 
