@@ -14,7 +14,8 @@
 
 use super::{Env, LiveBundleIndex, SpillSet, SpillSlotIndex, VRegIndex};
 use crate::{
-    ion::data_structures::BlockparamOut, Function, Inst, OperandConstraint, OperandKind, PReg,
+    ion::data_structures::{BlockparamOut, CodeRange},
+    Function, Inst, OperandConstraint, OperandKind, PReg, ProgPoint,
 };
 use alloc::format;
 use smallvec::smallvec;
@@ -58,6 +59,21 @@ impl<'a, F: Function> Env<'a, F> {
             }
         }
 
+        // If a bundle has a fixed-reg def then we need to be careful to not
+        // extend the bundle to include another use in the same instruction.
+        // This could result in a minimal bundle that is impossible to split.
+        //
+        // This can only happen with an early use and a late def, so we round
+        // the start of each range containing a fixed def up to the start of
+        // its instruction to detect overlaps.
+        let adjust_range_start = |bundle_idx, range: CodeRange| {
+            if self.bundles[bundle_idx].cached_fixed_def() {
+                ProgPoint::before(range.from.inst())
+            } else {
+                range.from
+            }
+        };
+
         // Check for overlap in LiveRanges and for conflicting
         // requirements.
         let ranges_from = &self.bundles[from].ranges[..];
@@ -76,9 +92,11 @@ impl<'a, F: Function> Env<'a, F> {
                 return false;
             }
 
-            if ranges_from[idx_from].range.from >= ranges_to[idx_to].range.to {
+            if adjust_range_start(from, ranges_from[idx_from].range) >= ranges_to[idx_to].range.to {
                 idx_to += 1;
-            } else if ranges_to[idx_to].range.from >= ranges_from[idx_from].range.to {
+            } else if adjust_range_start(to, ranges_to[idx_to].range)
+                >= ranges_from[idx_from].range.to
+            {
                 idx_from += 1;
             } else {
                 // Overlap -- cannot merge.
@@ -89,15 +107,6 @@ impl<'a, F: Function> Env<'a, F> {
                 );
                 return false;
             }
-        }
-
-        // Avoid merging if either side has a fixed-reg def: this can
-        // result in an impossible-to-solve allocation problem if
-        // there is a fixed-reg use in the same reg on the same
-        // instruction.
-        if self.bundles[from].cached_fixed_def() || self.bundles[to].cached_fixed_def() {
-            trace!(" -> one bundle has a fixed def; aborting merge");
-            return false;
         }
 
         // Check for a requirements conflict.
@@ -151,6 +160,9 @@ impl<'a, F: Function> Env<'a, F> {
             }
             if self.bundles[from].cached_fixed() {
                 self.bundles[to].set_cached_fixed();
+            }
+            if self.bundles[from].cached_fixed_def() {
+                self.bundles[to].set_cached_fixed_def();
             }
 
             return true;
@@ -217,6 +229,9 @@ impl<'a, F: Function> Env<'a, F> {
         }
         if self.bundles[from].cached_fixed() {
             self.bundles[to].set_cached_fixed();
+        }
+        if self.bundles[from].cached_fixed_def() {
+            self.bundles[to].set_cached_fixed_def();
         }
 
         true
