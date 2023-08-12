@@ -55,7 +55,7 @@ pub struct SerializableFunction {
 }
 
 impl SerializableFunction {
-    /// Creates a new `SerializableFunction` from an arbitray `Function` and
+    /// Creates a new `SerializableFunction` from an arbitrary `Function` and
     /// `MachineEnv`.
     pub fn new(func: &impl Function, machine_env: MachineEnv) -> Self {
         Self {
