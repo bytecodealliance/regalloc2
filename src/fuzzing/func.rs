@@ -380,17 +380,18 @@ impl Func {
                 }
             }
             vregs_by_block.push(vregs.clone());
-            vregs_by_block_to_be_defined.push(vec![]);
+            let mut vregs_to_be_defined = vec![];
             let mut max_block_params = u.int_in_range(0..=core::cmp::min(3, vregs.len() / 3))?;
             for &vreg in &vregs {
                 if block > 0 && bool::arbitrary(u)? && max_block_params > 0 {
                     block_params[block].push(vreg);
                     max_block_params -= 1;
                 } else {
-                    vregs_by_block_to_be_defined.last_mut().unwrap().push(vreg);
+                    vregs_to_be_defined.push(vreg);
                 }
             }
-            vregs_by_block_to_be_defined.last_mut().unwrap().reverse();
+            vregs_to_be_defined.reverse();
+            vregs_by_block_to_be_defined.push(vregs_to_be_defined);
             builder.set_block_params_in(Block::new(block), &block_params[block][..]);
         }
 
