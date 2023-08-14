@@ -267,10 +267,6 @@ pub struct Options {
     pub fixed_regs: bool,
     pub fixed_nonallocatable: bool,
     pub clobbers: bool,
-    pub control_flow: bool,
-    pub reducible: bool,
-    pub block_params: bool,
-    pub always_local_uses: bool,
     pub reftypes: bool,
 }
 
@@ -281,10 +277,6 @@ impl core::default::Default for Options {
             fixed_regs: false,
             fixed_nonallocatable: false,
             clobbers: false,
-            control_flow: true,
-            reducible: false,
-            block_params: true,
-            always_local_uses: false,
             reftypes: false,
         }
     }
@@ -322,12 +314,9 @@ impl Func {
         let mut from = 0;
         let mut out_blocks = vec![];
         let mut in_blocks = vec![];
-        // For reducibility, if selected: enforce strict nesting of backedges
-        let mut max_backedge_src = 0;
-        let mut min_backedge_dest = num_blocks;
         while from < num_blocks {
             in_blocks.push(from);
-            if num_blocks > 3 && from < num_blocks - 3 && bool::arbitrary(u)? && opts.control_flow {
+            if num_blocks > 3 && from < num_blocks - 3 && bool::arbitrary(u)? {
                 // To avoid critical edges, we use from+1 as an edge
                 // block, and advance `from` an extra block; `from+2`
                 // will be the next normal iteration.
@@ -342,18 +331,7 @@ impl Func {
             from += 1;
         }
         for pred in out_blocks {
-            let mut succ = *u.choose(&in_blocks[..])?;
-            if opts.reducible && (pred >= succ) {
-                if pred < max_backedge_src || succ > min_backedge_dest {
-                    // If the chosen edge would result in an
-                    // irreducible CFG, just make this a diamond
-                    // instead.
-                    succ = pred + 2;
-                } else {
-                    max_backedge_src = pred;
-                    min_backedge_dest = succ;
-                }
-            }
+            let succ = *u.choose(&in_blocks[..])?;
             builder.add_edge(Block::new(pred), Block::new(succ));
         }
 
@@ -402,17 +380,18 @@ impl Func {
                 }
             }
             vregs_by_block.push(vregs.clone());
-            vregs_by_block_to_be_defined.push(vec![]);
+            let mut vregs_to_be_defined = vec![];
             let mut max_block_params = u.int_in_range(0..=core::cmp::min(3, vregs.len() / 3))?;
             for &vreg in &vregs {
-                if block > 0 && opts.block_params && bool::arbitrary(u)? && max_block_params > 0 {
+                if block > 0 && bool::arbitrary(u)? && max_block_params > 0 {
                     block_params[block].push(vreg);
                     max_block_params -= 1;
                 } else {
-                    vregs_by_block_to_be_defined.last_mut().unwrap().push(vreg);
+                    vregs_to_be_defined.push(vreg);
                 }
             }
-            vregs_by_block_to_be_defined.last_mut().unwrap().reverse();
+            vregs_to_be_defined.reverse();
+            vregs_by_block_to_be_defined.push(vregs_to_be_defined);
             builder.set_block_params_in(Block::new(block), &block_params[block][..]);
         }
 
@@ -435,12 +414,10 @@ impl Func {
                 let mut allocations = vec![Allocation::none()];
                 for _ in 0..u.int_in_range(0..=3)? {
                     let vreg = if avail.len() > 0
-                        && (opts.always_local_uses
-                            || remaining_nonlocal_uses == 0
-                            || bool::arbitrary(u)?)
+                        && (remaining_nonlocal_uses == 0 || bool::arbitrary(u)?)
                     {
                         *u.choose(&avail[..])?
-                    } else if !opts.always_local_uses {
+                    } else {
                         let def_block = choose_dominating_block(
                             &builder.idom[..],
                             Block::new(block),
@@ -454,8 +431,6 @@ impl Func {
                         }
                         remaining_nonlocal_uses -= 1;
                         *u.choose(&vregs_by_block[def_block.index()])?
-                    } else {
-                        break;
                     };
                     let use_constraint = OperandConstraint::arbitrary(u)?;
                     operands.push(Operand::new(
