@@ -24,7 +24,7 @@ use crate::ion::reg_traversal::RegTraversalIter;
 use crate::moves::{MoveAndScratchResolver, ParallelMoves};
 use crate::{
     Allocation, Block, Edit, Function, FxHashMap, Inst, InstPosition, OperandConstraint,
-    OperandPos, PReg, ProgPoint, RegClass, SpillSlot,
+    OperandKind, OperandPos, PReg, ProgPoint, RegClass, SpillSlot,
 };
 use alloc::vec::Vec;
 use alloc::{format, vec};
@@ -67,6 +67,32 @@ impl<'a, F: Function> Env<'a, F> {
             );
             self.spillslots[self.spillsets[bundledata.spillset].slot.index()].alloc
         }
+    }
+
+    /// When the bundle has spilled, this is the stack allocation that it will use. Additionally,
+    /// the boolean returned indicates whether or not this liverange belongs to the spill bundle or
+    /// not.
+    pub fn get_spill_alloc(&self, range: LiveRangeIndex) -> Option<(Allocation, bool)> {
+        let bundle = self.ranges[range].bundle;
+        let ssidx = self.bundles[bundle].spillset;
+
+        if ssidx.is_invalid() {
+            return None;
+        }
+
+        if !self.spillsets[ssidx].required {
+            return None;
+        }
+
+        let slot = self.spillsets[ssidx].slot;
+        if slot.is_invalid() {
+            return None;
+        }
+
+        Some((
+            self.spillslots[slot.index()].alloc,
+            self.spillsets[ssidx].spill_bundle == bundle,
+        ))
     }
 
     pub fn apply_allocations_and_insert_moves(&mut self) -> InsertedMoves {
@@ -299,6 +325,22 @@ impl<'a, F: Function> Env<'a, F> {
                 );
                 debug_assert!(alloc != Allocation::none());
 
+                // We record the spill allocation here to be able to answer the following question:
+                // if this LR contains a def and writes to a register location, do we need to also
+                // write to the spill slot?
+                let spill_alloc = self.get_spill_alloc(entry.index);
+
+                // True when the allocation for this LR matches the allocation of the spill bundle.
+                // Noticing when this is true enables us to skip moves into to the spill slot, as
+                // long as we also always write to the spill slot when processing defs for
+                // different allocations whose bundles have spilled. One wrinkle here is that we
+                // must write values to the stack for reffy typed values, which won't show up as
+                // spilled ranges. To handle this, we only consider avoiding a write to the spill
+                // slot when the liverange is explicitly from the spill bundle.
+                let alloc_is_spill = spill_alloc
+                    .map(|(a, is_spill)| is_spill && a == alloc)
+                    .unwrap_or(false);
+
                 if self.annotations_enabled {
                     self.annotate(
                         range.from,
@@ -348,7 +390,8 @@ impl<'a, F: Function> Env<'a, F> {
                     let prev_alloc = self.get_alloc_for_range(prev.index);
                     debug_assert!(prev_alloc != Allocation::none());
 
-                    if prev.range.to >= range.from
+                    if !alloc_is_spill
+                        && prev.range.to >= range.from
                         && (prev.range.to > range.from || !self.is_start_of_block(range.from))
                         && !self.ranges[entry.index].has_flag(LiveRangeFlag::StartsAtDef)
                     {
@@ -570,6 +613,20 @@ impl<'a, F: Function> Env<'a, F> {
                     }
                     if let OperandConstraint::Reuse(_) = operand.constraint() {
                         reuse_input_insts.push(inst);
+                    }
+
+                    // When applying allocations to a def, if the LR belongs to a bundle that
+                    // spilled, we must also write to the spill slot.
+                    if operand.kind() == OperandKind::Def {
+                        if let Some((slot, _)) = spill_alloc {
+                            inserted_moves.push(
+                                ProgPoint::before(usedata.pos.inst().next()),
+                                InsertMovePrio::Regular,
+                                alloc,
+                                slot,
+                                self.vreg(vreg),
+                            );
+                        }
                     }
                 }
 
