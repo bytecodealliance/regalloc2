@@ -397,7 +397,7 @@ impl<'a, F: Function> Env<'a, F> {
         reg_hint: PReg,
         // Do we trim the parts around the split and put them in the
         // spill bundle?
-        trim_ends_into_spill_bundle: bool,
+        mut trim_ends_into_spill_bundle: bool,
     ) {
         self.stats.splits += 1;
         trace!(
@@ -496,6 +496,31 @@ impl<'a, F: Function> Env<'a, F> {
             }
             if split_at < entry.range.to {
                 first_lr_in_new_bundle_idx = i;
+
+                // When the bundle contains a fixed constraint, we advance the split point to right
+                // before the first instruction with a fixed use present.
+                if self.bundles[bundle].cached_fixed() {
+                    for u in &self.ranges[entry.index].uses {
+                        if u.pos < split_at {
+                            continue;
+                        }
+
+                        if matches!(u.operand.constraint(), OperandConstraint::FixedReg { .. }) {
+                            split_at = ProgPoint::before(u.pos.inst());
+
+                            if split_at > entry.range.from {
+                                last_lr_in_old_bundle_idx = i;
+                            }
+
+                            trace!(" -> advancing split point to {split_at:?}");
+
+                            trim_ends_into_spill_bundle = false;
+
+                            break;
+                        }
+                    }
+                }
+
                 break;
             }
         }
