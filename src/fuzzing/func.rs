@@ -471,27 +471,25 @@ impl Func {
                         let i = u.int_in_range(0..=(operands.len() - 1))?;
                         let op = operands[i];
                         let fixed_reg = PReg::new(u.int_in_range(0..=62)?, op.class());
+                        if op.kind() == OperandKind::Def && op.pos() == OperandPos::Early {
+                            // Early-defs with fixed constraints conflict with
+                            // any other fixed uses of the same preg.
+                            if fixed_late.contains(&fixed_reg) {
+                                break;
+                            }
+                        }
+                        if op.kind() == OperandKind::Use && op.pos() == OperandPos::Late {
+                            // Late-use with fixed constraints conflict with
+                            // any other fixed uses of the same preg.
+                            if fixed_early.contains(&fixed_reg) {
+                                break;
+                            }
+                        }
                         let fixed_list = match op.pos() {
                             OperandPos::Early => &mut fixed_early,
                             OperandPos::Late => &mut fixed_late,
                         };
                         if fixed_list.contains(&fixed_reg) {
-                            break;
-                        }
-                        if op.kind() != OperandKind::Def && op.pos() == OperandPos::Late {
-                            // Late-uses/mods with fixed constraints
-                            // can't be allowed if we're allowing
-                            // different constraints at Early and
-                            // Late, because we can't move something
-                            // into a location between Early and
-                            // Late. Differing constraints only make
-                            // sense if the instruction itself
-                            // produces the newly-constrained values.
-                            break;
-                        }
-                        if op.kind() != OperandKind::Use && op.pos() == OperandPos::Early {
-                            // Likewise, we can *only* allow uses for
-                            // fixed constraints at Early.
                             break;
                         }
                         fixed_list.push(fixed_reg);
