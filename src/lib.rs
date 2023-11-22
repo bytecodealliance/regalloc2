@@ -51,7 +51,7 @@ pub mod ssa;
 mod index;
 
 use alloc::vec::Vec;
-pub use index::{Block, Inst, InstRange, InstRangeIter};
+pub use index::{Block, Inst, InstRange};
 
 pub mod checker;
 

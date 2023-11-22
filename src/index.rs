@@ -141,49 +141,31 @@ define_index!(Block);
     feature = "enable-serde",
     derive(::serde::Serialize, ::serde::Deserialize)
 )]
-pub struct InstRange(Inst, Inst, bool);
+pub struct InstRange(Inst, Inst);
 
 impl InstRange {
     #[inline(always)]
-    pub fn forward(from: Inst, to: Inst) -> Self {
+    pub fn new(from: Inst, to: Inst) -> Self {
         debug_assert!(from.index() <= to.index());
-        InstRange(from, to, true)
-    }
-
-    #[inline(always)]
-    pub fn backward(from: Inst, to: Inst) -> Self {
-        debug_assert!(from.index() >= to.index());
-        InstRange(to, from, false)
+        InstRange(from, to)
     }
 
     #[inline(always)]
     pub fn first(self) -> Inst {
         debug_assert!(self.len() > 0);
-        if self.is_forward() {
-            self.0
-        } else {
-            self.1.prev()
-        }
+        self.0
     }
 
     #[inline(always)]
     pub fn last(self) -> Inst {
         debug_assert!(self.len() > 0);
-        if self.is_forward() {
-            self.1.prev()
-        } else {
-            self.0
-        }
+        self.1.prev()
     }
 
     #[inline(always)]
     pub fn rest(self) -> InstRange {
         debug_assert!(self.len() > 0);
-        if self.is_forward() {
-            InstRange::forward(self.0.next(), self.1)
-        } else {
-            InstRange::backward(self.1.prev(), self.0)
-        }
+        InstRange::new(self.0.next(), self.1)
     }
 
     #[inline(always)]
@@ -192,35 +174,8 @@ impl InstRange {
     }
 
     #[inline(always)]
-    pub fn is_forward(self) -> bool {
-        self.2
-    }
-
-    #[inline(always)]
-    pub fn rev(self) -> Self {
-        Self(self.0, self.1, !self.2)
-    }
-
-    #[inline(always)]
-    pub fn iter(self) -> InstRangeIter {
-        InstRangeIter(self)
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct InstRangeIter(InstRange);
-
-impl Iterator for InstRangeIter {
-    type Item = Inst;
-    #[inline(always)]
-    fn next(&mut self) -> Option<Inst> {
-        if self.0.len() == 0 {
-            None
-        } else {
-            let ret = self.0.first();
-            self.0 = self.0.rest();
-            Some(ret)
-        }
+    pub fn iter(self) -> impl DoubleEndedIterator<Item = Inst> {
+        (self.0.index()..self.1.index()).map(|i| Inst::new(i))
     }
 }
 
@@ -233,10 +188,10 @@ mod test {
 
     #[test]
     fn test_inst_range() {
-        let range = InstRange::forward(Inst::new(0), Inst::new(0));
+        let range = InstRange::new(Inst::new(0), Inst::new(0));
         debug_assert_eq!(range.len(), 0);
 
-        let range = InstRange::forward(Inst::new(0), Inst::new(5));
+        let range = InstRange::new(Inst::new(0), Inst::new(5));
         debug_assert_eq!(range.first().index(), 0);
         debug_assert_eq!(range.last().index(), 4);
         debug_assert_eq!(range.len(), 5);
@@ -248,20 +203,6 @@ mod test {
                 Inst::new(2),
                 Inst::new(3),
                 Inst::new(4)
-            ]
-        );
-        let range = range.rev();
-        debug_assert_eq!(range.first().index(), 4);
-        debug_assert_eq!(range.last().index(), 0);
-        debug_assert_eq!(range.len(), 5);
-        debug_assert_eq!(
-            range.iter().collect::<Vec<_>>(),
-            vec![
-                Inst::new(4),
-                Inst::new(3),
-                Inst::new(2),
-                Inst::new(1),
-                Inst::new(0)
             ]
         );
     }
