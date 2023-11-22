@@ -45,7 +45,7 @@ pub struct SerializableFunction {
     block_preds: Vec<Vec<Block>>,
     block_succs: Vec<Vec<Block>>,
     block_params_in: Vec<Vec<VReg>>,
-    block_params_out: Vec<Vec<Vec<VReg>>>,
+    block_params_out: Vec<Vec<VReg>>,
     num_vregs: usize,
     reftype_vregs: Vec<VReg>,
     debug_value_labels: Vec<(VReg, Inst, Inst, u32)>,
@@ -107,9 +107,7 @@ impl SerializableFunction {
                 .map(|i| {
                     let block = Block::new(i);
                     let inst = func.block_insns(block).last();
-                    (0..func.block_succs(block).len())
-                        .map(|succ_idx| func.branch_blockparams(block, inst, succ_idx).to_vec())
-                        .collect()
+                    func.branch_blockparams(block, inst).to_vec()
                 })
                 .collect(),
             num_vregs: func.num_vregs(),
@@ -169,8 +167,8 @@ impl Function for SerializableFunction {
         self.insts[insn.index()].op == InstOpcode::Branch
     }
 
-    fn branch_blockparams(&self, block: Block, _: Inst, succ: usize) -> &[VReg] {
-        &self.block_params_out[block.index()][succ][..]
+    fn branch_blockparams(&self, block: Block, _: Inst) -> &[VReg] {
+        &self.block_params_out[block.index()][..]
     }
 
     fn requires_refs_on_stack(&self, insn: Inst) -> bool {
@@ -258,16 +256,7 @@ impl fmt::Debug for SerializableFunction {
                 .join(", ");
             let params_out = self.block_params_out[i]
                 .iter()
-                .enumerate()
-                .map(|(succ_idx, vec)| {
-                    let succ = self.block_succs[i][succ_idx];
-                    let params = vec
-                        .iter()
-                        .map(|v| format!("v{}", v.vreg()))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    format!("block{}({})", succ.index(), params)
-                })
+                .map(|v| format!("v{}", v.vreg()))
                 .collect::<Vec<_>>()
                 .join(", ");
             write!(

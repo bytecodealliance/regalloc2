@@ -272,10 +272,8 @@ fn visit_all_vregs<F: Function, V: FnMut(VReg)>(f: &F, mut v: V) {
                 v(op.vreg());
             }
             if f.is_branch(inst) {
-                for succ_idx in 0..f.block_succs(block).len() {
-                    for &param in f.branch_blockparams(block, inst, succ_idx) {
-                        v(param);
-                    }
+                for &param in f.branch_blockparams(block, inst) {
+                    v(param);
                 }
             }
         }
@@ -869,28 +867,27 @@ impl<'a, F: Function> Checker<'a, F> {
             trace!("checker: adding inst {:?}", checkinst);
             self.bb_insts.get_mut(&block).unwrap().push(checkinst);
         }
-        // Instead, if this is a branch, emit a ParallelMove on each
+        // Instead, if this is a branch, emit a ParallelMove on the
         // outgoing edge as necessary to handle blockparams.
         else {
-            for (i, &succ) in self.f.block_succs(block).iter().enumerate() {
-                let args = self.f.branch_blockparams(block, inst, i);
-                let params = self.f.block_params(succ);
-                assert_eq!(
-                    args.len(),
-                    params.len(),
-                    "block{} has succ block{}; gave {} args for {} params",
-                    block.index(),
-                    succ.index(),
-                    args.len(),
-                    params.len()
-                );
-                if args.len() > 0 {
-                    let moves = params.iter().cloned().zip(args.iter().cloned()).collect();
-                    self.edge_insts
-                        .get_mut(&(block, succ))
-                        .unwrap()
-                        .push(CheckerInst::ParallelMove { moves });
-                }
+            let succ = *self.f.block_succs(block).first().unwrap();
+            let args = self.f.branch_blockparams(block, inst);
+            let params = self.f.block_params(succ);
+            assert_eq!(
+                args.len(),
+                params.len(),
+                "block{} has succ block{}; gave {} args for {} params",
+                block.index(),
+                succ.index(),
+                args.len(),
+                params.len()
+            );
+            if args.len() > 0 {
+                let moves = params.iter().cloned().zip(args.iter().cloned()).collect();
+                self.edge_insts
+                    .get_mut(&(block, succ))
+                    .unwrap()
+                    .push(CheckerInst::ParallelMove { moves });
             }
         }
     }

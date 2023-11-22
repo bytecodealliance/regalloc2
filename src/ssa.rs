@@ -88,8 +88,8 @@ pub fn validate_ssa<F: Function>(f: &F, cfginfo: &CFGInfo) -> Result<(), RegAllo
         }
     }
 
-    // Check that the length of branch args matches the sum of the
-    // number of blockparams in their succs, and that the end of every
+    // Check that the length of branch args matches the number of
+    // blockparams in their succs, and that the end of every
     // block ends in this branch or in a ret, and that there are no
     // other branches or rets in the middle of the block.
     for block in 0..f.num_blocks() {
@@ -102,9 +102,26 @@ pub fn validate_ssa<F: Function>(f: &F, cfginfo: &CFGInfo) -> Result<(), RegAllo
                     return Err(RegAllocError::BB(block));
                 }
                 if f.is_branch(insn) {
-                    for (i, &succ) in f.block_succs(block).iter().enumerate() {
+                    let blockparams_out = f.branch_blockparams(block, insn);
+                    if !blockparams_out.is_empty() {
+                        // Branches with blockparams can only have 1 successor.
+                        let succ = match f.block_succs(block) {
+                            &[succ] => succ,
+                            _ => {
+                                trace!(
+                                    "Block {:?} with outgoing blockparams \
+                                    can only have one successor",
+                                    block
+                                );
+                                return Err(RegAllocError::Branch(insn));
+                            }
+                        };
+                        // ... and aren't allowed to have operands.
+                        if !f.inst_operands(insn).is_empty() || !f.inst_clobbers(insn).is_empty() {
+                            trace!("Branch {:?} with blockparams can't have operands", insn);
+                            return Err(RegAllocError::Branch(insn));
+                        }
                         let blockparams_in = f.block_params(succ);
-                        let blockparams_out = f.branch_blockparams(block, insn, i);
                         if blockparams_in.len() != blockparams_out.len() {
                             trace!(
                                 "Mismatch on block params, found {} expected {}",
