@@ -12,7 +12,7 @@
 
 //! Bundle merging.
 
-use super::{Env, LiveBundleIndex, SpillSet, SpillSlotIndex, VRegIndex};
+use super::{Env, LiveBundleIndex, SpillSet, VRegIndex};
 use crate::{
     ion::data_structures::{BlockparamOut, CodeRange},
     Function, Inst, OperandConstraint, OperandKind, PReg, ProgPoint,
@@ -217,13 +217,6 @@ impl<'a, F: Function> Env<'a, F> {
             }
         }
 
-        if self.bundles[from].spillset != self.bundles[to].spillset {
-            // Widen the range for the target spillset to include the one being merged in.
-            let from_range = self.spillsets[self.bundles[from].spillset].range;
-            let to_range = &mut self.spillsets[self.bundles[to].spillset].range;
-            *to_range = to_range.join(from_range);
-        }
-
         if self.bundles[from].cached_stack() {
             self.bundles[to].set_cached_stack();
         }
@@ -293,13 +286,11 @@ impl<'a, F: Function> Env<'a, F> {
             // Create a spillslot for this bundle.
             let reg = self.vreg(vreg);
             let ssidx = self.spillsets.push(SpillSet {
-                slot: SpillSlotIndex::invalid(),
                 required: false,
                 class: reg.class(),
                 reg_hint: PReg::invalid(),
                 spill_bundle: LiveBundleIndex::invalid(),
                 splits: 0,
-                range,
             });
             self.bundles[bundle].spillset = ssidx;
         }

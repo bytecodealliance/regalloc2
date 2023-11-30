@@ -295,18 +295,11 @@ const fn no_bloat_capacity<T>() -> usize {
 
 #[derive(Clone, Debug)]
 pub struct SpillSet {
-    pub slot: SpillSlotIndex,
     pub reg_hint: PReg,
     pub class: RegClass,
     pub spill_bundle: LiveBundleIndex,
     pub required: bool,
     pub splits: u8,
-
-    /// The aggregate [`CodeRange`] of all involved [`LiveRange`]s. The effect of this abstraction
-    /// is that we attempt to allocate one spill slot for the extent of a bundle. For fragmented
-    /// bundles with lots of open space this abstraction is pessimistic, but when bundles are small
-    /// or dense this yields similar results to tracking individual live ranges.
-    pub range: CodeRange,
 }
 
 pub(crate) const MAX_SPLITS_PER_SPILLSET: u8 = 2;
@@ -316,8 +309,17 @@ pub struct VRegData {
     pub ranges: LiveRangeList,
     pub blockparam: Block,
     pub is_ref: bool,
+
     // We don't initially know the RegClass until we observe a use of the VReg.
     pub class: Option<RegClass>,
+
+    /// The spill slot index is invalid when this VReg has never spilled. Otherwise, it's the
+    /// authoritative location for the spilled value.
+    pub slot: SpillSlotIndex,
+
+    /// This is the aggregate range for all liveranges that use this VReg. Its value is only valid
+    /// after liveranges have been built.
+    pub range: Option<CodeRange>,
 }
 
 #[derive(Clone, Debug)]
@@ -528,7 +530,7 @@ impl<'a, F: Function> Env<'a, F> {
 
 #[derive(Clone, Debug)]
 pub struct SpillSetRanges {
-    pub btree: BTreeMap<LiveRangeKey, SpillSetIndex>,
+    pub btree: BTreeMap<LiveRangeKey, VRegIndex>,
 }
 
 impl SpillSetRanges {

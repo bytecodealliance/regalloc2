@@ -18,7 +18,7 @@ use super::{
 };
 use crate::indexset::IndexSet;
 use crate::ion::data_structures::{
-    BlockparamIn, BlockparamOut, FixedRegFixupLevel, MultiFixedRegFixup,
+    BlockparamIn, BlockparamOut, FixedRegFixupLevel, MultiFixedRegFixup, SpillSlotIndex,
 };
 use crate::{
     Allocation, Block, Function, FxHashMap, FxHashSet, Inst, InstPosition, Operand,
@@ -130,6 +130,8 @@ impl<'a, F: Function> Env<'a, F> {
                     is_ref: false,
                     // We'll learn the RegClass as we scan the code.
                     class: None,
+                    slot: SpillSlotIndex::invalid(),
+                    range: None,
                 },
             );
         }
@@ -767,6 +769,13 @@ impl<'a, F: Function> Env<'a, F> {
                 // Assert in-order and non-overlapping.
                 debug_assert!(last.is_none() || last.unwrap() <= entry.range.from);
                 last = Some(entry.range.to);
+            }
+
+            // Initialize the code range for this vreg, when there were liveranges associated with
+            // it.
+            if let Some(to) = last {
+                let from = vreg.ranges[0].range.from;
+                vreg.range = Some(CodeRange { from, to });
             }
         }
 

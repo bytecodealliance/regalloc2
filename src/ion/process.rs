@@ -648,6 +648,7 @@ impl<'a, F: Function> Env<'a, F> {
                         range,
                         index: empty_lr,
                     });
+                    self.ranges[empty_lr].vreg = vreg;
                     self.ranges[empty_lr].bundle = spill;
                     self.vregs[vreg].ranges.push(LiveRangeListEntry {
                         range,
@@ -713,6 +714,7 @@ impl<'a, F: Function> Env<'a, F> {
                         range,
                         index: empty_lr,
                     });
+                    self.ranges[empty_lr].vreg = vreg;
                     self.ranges[empty_lr].bundle = spill;
                     self.vregs[vreg].ranges.push(LiveRangeListEntry {
                         range,
@@ -949,7 +951,6 @@ impl<'a, F: Function> Env<'a, F> {
                     range: spill_range,
                     index: spill_lr,
                 });
-                self.ranges[spill_lr].bundle = spill;
                 trace!(
                     "  -> added spill range {:?} in new LR {:?} in spill bundle {:?}",
                     spill_range,
@@ -1057,9 +1058,11 @@ impl<'a, F: Function> Env<'a, F> {
                 Requirement::FixedReg(preg) | Requirement::FixedStack(preg) => Some(preg),
                 Requirement::Register => None,
                 Requirement::Stack => {
+                    trace!(" -> required on stack, skipping");
                     // If we must be on the stack, mark our spillset
                     // as required immediately.
                     self.spillsets[self.bundles[bundle].spillset].required = true;
+                    self.spilled_bundles.push(bundle);
                     return Ok(());
                 }
 

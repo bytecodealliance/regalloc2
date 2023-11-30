@@ -57,15 +57,18 @@ impl<'a, F: Function> Env<'a, F> {
         trace!(" -> bundle: {:?}", bundle);
         let bundledata = &self.bundles[bundle];
         trace!(" -> allocation {:?}", bundledata.allocation);
-        if bundledata.allocation != Allocation::none() {
+        if bundledata.allocation.is_some() {
             bundledata.allocation
         } else {
             trace!(" -> spillset {:?}", bundledata.spillset);
-            trace!(
-                " -> spill slot {:?}",
-                self.spillsets[bundledata.spillset].slot
-            );
-            self.spillslots[self.spillsets[bundledata.spillset].slot.index()].alloc
+
+            let vreg = self.ranges[range].vreg;
+            trace!(" -> vreg {vreg:?}");
+
+            let slot = self.vregs[vreg].slot;
+            trace!(" -> spill slot {slot:?}");
+
+            self.spillslots[slot.index()].alloc
         }
     }
 

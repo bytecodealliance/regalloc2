@@ -13,19 +13,26 @@
 //! Spillslot allocation.
 
 use super::{
-    AllocRegResult, Env, LiveRangeKey, PReg, PRegIndex, RegTraversalIter, SpillSetIndex,
-    SpillSlotData, SpillSlotIndex,
+    data_structures::VRegIndex, AllocRegResult, Env, LiveRangeKey, PReg, PRegIndex,
+    RegTraversalIter, SpillSlotData, SpillSlotIndex,
 };
 use crate::{ion::data_structures::SpillSetRanges, Allocation, Function, SpillSlot};
 
 impl<'a, F: Function> Env<'a, F> {
     pub fn try_allocating_regs_for_spilled_bundles(&mut self) {
         trace!("allocating regs for spilled bundles");
-        for i in 0..self.spilled_bundles.len() {
-            let bundle = self.spilled_bundles[i]; // don't borrow self
+
+        let mut bundles = core::mem::take(&mut self.spilled_bundles);
+
+        bundles.retain(|&bundle| {
+            let spillset = self.bundles[bundle].spillset;
+            if self.spillsets[spillset].required {
+                trace!("spill required, not attempting to find a preg");
+                return true;
+            }
 
             if self.bundles[bundle].ranges.is_empty() {
-                continue;
+                return false;
             }
 
             let class = self.spillsets[self.bundles[bundle].spillset].class;
@@ -53,38 +60,39 @@ impl<'a, F: Function> Env<'a, F> {
                 }
             }
             if !success {
-                trace!(
-                    "spilling bundle {:?}: marking spillset {:?} as required",
-                    bundle,
-                    self.bundles[bundle].spillset
-                );
-                self.spillsets[self.bundles[bundle].spillset].required = true;
+                trace!("spilling bundle {bundle:?}: marking spillset {spillset:?} as required");
+                self.spillsets[spillset].required = true;
             }
-        }
+
+            !success
+        });
+
+        self.spilled_bundles = bundles;
     }
 
-    pub fn spillslot_can_fit_spillset(
-        &mut self,
-        spillslot: SpillSlotIndex,
-        spillset: SpillSetIndex,
-    ) -> bool {
+    pub fn spillslot_can_fit_vreg(&mut self, spillslot: SpillSlotIndex, vreg: VRegIndex) -> bool {
+        let range = self.vregs[vreg]
+            .range
+            .as_ref()
+            .expect("spilling a vreg with no uses");
         !self.spillslots[spillslot.index()]
             .ranges
             .btree
-            .contains_key(&LiveRangeKey::from_range(&self.spillsets[spillset].range))
+            .contains_key(&LiveRangeKey::from_range(range))
     }
 
-    pub fn allocate_spillset_to_spillslot(
-        &mut self,
-        spillset: SpillSetIndex,
-        spillslot: SpillSlotIndex,
-    ) {
-        self.spillsets[spillset].slot = spillslot;
+    pub fn allocate_vreg_to_spillslot(&mut self, vreg: VRegIndex, spillslot: SpillSlotIndex) {
+        self.vregs[vreg].slot = spillslot;
 
-        let res = self.spillslots[spillslot.index()].ranges.btree.insert(
-            LiveRangeKey::from_range(&self.spillsets[spillset].range),
-            spillset,
-        );
+        let range = self.vregs[vreg]
+            .range
+            .as_ref()
+            .expect("spilling a vreg with no uses");
+
+        let res = self.spillslots[spillslot.index()]
+            .ranges
+            .btree
+            .insert(LiveRangeKey::from_range(range), vreg);
 
         debug_assert!(res.is_none());
     }
@@ -92,52 +100,79 @@ impl<'a, F: Function> Env<'a, F> {
     pub fn allocate_spillslots(&mut self) {
         const MAX_ATTEMPTS: usize = 10;
 
-        for spillset in 0..self.spillsets.len() {
-            trace!("allocate spillslot: {}", spillset);
-            let spillset = SpillSetIndex::new(spillset);
+        for bundle in core::mem::take(&mut self.spilled_bundles) {
+            trace!("spill bundle: {bundle:?}");
+
+            let spillset = self.bundles[bundle].spillset;
             if !self.spillsets[spillset].required {
                 continue;
             }
-            let class = self.spillsets[spillset].class as usize;
-            // Try a few existing spillslots.
-            let mut i = self.slots_by_class[class].probe_start;
-            let mut success = false;
-            // Never probe the same element more than once: limit the
-            // attempt count to the number of slots in existence.
-            for _attempt in 0..core::cmp::min(self.slots_by_class[class].slots.len(), MAX_ATTEMPTS)
-            {
-                // Note: this indexing of `slots` is always valid
-                // because either the `slots` list is empty and the
-                // iteration limit above consequently means we don't
-                // run this loop at all, or else `probe_start` is
-                // in-bounds (because it is made so below when we add
-                // a slot, and it always takes on the last index `i`
-                // after this loop).
-                let spillslot = self.slots_by_class[class].slots[i];
 
-                if self.spillslot_can_fit_spillset(spillslot, spillset) {
-                    self.allocate_spillset_to_spillslot(spillset, spillslot);
-                    success = true;
-                    self.slots_by_class[class].probe_start = i;
-                    break;
+            let spillset = self.bundles[bundle].spillset;
+            let class = self.spillsets[spillset].class as usize;
+
+            let mut i = self.slots_by_class[class].probe_start;
+
+            for range in 0..self.bundles[bundle].ranges.len() {
+                let range = self.bundles[bundle].ranges[range];
+                let vreg = self.ranges[range.index].vreg;
+
+                assert!(vreg.is_valid(), "valid vreg");
+
+                trace!(" -> spilling vreg {vreg:?}");
+
+                // If this vreg has spilled already, skip it.
+                if self.vregs[vreg].slot.is_valid() {
+                    trace!("  -> already spilled; skipping");
+                    // TODO: perhaps we could reverse the allocation to the slots_by_class index,
+                    // and set `i` to that? This would heuristically push us towards spill bundles
+                    // using the same spillslot when vregs are spilled from multiple places.
+                    continue;
                 }
 
-                i = self.slots_by_class[class].next_index(i);
+                // Try a few existing spillslots.
+                let mut success = false;
+
+                // Never probe the same element more than once: limit the
+                // attempt count to the number of slots in existence.
+                for _attempt in
+                    0..core::cmp::min(self.slots_by_class[class].slots.len(), MAX_ATTEMPTS)
+                {
+                    // Note: this indexing of `slots` is always valid
+                    // because either the `slots` list is empty and the
+                    // iteration limit above consequently means we don't
+                    // run this loop at all, or else `probe_start` is
+                    // in-bounds (because it is made so below when we add
+                    // a slot, and it always takes on the last index `i`
+                    // after this loop).
+                    let spillslot = self.slots_by_class[class].slots[i];
+
+                    if self.spillslot_can_fit_vreg(spillslot, vreg) {
+                        self.allocate_vreg_to_spillslot(vreg, spillslot);
+                        success = true;
+                        break;
+                    }
+
+                    i = self.slots_by_class[class].next_index(i);
+                }
+
+                if !success {
+                    // Allocate a new spillslot.
+                    let spillslot = SpillSlotIndex::new(self.spillslots.len());
+                    self.spillslots.push(SpillSlotData {
+                        ranges: SpillSetRanges::new(),
+                        alloc: Allocation::none(),
+                        slots: self.func.spillslot_size(self.spillsets[spillset].class) as u32,
+                    });
+                    i = self.slots_by_class[class].slots.len();
+                    self.slots_by_class[class].slots.push(spillslot);
+                    self.slots_by_class[class].probe_start = i;
+
+                    self.allocate_vreg_to_spillslot(vreg, spillslot);
+                }
             }
 
-            if !success {
-                // Allocate a new spillslot.
-                let spillslot = SpillSlotIndex::new(self.spillslots.len());
-                self.spillslots.push(SpillSlotData {
-                    ranges: SpillSetRanges::new(),
-                    alloc: Allocation::none(),
-                    slots: self.func.spillslot_size(self.spillsets[spillset].class) as u32,
-                });
-                self.slots_by_class[class].slots.push(spillslot);
-                self.slots_by_class[class].probe_start = self.slots_by_class[class].slots.len() - 1;
-
-                self.allocate_spillset_to_spillslot(spillset, spillslot);
-            }
+            self.slots_by_class[class].probe_start = i;
         }
 
         // Assign actual slot indices to spillslots.
