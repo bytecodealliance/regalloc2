@@ -47,10 +47,12 @@ impl<'a, F: Function> Env<'a, F> {
             safepoints.sort_unstable();
             trace!(" -> live over safepoints: {:?}", safepoints);
 
+            let spill_alloc = self.get_spill_alloc_for(vreg);
+
             let mut safepoint_idx = 0;
             for entry in &self.vregs[vreg].ranges {
                 let range = entry.range;
-                let alloc = self.get_alloc_for_range(entry.index);
+                let alloc = self.get_alloc_for_range(entry.index).unwrap_or(spill_alloc);
 
                 if !alloc.as_stack().is_some() {
                     continue;
