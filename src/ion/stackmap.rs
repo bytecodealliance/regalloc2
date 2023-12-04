@@ -12,8 +12,6 @@
 
 //! Stackmap computation.
 
-use alloc::vec::Vec;
-
 use super::{Env, ProgPoint, VRegIndex};
 use crate::{ion::data_structures::u64_key, Function};
 
@@ -37,39 +35,21 @@ impl<'a, F: Function> Env<'a, F> {
         for vreg in self.func.reftype_vregs() {
             trace!("generating safepoint info for vreg {}", vreg);
             let vreg = VRegIndex::new(vreg.vreg());
-            let mut safepoints: Vec<ProgPoint> = self
-                .safepoints_per_vreg
-                .get(&vreg.index())
-                .unwrap()
-                .iter()
-                .map(|&inst| ProgPoint::before(inst))
-                .collect();
-            safepoints.sort_unstable();
-            trace!(" -> live over safepoints: {:?}", safepoints);
-
             let spill_alloc = self.get_spill_alloc_for(vreg);
 
-            let mut safepoint_idx = 0;
-            for entry in &self.vregs[vreg].ranges {
-                let range = entry.range;
-                let alloc = self.get_alloc_for_range(entry.index).unwrap_or(spill_alloc);
+            // If this vreg didn't spill, it'll never live on the stack.
+            if spill_alloc.is_none() {
+                continue;
+            }
 
-                if !alloc.as_stack().is_some() {
-                    continue;
-                }
+            let range = self.vregs[vreg].range.expect("vreg missing a lifetime");
+            trace!(" -> range {:?}: alloc {}", range, spill_alloc);
 
-                trace!(" -> range {:?}: alloc {}", range, alloc);
-                while safepoint_idx < safepoints.len() && safepoints[safepoint_idx] < range.to {
-                    if safepoints[safepoint_idx] < range.from {
-                        safepoint_idx += 1;
-                        continue;
-                    }
-
-                    trace!("    -> covers safepoint {:?}", safepoints[safepoint_idx]);
-
-                    self.safepoint_slots
-                        .push((safepoints[safepoint_idx], alloc));
-                    safepoint_idx += 1;
+            for &inst in self.safepoints_per_vreg.get(&vreg.index()).unwrap() {
+                let safepoint = ProgPoint::before(inst);
+                if range.contains_point(safepoint) {
+                    trace!("  -> covers safepoint {:?}", safepoint);
+                    self.safepoint_slots.push((safepoint, spill_alloc));
                 }
             }
         }
