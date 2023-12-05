@@ -149,7 +149,7 @@ worry about this constraint.
 
 regalloc2 takes an SSA IR as input, where the usual definitions apply:
 every vreg is defined exactly once, and every vreg use is dominated by
-its one def. (Useing blockparams means that we do not need additional
+its one def. (Using blockparams means that we do not need additional
 conditions for phi-nodes.)
 
 ## Block Parameters
