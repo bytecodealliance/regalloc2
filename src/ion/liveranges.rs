@@ -315,7 +315,7 @@ impl<'a, F: Function> Env<'a, F> {
                 }
             }
 
-            for inst in insns.rev().iter() {
+            for inst in insns.iter().rev() {
                 for pos in &[OperandPos::Late, OperandPos::Early] {
                     for op in self.func.inst_operands(inst) {
                         if op.as_fixed_nonallocatable().is_some() {
@@ -442,7 +442,7 @@ impl<'a, F: Function> Env<'a, F> {
 
             // For each instruction, in reverse order, process
             // operands and clobbers.
-            for inst in insns.rev().iter() {
+            for inst in insns.iter().rev() {
                 // Mark clobbers with CodeRanges on PRegs.
                 for clobber in self.func.inst_clobbers(inst) {
                     // Clobber range is at After point only: an

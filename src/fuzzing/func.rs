@@ -172,7 +172,7 @@ impl FuncBuilder {
         let b = Block::new(self.f.blocks.len());
         self.f
             .blocks
-            .push(InstRange::forward(Inst::new(0), Inst::new(0)));
+            .push(InstRange::new(Inst::new(0), Inst::new(0)));
         self.f.block_preds.push(vec![]);
         self.f.block_succs.push(vec![]);
         self.f.block_params_in.push(vec![]);
@@ -217,7 +217,7 @@ impl FuncBuilder {
                 self.f.insts.push(inst.clone());
             }
             let end_inst = self.f.insts.len();
-            *blockrange = InstRange::forward(Inst::new(begin_inst), Inst::new(end_inst));
+            *blockrange = InstRange::new(Inst::new(begin_inst), Inst::new(end_inst));
         }
 
         self.f
