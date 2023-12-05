@@ -470,7 +470,13 @@ impl Func {
                         // Pick an operand and make it a fixed reg.
                         let i = u.int_in_range(0..=(operands.len() - 1))?;
                         let op = operands[i];
-                        let fixed_reg = PReg::new(u.int_in_range(0..=62)?, op.class());
+                        let fixed_reg = PReg::new(
+                            match op.class() {
+                                RegClass::Int => u.int_in_range(0..=119)?,
+                                RegClass::Float | RegClass::Vector => u.int_in_range(0..=62)?,
+                            },
+                            op.class(),
+                        );
                         let fixed_list = match op.pos() {
                             OperandPos::Early => &mut fixed_early,
                             OperandPos::Late => &mut fixed_late,
@@ -511,9 +517,13 @@ impl Func {
                         clobbers.push(PReg::new(reg, RegClass::arbitrary(u)?));
                     }
                 } else if opts.fixed_nonallocatable && bool::arbitrary(u)? {
+                    let class = RegClass::arbitrary(u)?;
                     operands.push(Operand::fixed_nonallocatable(PReg::new(
-                        63,
-                        RegClass::arbitrary(u)?,
+                        match class {
+                            RegClass::Int => 121,
+                            RegClass::Float | RegClass::Vector => 63,
+                        },
+                        class,
                     )));
                 }
 
@@ -658,16 +668,20 @@ pub fn machine_env() -> MachineEnv {
         regs(24..32, RegClass::Vector),
     ];
     let scratch_by_class: [Option<PReg>; 3] = [None, None, None];
-    let fixed_stack_slots = (32..63)
+    let fixed_stack_slots = (32..120)
         .flat_map(|i| {
-            [
-                PReg::new(i, RegClass::Int),
-                PReg::new(i, RegClass::Float),
-                PReg::new(i, RegClass::Vector),
-            ]
+            if i < 63 {
+                vec![
+                    PReg::new(i, RegClass::Int),
+                    PReg::new(i, RegClass::Float),
+                    PReg::new(i, RegClass::Vector),
+                ]
+            } else {
+                vec![PReg::new(i, RegClass::Int)]
+            }
         })
         .collect();
-    // Register 63 is reserved for use as a fixed non-allocatable register.
+    // Register 63/121 is reserved for use as a fixed non-allocatable register.
     MachineEnv {
         preferred_regs_by_class,
         non_preferred_regs_by_class,

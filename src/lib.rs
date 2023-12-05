@@ -106,30 +106,41 @@ pub struct PReg {
 }
 
 impl PReg {
-    pub const MAX_BITS: usize = 6;
+    const MAX_BITS: usize = 6;
     pub const MAX: usize = (1 << Self::MAX_BITS) - 1;
+    pub const MAX_INT: usize = (2 << Self::MAX_BITS) - 1;
     pub const NUM_INDEX: usize = 1 << (Self::MAX_BITS + 2); // including RegClass bits
 
     /// Create a new PReg. The `hw_enc` range is 6 bits.
     #[inline(always)]
     pub const fn new(hw_enc: usize, class: RegClass) -> Self {
-        debug_assert!(hw_enc <= PReg::MAX);
+        match class {
+            RegClass::Int => debug_assert!(hw_enc <= PReg::MAX_INT),
+            RegClass::Float | RegClass::Vector => debug_assert!(hw_enc <= PReg::MAX),
+        }
+        let mut class = class as u8;
+        if class == 0 && hw_enc > PReg::MAX {
+            class = 3;
+        }
         PReg {
-            bits: ((class as u8) << Self::MAX_BITS) | (hw_enc as u8),
+            bits: (class << Self::MAX_BITS) | ((hw_enc & PReg::MAX) as u8),
         }
     }
 
     /// The physical register number, as encoded by the ISA for the particular register class.
     #[inline(always)]
     pub const fn hw_enc(self) -> usize {
-        self.bits as usize & Self::MAX
+        match self.class() {
+            RegClass::Int => self.bits as usize & Self::MAX_INT,
+            RegClass::Float | RegClass::Vector => self.bits as usize & Self::MAX,
+        }
     }
 
     /// The register class.
     #[inline(always)]
     pub const fn class(self) -> RegClass {
         match (self.bits >> Self::MAX_BITS) & 0b11 {
-            0 => RegClass::Int,
+            0 | 3 => RegClass::Int,
             1 => RegClass::Float,
             2 => RegClass::Vector,
             _ => unreachable!(),
@@ -156,7 +167,7 @@ impl PReg {
     /// data structures.
     #[inline(always)]
     pub const fn invalid() -> Self {
-        PReg::new(Self::MAX, RegClass::Int)
+        PReg::new(Self::MAX_INT, RegClass::Int)
     }
 }
 
@@ -314,7 +325,7 @@ impl VReg {
     pub const fn new(virt_reg: usize, class: RegClass) -> Self {
         debug_assert!(virt_reg <= VReg::MAX);
         VReg {
-            bits: ((virt_reg as u32) << 2) | (class as u8 as u32),
+            bits: ((virt_reg as u32) << 2) | (class as u32),
         }
     }
 
@@ -540,20 +551,23 @@ impl Operand {
         kind: OperandKind,
         pos: OperandPos,
     ) -> Self {
+        let mut class_field = vreg.class() as u32;
         let constraint_field = match constraint {
             OperandConstraint::Any => 0,
             OperandConstraint::Reg => 1,
             OperandConstraint::Stack => 2,
             OperandConstraint::FixedReg(preg) => {
                 debug_assert_eq!(preg.class(), vreg.class());
-                0b1000000 | preg.hw_enc() as u32
+                if preg.hw_enc() & 0b1000000 != 0 {
+                    class_field = 3;
+                }
+                0b1000000 | (preg.hw_enc() & PReg::MAX) as u32
             }
             OperandConstraint::Reuse(which) => {
                 debug_assert!(which <= 31);
                 0b0100000 | which as u32
             }
         };
-        let class_field = vreg.class() as u8 as u32;
         let pos_field = pos as u8 as u32;
         let kind_field = kind as u8 as u32;
         Operand {
@@ -748,7 +762,7 @@ impl Operand {
     pub fn class(self) -> RegClass {
         let class_field = (self.bits >> 21) & 3;
         match class_field {
-            0 => RegClass::Int,
+            0 | 3 => RegClass::Int,
             1 => RegClass::Float,
             2 => RegClass::Vector,
             _ => unreachable!(),
@@ -785,9 +799,14 @@ impl Operand {
     /// its allocation must fulfill.
     #[inline(always)]
     pub fn constraint(self) -> OperandConstraint {
+        let class_field = (self.bits >> 21) as usize & 3;
         let constraint_field = ((self.bits >> 25) as usize) & 127;
         if constraint_field & 0b1000000 != 0 {
-            OperandConstraint::FixedReg(PReg::new(constraint_field & 0b0111111, self.class()))
+            let mut hw_enc = constraint_field & 0b0111111;
+            if class_field == 3 {
+                hw_enc |= 1 << 6;
+            }
+            OperandConstraint::FixedReg(PReg::new(hw_enc, self.class()))
         } else if constraint_field & 0b0100000 != 0 {
             OperandConstraint::Reuse(constraint_field & 0b0011111)
         } else {
