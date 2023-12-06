@@ -15,7 +15,7 @@
 use super::{
     spill_weight_from_constraint, Env, LiveBundleIndex, LiveBundleVec, LiveRangeFlag,
     LiveRangeIndex, LiveRangeKey, LiveRangeList, LiveRangeListEntry, PRegIndex, RegTraversalIter,
-    Requirement, SpillWeight, UseList, VRegIndex,
+    Requirement, SpillWeight, VRegIndex,
 };
 use crate::{
     ion::data_structures::{
@@ -277,7 +277,7 @@ impl<'a, F: Function> Env<'a, F> {
             minimal = true;
             fixed = true;
         } else {
-            for u in &first_range_data.uses {
+            for u in &self.uses[first_range_data.uses()] {
                 trace!("  -> use: {:?}", u);
                 if let OperandConstraint::FixedReg(_) = u.operand.constraint() {
                     trace!("  -> fixed operand at {:?}: {:?}", u.pos, u.operand);
@@ -353,13 +353,14 @@ impl<'a, F: Function> Env<'a, F> {
 
     pub fn recompute_range_properties(&mut self, range: LiveRangeIndex) {
         let rangedata = &mut self.ranges[range];
+        let uses = &self.uses[rangedata.uses()];
         let mut w = SpillWeight::zero();
-        for u in &rangedata.uses {
+        for u in uses {
             w = w + SpillWeight::from_bits(u.weight);
             trace!("range{}: use {:?}", range.index(), u);
         }
         rangedata.set_uses_spill_weight(w);
-        if rangedata.uses.len() > 0 && rangedata.uses[0].operand.kind() == OperandKind::Def {
+        if uses.len() > 0 && uses[0].operand.kind() == OperandKind::Def {
             // Note that we *set* the flag here, but we never *clear*
             // it: it may be set by a progmove as well (which does not
             // create an explicit use or def), and we want to preserve
@@ -438,7 +439,7 @@ impl<'a, F: Function> Env<'a, F> {
             // Find any uses; if none, just chop off one instruction.
             let mut first_use = None;
             'outer: for entry in &self.bundles[bundle].ranges {
-                for u in &self.ranges[entry.index].uses {
+                for u in &self.uses[self.ranges[entry.index].uses()] {
                     first_use = Some(u.pos);
                     break 'outer;
                 }
@@ -500,7 +501,7 @@ impl<'a, F: Function> Env<'a, F> {
                 // When the bundle contains a fixed constraint, we advance the split point to right
                 // before the first instruction with a fixed use present.
                 if self.bundles[bundle].cached_fixed() {
-                    for u in &self.ranges[entry.index].uses {
+                    for u in &self.uses[self.ranges[entry.index].uses()] {
                         if u.pos < split_at {
                             continue;
                         }
@@ -558,20 +559,15 @@ impl<'a, F: Function> Env<'a, F> {
             });
             self.ranges[new_lr].vreg = self.ranges[orig_lr].vreg;
             trace!(" -> splitting LR {:?} into {:?}", orig_lr, new_lr);
-            let first_use = self.ranges[orig_lr]
-                .uses
+            let first_use = match self.uses[self.ranges[orig_lr].uses()]
                 .iter()
                 .position(|u| u.pos >= split_at)
-                .unwrap_or(self.ranges[orig_lr].uses.len());
-            let rest_uses: UseList = self.ranges[orig_lr]
-                .uses
-                .iter()
-                .cloned()
-                .skip(first_use)
-                .collect();
-            self.ranges[new_lr].uses = rest_uses;
-            self.ranges[orig_lr].uses.truncate(first_use);
-            self.ranges[orig_lr].uses.shrink_to_fit();
+            {
+                Some(pos) => self.ranges[orig_lr].use_range.start + pos as u32,
+                None => self.ranges[orig_lr].use_range.end,
+            };
+            self.ranges[new_lr].use_range = first_use..self.ranges[orig_lr].use_range.end;
+            self.ranges[orig_lr].use_range.end = first_use;
             self.recompute_range_properties(orig_lr);
             self.recompute_range_properties(new_lr);
             new_lr_list[0].index = new_lr;
@@ -613,7 +609,9 @@ impl<'a, F: Function> Env<'a, F> {
             while let Some(entry) = self.bundles[bundle].ranges.last().cloned() {
                 let end = entry.range.to;
                 let vreg = self.ranges[entry.index].vreg;
-                let last_use = self.ranges[entry.index].uses.last().map(|u| u.pos);
+                let last_use = self.uses[self.ranges[entry.index].uses()]
+                    .last()
+                    .map(|u| u.pos);
                 if last_use.is_none() {
                     let spill = self
                         .get_or_create_spill_bundle(bundle, /* create_if_absent = */ true)
@@ -673,7 +671,9 @@ impl<'a, F: Function> Env<'a, F> {
                 }
                 let start = entry.range.from;
                 let vreg = self.ranges[entry.index].vreg;
-                let first_use = self.ranges[entry.index].uses.first().map(|u| u.pos);
+                let first_use = self.uses[self.ranges[entry.index].uses()]
+                    .first()
+                    .map(|u| u.pos);
                 if first_use.is_none() {
                     let spill = self
                         .get_or_create_spill_bundle(new_bundle, /* create_if_absent = */ true)
@@ -800,8 +800,6 @@ impl<'a, F: Function> Env<'a, F> {
         let mut last_inst: Option<Inst> = None;
         let mut last_vreg: Option<VRegIndex> = None;
 
-        let mut spill_uses = UseList::new();
-
         for entry in core::mem::take(&mut self.bundles[bundle].ranges) {
             let lr_from = entry.range.from;
             let lr_to = entry.range.to;
@@ -815,7 +813,8 @@ impl<'a, F: Function> Env<'a, F> {
             let mut spill_starts_def = false;
 
             let mut last_live_pos = entry.range.from;
-            for u in core::mem::take(&mut self.ranges[entry.index].uses) {
+            for use_idx in self.ranges[entry.index].uses() {
+                let u = &self.uses[use_idx];
                 trace!("   -> use {:?} (last_live_pos {:?})", u, last_live_pos);
 
                 let is_def = u.operand.kind() == OperandKind::Def;
@@ -825,16 +824,16 @@ impl<'a, F: Function> Env<'a, F> {
                 // any-constrained uses will be easy to satisfy. Solving those constraints earlier
                 // could create unnecessary conflicts with existing bundles that need to fit in a
                 // register, more strict requirements, so we delay them eagerly.
-                if u.operand.constraint() == OperandConstraint::Any {
-                    trace!("    -> migrating this any-constrained use to the spill range");
-                    spill_uses.push(u);
+                // if u.operand.constraint() == OperandConstraint::Any {
+                //     trace!("    -> migrating this any-constrained use to the spill range");
+                //     spill_uses.push(u);
 
-                    // Remember if we're moving the def of this vreg into the spill range, so that
-                    // we can set the appropriate flags on it later.
-                    spill_starts_def = spill_starts_def || is_def;
+                //     // Remember if we're moving the def of this vreg into the spill range, so that
+                //     // we can set the appropriate flags on it later.
+                //     spill_starts_def = spill_starts_def || is_def;
 
-                    continue;
-                }
+                //     continue;
+                // }
 
                 // If this is a def of the vreg the entry cares about, make sure that the spill
                 // range starts right before the next instruction so that the value is available.
@@ -846,7 +845,8 @@ impl<'a, F: Function> Env<'a, F> {
                 // If we just created a LR for this inst at the last
                 // pos, add this use to the same LR.
                 if Some(u.pos.inst()) == last_inst && Some(vreg) == last_vreg {
-                    self.ranges[last_lr.unwrap()].uses.push(u);
+                    debug_assert_eq!(self.ranges[last_lr.unwrap()].use_range.end, use_idx as u32);
+                    self.ranges[last_lr.unwrap()].use_range.end = use_idx as u32 + 1;
                     trace!("    -> appended to last LR {:?}", last_lr.unwrap());
                     continue;
                 }
@@ -864,7 +864,7 @@ impl<'a, F: Function> Env<'a, F> {
                     let cr = CodeRange { from: u.pos, to };
                     let lr = self.ranges.add(cr);
                     new_lrs.push((vreg, lr));
-                    self.ranges[lr].uses.push(u);
+                    self.ranges[lr].use_range = use_idx as u32..use_idx as u32 + 1;
                     self.ranges[lr].vreg = vreg;
 
                     trace!(
@@ -898,7 +898,7 @@ impl<'a, F: Function> Env<'a, F> {
                 let cr = CodeRange { from: pos, to };
                 let lr = self.ranges.add(cr);
                 new_lrs.push((vreg, lr));
-                self.ranges[lr].uses.push(u);
+                self.ranges[lr].use_range = use_idx as u32..use_idx as u32 + 1;
                 self.ranges[lr].vreg = vreg;
 
                 // Create a new bundle that contains only this LR.
@@ -938,7 +938,6 @@ impl<'a, F: Function> Env<'a, F> {
                 let spill_lr = self.ranges.add(spill_range);
                 self.ranges[spill_lr].vreg = vreg;
                 self.ranges[spill_lr].bundle = spill;
-                self.ranges[spill_lr].uses.extend(spill_uses.drain(..));
                 new_lrs.push((vreg, spill_lr));
 
                 if spill_starts_def {
@@ -956,8 +955,6 @@ impl<'a, F: Function> Env<'a, F> {
                     spill_lr,
                     spill
                 );
-            } else {
-                assert!(spill_uses.is_empty());
             }
         }
 

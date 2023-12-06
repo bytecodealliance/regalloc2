@@ -556,8 +556,8 @@ impl<'a, F: Function> Env<'a, F> {
                 }
 
                 // Scan over def/uses and apply allocations.
-                for use_idx in 0..self.ranges[entry.index].uses.len() {
-                    let usedata = self.ranges[entry.index].uses[use_idx];
+                for use_idx in self.ranges[entry.index].uses() {
+                    let usedata = self.uses[use_idx];
                     trace!("applying to use: {:?}", usedata);
                     debug_assert!(range.contains_point(usedata.pos));
                     let inst = usedata.pos.inst();

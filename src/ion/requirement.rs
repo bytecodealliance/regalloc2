@@ -131,7 +131,7 @@ impl<'a, F: Function> Env<'a, F> {
         let ranges = &self.bundles[bundle].ranges;
         for entry in ranges {
             trace!(" -> LR {:?}: {:?}", entry.index, entry.range);
-            for u in &self.ranges[entry.index].uses {
+            for u in &self.uses[self.ranges[entry.index].uses()] {
                 trace!("  -> use {:?}", u);
                 let r = self.requirement_from_operand(u.operand);
                 req = req.merge(r).map_err(|_| {
