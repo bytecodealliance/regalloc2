@@ -479,23 +479,18 @@ impl<'a, F: Function> Env<'a, F> {
                 // for the use, (ii) rewrite the use to have an Any
                 // constraint, and (ii) move the def to Early position
                 // to reserve the register for the whole instruction.
+                //
+                // We don't touch any fixed-early-def or fixed-late-use
+                // constraints: the only situation where the same physical
+                // register can be used multiple times in the same
+                // instruction is with an early-use and a late-def. Anything
+                // else is a user error.
                 let mut operand_rewrites: FxHashMap<usize, Operand> = FxHashMap::default();
                 let mut late_def_fixed: SmallVec<[PReg; 8]> = smallvec![];
                 for &operand in self.func.inst_operands(inst) {
                     if let OperandConstraint::FixedReg(preg) = operand.constraint() {
-                        match operand.pos() {
-                            OperandPos::Late => {
-                                // See note in fuzzing/func.rs: we
-                                // can't allow this, because there
-                                // would be no way to move a value
-                                // into place for a late use *after*
-                                // the early point (i.e. in the middle
-                                // of the instruction).
-                                assert!(
-                                    operand.kind() == OperandKind::Def,
-                                    "Invalid operand: fixed constraint on Use/Mod at Late point"
-                                );
-
+                        match (operand.pos(), operand.kind()) {
+                            (OperandPos::Late, OperandKind::Def) => {
                                 late_def_fixed.push(preg);
                             }
                             _ => {}
@@ -507,12 +502,11 @@ impl<'a, F: Function> Env<'a, F> {
                         continue;
                     }
                     if let OperandConstraint::FixedReg(preg) = operand.constraint() {
-                        match operand.pos() {
-                            OperandPos::Early if live.get(operand.vreg().vreg()) => {
-                                assert!(operand.kind() == OperandKind::Use,
-                                            "Invalid operand: fixed constraint on Def/Mod at Early position");
-
-                                // If we have a constraint at the
+                        match (operand.pos(), operand.kind()) {
+                            (OperandPos::Early, OperandKind::Use)
+                                if live.get(operand.vreg().vreg()) =>
+                            {
+                                // If we have a use constraint at the
                                 // Early point for a fixed preg, and
                                 // this preg is also constrained with
                                 // a *separate* def at Late or is
