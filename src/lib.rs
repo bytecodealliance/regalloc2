@@ -694,6 +694,28 @@ impl Operand {
         )
     }
 
+    /// Same as `reg_fixed_use` but at `OperandPos::Late`.
+    #[inline(always)]
+    pub fn reg_fixed_use_at_end(vreg: VReg, preg: PReg) -> Self {
+        Operand::new(
+            vreg,
+            OperandConstraint::FixedReg(preg),
+            OperandKind::Use,
+            OperandPos::Late,
+        )
+    }
+
+    /// Same as `reg_fixed_def` but at `OperandPos::Early`.
+    #[inline(always)]
+    pub fn reg_fixed_def_at_start(vreg: VReg, preg: PReg) -> Self {
+        Operand::new(
+            vreg,
+            OperandConstraint::FixedReg(preg),
+            OperandKind::Def,
+            OperandPos::Early,
+        )
+    }
+
     /// Create an `Operand` that designates a use of a vreg and places
     /// no constraints on its location (i.e., it can be allocated into
     /// either a register or on the stack).
