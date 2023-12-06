@@ -106,8 +106,7 @@ impl SerializableFunction {
             block_params_out: (0..func.num_blocks())
                 .map(|i| {
                     let block = Block::new(i);
-                    let inst = func.block_insns(block).last();
-                    func.branch_blockparams(block, inst).to_vec()
+                    func.branch_blockparams(block).to_vec()
                 })
                 .collect(),
             num_vregs: func.num_vregs(),
@@ -167,7 +166,7 @@ impl Function for SerializableFunction {
         self.insts[insn.index()].op == InstOpcode::Branch
     }
 
-    fn branch_blockparams(&self, block: Block, _: Inst) -> &[VReg] {
+    fn branch_blockparams(&self, block: Block) -> &[VReg] {
         &self.block_params_out[block.index()][..]
     }
 

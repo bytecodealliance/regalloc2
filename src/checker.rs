@@ -272,7 +272,7 @@ fn visit_all_vregs<F: Function, V: FnMut(VReg)>(f: &F, mut v: V) {
                 v(op.vreg());
             }
             if f.is_branch(inst) {
-                for &param in f.branch_blockparams(block, inst) {
+                for &param in f.branch_blockparams(block) {
                     v(param);
                 }
             }
@@ -871,7 +871,7 @@ impl<'a, F: Function> Checker<'a, F> {
         // outgoing edge as necessary to handle blockparams.
         else {
             let succ = *self.f.block_succs(block).first().unwrap();
-            let args = self.f.branch_blockparams(block, inst);
+            let args = self.f.branch_blockparams(block);
             let params = self.f.block_params(succ);
             assert_eq!(
                 args.len(),

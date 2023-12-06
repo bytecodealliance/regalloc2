@@ -102,7 +102,7 @@ pub fn validate_ssa<F: Function>(f: &F, cfginfo: &CFGInfo) -> Result<(), RegAllo
                     return Err(RegAllocError::BB(block));
                 }
                 if f.is_branch(insn) {
-                    let blockparams_out = f.branch_blockparams(block, insn);
+                    let blockparams_out = f.branch_blockparams(block);
                     if !blockparams_out.is_empty() {
                         // Branches with blockparams can only have 1 successor.
                         let succ = match f.block_succs(block) {

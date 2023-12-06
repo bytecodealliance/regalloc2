@@ -307,7 +307,7 @@ impl<'a, F: Function> Env<'a, F> {
 
             // Include outgoing blockparams in the initial live set.
             if self.func.is_branch(insns.last()) {
-                for &param in self.func.branch_blockparams(block, insns.last()) {
+                for &param in self.func.branch_blockparams(block) {
                     live.set(param.vreg(), true);
                     self.observe_vreg_class(param);
                 }
@@ -399,7 +399,7 @@ impl<'a, F: Function> Env<'a, F> {
             if self.func.is_branch(insns.last()) {
                 let succ = *self.func.block_succs(block).first().unwrap();
                 let blockparams_in = self.func.block_params(succ);
-                let blockparams_out = self.func.branch_blockparams(block, insns.last());
+                let blockparams_out = self.func.branch_blockparams(block);
                 for (&blockparam_in, &blockparam_out) in blockparams_in.iter().zip(blockparams_out)
                 {
                     let blockparam_out = VRegIndex::new(blockparam_out.vreg());

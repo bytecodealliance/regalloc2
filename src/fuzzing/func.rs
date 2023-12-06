@@ -99,7 +99,7 @@ impl Function for Func {
         self.insts[insn.index()].op == InstOpcode::Branch
     }
 
-    fn branch_blockparams(&self, block: Block, _: Inst) -> &[VReg] {
+    fn branch_blockparams(&self, block: Block) -> &[VReg] {
         &self.block_params_out[block.index()][..]
     }
 

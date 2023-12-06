@@ -1047,11 +1047,11 @@ pub trait Function {
     /// branch.
     fn is_branch(&self, insn: Inst) -> bool;
 
-    /// If `insn` is a branch at the end of `block`, returns the
+    /// If `block` ends with a branch instruction, returns the
     /// outgoing blockparam arguments. Branch arguments are only
     /// allowed on blocks with a single successor. The number of
     /// arguments must match the number incoming blockparams.
-    fn branch_blockparams(&self, block: Block, insn: Inst) -> &[VReg];
+    fn branch_blockparams(&self, block: Block) -> &[VReg];
 
     /// Determine whether an instruction requires all reference-typed
     /// values to be placed onto the stack. For these instructions,
