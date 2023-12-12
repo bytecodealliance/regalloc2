@@ -822,16 +822,22 @@ impl<'a, F: Function> Checker<'a, F> {
         let mut last_inst = None;
         for block in 0..self.f.num_blocks() {
             let block = Block::new(block);
+            let mut terminated = false;
             for inst_or_edit in out.block_insts_and_edits(self.f, block) {
+                assert!(!terminated);
                 match inst_or_edit {
                     InstOrEdit::Inst(inst) => {
                         debug_assert!(last_inst.is_none() || inst > last_inst.unwrap());
                         last_inst = Some(inst);
                         self.handle_inst(block, inst, &mut safepoint_slots, out);
+                        if self.f.is_branch(inst) || self.f.is_ret(inst) {
+                            terminated = true;
+                        }
                     }
                     InstOrEdit::Edit(edit) => self.handle_edit(block, edit),
                 }
             }
+            assert!(terminated);
         }
     }
 
@@ -851,25 +857,21 @@ impl<'a, F: Function> Checker<'a, F> {
             self.bb_insts.get_mut(&block).unwrap().push(checkinst);
         }
 
-        // Skip normal checks if this is a branch: the blockparams do
-        // not exist in post-regalloc code, and the edge-moves have to
-        // be inserted before the branch rather than after.
-        if !self.f.is_branch(inst) {
-            let operands: Vec<_> = self.f.inst_operands(inst).iter().cloned().collect();
-            let allocs: Vec<_> = out.inst_allocs(inst).iter().cloned().collect();
-            let clobbers: Vec<_> = self.f.inst_clobbers(inst).into_iter().collect();
-            let checkinst = CheckerInst::Op {
-                inst,
-                operands,
-                allocs,
-                clobbers,
-            };
-            trace!("checker: adding inst {:?}", checkinst);
-            self.bb_insts.get_mut(&block).unwrap().push(checkinst);
-        }
-        // Instead, if this is a branch, emit a ParallelMove on the
+        let operands: Vec<_> = self.f.inst_operands(inst).iter().cloned().collect();
+        let allocs: Vec<_> = out.inst_allocs(inst).iter().cloned().collect();
+        let clobbers: Vec<_> = self.f.inst_clobbers(inst).into_iter().collect();
+        let checkinst = CheckerInst::Op {
+            inst,
+            operands,
+            allocs,
+            clobbers,
+        };
+        trace!("checker: adding inst {:?}", checkinst);
+        self.bb_insts.get_mut(&block).unwrap().push(checkinst);
+
+        // If this is a branch, emit a ParallelMove on the
         // outgoing edge as necessary to handle blockparams.
-        else {
+        if self.f.is_branch(inst) {
             let succ = *self.f.block_succs(block).first().unwrap();
             let args = self.f.branch_blockparams(block);
             let params = self.f.block_params(succ);

@@ -572,8 +572,30 @@ impl Func {
                         params.push(*vreg);
                     }
                     builder.set_block_params_out(Block::new(block), params);
+
+                    // If the unique successor only has a single predecessor,
+                    // we can have both blockparams and operands. Turn the last
+                    // instruction into a branch.
+                    let succ_preds = builder.f.block_preds[succ.index()].len()
+                        + if succ == Block(0) { 1 } else { 0 };
+                    if succ_preds == 1 {
+                        if let Some(last) = builder.insts_per_block[block].last_mut() {
+                            last.op = InstOpcode::Branch;
+                        } else {
+                            builder.add_inst(Block::new(block), InstData::branch());
+                        }
+                    } else {
+                        builder.add_inst(Block::new(block), InstData::branch());
+                    }
+                } else {
+                    // If a branch doesn't have blockparams then it is allowed
+                    // have operands. Turn the last instruction into a branch.
+                    if let Some(last) = builder.insts_per_block[block].last_mut() {
+                        last.op = InstOpcode::Branch;
+                    } else {
+                        builder.add_inst(Block::new(block), InstData::branch());
+                    }
                 }
-                builder.add_inst(Block::new(block), InstData::branch());
             } else {
                 builder.add_inst(Block::new(block), InstData::ret());
             }
