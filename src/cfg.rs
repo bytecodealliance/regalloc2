@@ -80,6 +80,7 @@ impl CFGInfo {
                 let preds = f.block_preds(succ).len() + if succ == f.entry_block() { 1 } else { 0 };
                 if preds > 1 {
                     require_no_branch_args = true;
+                    break;
                 }
             }
             if require_no_branch_args {
