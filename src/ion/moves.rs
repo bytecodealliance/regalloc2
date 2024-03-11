@@ -13,8 +13,8 @@
 //! Move resolution.
 
 use super::{
-    Env, InsertMovePrio, InsertedMove, InsertedMoves, LiveRangeFlag, LiveRangeIndex,
-    RedundantMoveEliminator, VRegIndex, SLOT_NONE,
+    Env, InsertMovePrio, InsertedMove, InsertedMoves, LiveRangeFlag, LiveRangeIndex, VRegIndex,
+    SLOT_NONE,
 };
 use crate::ion::data_structures::{
     u64_key, BlockparamIn, BlockparamOut, CodeRange, Edits, FixedRegFixupLevel, LiveRangeKey,
@@ -51,21 +51,25 @@ impl<'a, F: Function> Env<'a, F> {
         inst_allocs[slot] = alloc;
     }
 
-    pub fn get_alloc_for_range(&self, range: LiveRangeIndex) -> Allocation {
+    pub fn get_spill_alloc_for(&self, vreg: VRegIndex) -> Allocation {
+        let slot = self.vregs[vreg].slot;
+        if slot.is_valid() {
+            self.spillslots[slot.index()].alloc
+        } else {
+            Allocation::none()
+        }
+    }
+
+    pub fn get_alloc_for_range(&self, range: LiveRangeIndex) -> Option<Allocation> {
         trace!("get_alloc_for_range: {:?}", range);
         let bundle = self.ranges[range].bundle;
         trace!(" -> bundle: {:?}", bundle);
         let bundledata = &self.bundles[bundle];
         trace!(" -> allocation {:?}", bundledata.allocation);
-        if bundledata.allocation != Allocation::none() {
-            bundledata.allocation
+        if bundledata.allocation.is_some() {
+            Some(bundledata.allocation)
         } else {
-            trace!(" -> spillset {:?}", bundledata.spillset);
-            trace!(
-                " -> spill slot {:?}",
-                self.spillsets[bundledata.spillset].slot
-            );
-            self.spillslots[self.spillsets[bundledata.spillset].slot.index()].alloc
+            None
         }
     }
 
@@ -170,7 +174,7 @@ impl<'a, F: Function> Env<'a, F> {
             env: &Env<'a, F>,
             from: Block,
             to: Block,
-        ) -> (ProgPoint, InsertMovePrio) {
+        ) -> (ProgPoint, ProgPoint, InsertMovePrio) {
             let from_last_insn = env.func.block_insns(from).last();
             let to_first_insn = env.func.block_insns(to).first();
             let from_is_ret = env.func.is_ret(from_last_insn);
@@ -199,10 +203,12 @@ impl<'a, F: Function> Env<'a, F> {
                     // instruction of there is only one successor per
                     // the given CFG information.
                     ProgPoint::before(from_last_insn),
+                    ProgPoint::before(to_first_insn),
                     InsertMovePrio::OutEdgeMoves,
                 )
             } else if to_ins <= 1 {
                 (
+                    ProgPoint::before(to_first_insn),
                     ProgPoint::before(to_first_insn),
                     InsertMovePrio::InEdgeMoves,
                 )
@@ -279,6 +285,8 @@ impl<'a, F: Function> Env<'a, F> {
                 continue;
             }
 
+            let spill_alloc = self.get_spill_alloc_for(vreg);
+
             inter_block_sources.clear();
 
             // For each range in each vreg, insert moves or
@@ -288,7 +296,7 @@ impl<'a, F: Function> Env<'a, F> {
             let mut prev = PrevBuffer::new(blockparam_in_idx);
             for range_idx in 0..self.vregs[vreg].ranges.len() {
                 let entry = self.vregs[vreg].ranges[range_idx];
-                let alloc = self.get_alloc_for_range(entry.index);
+                let alloc = self.get_alloc_for_range(entry.index).unwrap_or(spill_alloc);
                 let range = entry.range;
                 trace!(
                     "apply_allocations: vreg {:?} LR {:?} with range {:?} has alloc {:?}",
@@ -298,6 +306,12 @@ impl<'a, F: Function> Env<'a, F> {
                     alloc,
                 );
                 debug_assert!(alloc != Allocation::none());
+
+                debug_assert!(
+                    spill_alloc.is_none()
+                        || self.spillsets[self.bundles[self.ranges[entry.index].bundle].spillset]
+                            .required
+                );
 
                 if self.annotations_enabled {
                     self.annotate(
@@ -345,12 +359,15 @@ impl<'a, F: Function> Env<'a, F> {
                 // before After (i.e. in the middle of a single
                 // instruction).
                 if let Some(prev) = prev.is_valid() {
-                    let prev_alloc = self.get_alloc_for_range(prev.index);
+                    let prev_alloc = self.get_alloc_for_range(prev.index).unwrap_or(spill_alloc);
                     debug_assert!(prev_alloc != Allocation::none());
 
                     if prev.range.to >= range.from
                         && (prev.range.to > range.from || !self.is_start_of_block(range.from))
                         && !self.ranges[entry.index].has_flag(LiveRangeFlag::StartsAtDef)
+
+                        // Avoid moving into this liverange, if the target is the spill allocation.
+                        && alloc != spill_alloc
                     {
                         trace!(
                             "prev LR {} abuts LR {} in same block; moving {} -> {} for v{}",
@@ -571,6 +588,20 @@ impl<'a, F: Function> Env<'a, F> {
                     if let OperandConstraint::Reuse(_) = operand.constraint() {
                         reuse_input_insts.push(inst);
                     }
+
+                    // Defs need to write to the spill slot when it's present.
+                    if OperandKind::Def == operand.kind() && spill_alloc.is_some() {
+                        let pos = ProgPoint::before(inst.next());
+
+                        trace!("def causing write to spill slot {spill_alloc:?} at {pos:?}");
+                        inserted_moves.push(
+                            pos,
+                            InsertMovePrio::Regular,
+                            alloc,
+                            spill_alloc,
+                            self.vreg(vreg),
+                        );
+                    }
                 }
 
                 // Scan debug-labels on this vreg that overlap with
@@ -637,7 +668,7 @@ impl<'a, F: Function> Env<'a, F> {
                         dest.to
                     );
 
-                    let (pos, prio) = choose_move_location(self, dest.from, dest.to);
+                    let (pos, _, prio) = choose_move_location(self, dest.from, dest.to);
                     inserted_moves.push(pos, prio, src, dest.alloc, vreg);
                 }
             }
@@ -653,8 +684,24 @@ impl<'a, F: Function> Env<'a, F> {
             for dest in block_param_dests {
                 let src = dest.source();
                 let src_alloc = block_param_sources.get(&src).unwrap();
-                let (pos, prio) = choose_move_location(self, dest.from_block, dest.to_block);
-                inserted_moves.push(pos, prio, *src_alloc, dest.alloc, self.vreg(dest.to_vreg));
+                let (pos, spill_pos, prio) =
+                    choose_move_location(self, dest.from_block, dest.to_block);
+                let vreg = self.vreg(dest.to_vreg);
+                inserted_moves.push(pos, prio, *src_alloc, dest.alloc, vreg);
+
+                // Make sure to populate the spill slot in the `to` block. This should always be a
+                // `Regular` priority move, as it needs to happen after the `InEdgeMoves` move that
+                // defines it.
+                let spill_alloc = self.get_spill_alloc_for(dest.to_vreg);
+                if spill_alloc.is_some() {
+                    inserted_moves.push(
+                        spill_pos,
+                        InsertMovePrio::Regular,
+                        dest.alloc,
+                        spill_alloc,
+                        vreg,
+                    );
+                }
             }
         }
 
@@ -780,65 +827,6 @@ impl<'a, F: Function> Env<'a, F> {
             .moves
             .sort_unstable_by_key(|m| m.pos_prio.key());
 
-        // Redundant-move elimination state tracker.
-        let mut redundant_moves = RedundantMoveEliminator::default();
-
-        fn redundant_move_process_side_effects<'a, F: Function>(
-            this: &Env<'a, F>,
-            redundant_moves: &mut RedundantMoveEliminator,
-            from: ProgPoint,
-            to: ProgPoint,
-        ) {
-            // If any safepoints in range, clear and return.
-            // Also, if we cross a block boundary, clear and return.
-            if this.cfginfo.insn_block[from.inst().index()]
-                != this.cfginfo.insn_block[to.inst().index()]
-            {
-                redundant_moves.clear();
-                return;
-            }
-            for inst in from.inst().index()..=to.inst().index() {
-                if this.func.requires_refs_on_stack(Inst::new(inst)) {
-                    redundant_moves.clear();
-                    return;
-                }
-            }
-
-            let start_inst = if from.pos() == InstPosition::Before {
-                from.inst()
-            } else {
-                from.inst().next()
-            };
-            let end_inst = if to.pos() == InstPosition::Before {
-                to.inst()
-            } else {
-                to.inst().next()
-            };
-            for inst in start_inst.index()..end_inst.index() {
-                let inst = Inst::new(inst);
-                for (i, op) in this.func.inst_operands(inst).iter().enumerate() {
-                    match op.kind() {
-                        OperandKind::Def => {
-                            let alloc = this.get_alloc(inst, i);
-                            redundant_moves.clear_alloc(alloc);
-                        }
-                        _ => {}
-                    }
-                }
-                for reg in this.func.inst_clobbers(inst) {
-                    redundant_moves.clear_alloc(Allocation::reg(reg));
-                }
-                // The dedicated scratch registers may be clobbered by any
-                // instruction.
-                for reg in this.env.scratch_by_class {
-                    if let Some(reg) = reg {
-                        redundant_moves.clear_alloc(Allocation::reg(reg));
-                    }
-                }
-            }
-        }
-
-        let mut last_pos = ProgPoint::before(Inst::new(0));
         let mut edits = Edits::with_capacity(self.func.num_insts());
 
         while i < inserted_moves.moves.len() {
@@ -848,9 +836,6 @@ impl<'a, F: Function> Env<'a, F> {
                 i += 1;
             }
             let moves = &inserted_moves.moves[start..i];
-
-            redundant_move_process_side_effects(self, &mut redundant_moves, last_pos, pos_prio.pos);
-            last_pos = pos_prio.pos;
 
             // Gather all the moves in each RegClass separately.
             // These cannot interact, so it is safe to have separate
@@ -984,12 +969,7 @@ impl<'a, F: Function> Env<'a, F> {
                     let src = rewrites.get(&src).cloned().unwrap_or(src);
                     let dst = rewrites.get(&dst).cloned().unwrap_or(dst);
                     trace!("  resolved: {} -> {} ({:?})", src, dst, to_vreg);
-                    let action = redundant_moves.process_move(src, dst, to_vreg);
-                    if !action.elide {
-                        edits.add(pos_prio, src, dst);
-                    } else {
-                        trace!("    -> redundant move elided");
-                    }
+                    edits.add(pos_prio, src, dst);
                 }
             }
         }
