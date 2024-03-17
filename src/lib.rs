@@ -240,6 +240,11 @@ impl PRegSet {
         self.bits[0] |= other.bits[0];
         self.bits[1] |= other.bits[1];
     }
+
+    /// Checks whether the `PRegSet` is empty.
+    fn is_empty(self) -> bool {
+        self == Self::empty()
+    }
 }
 
 impl IntoIterator for PRegSet {
@@ -1064,11 +1069,11 @@ pub trait Function {
     /// branch.
     fn is_branch(&self, insn: Inst) -> bool;
 
-    /// If `insn` is a branch at the end of `block`, returns the
-    /// outgoing blockparam arguments for the given successor. The
-    /// number of arguments must match the number incoming blockparams
-    /// for each respective successor block.
-    fn branch_blockparams(&self, block: Block, insn: Inst, succ_idx: usize) -> &[VReg];
+    /// If `block` ends with a branch instruction, returns the
+    /// outgoing blockparam arguments. Branch arguments are only
+    /// allowed on blocks with a single successor. The number of
+    /// arguments must match the number incoming blockparams.
+    fn branch_blockparams(&self, block: Block) -> &[VReg];
 
     /// Determine whether an instruction requires all reference-typed
     /// values to be placed onto the stack. For these instructions,
