@@ -59,6 +59,7 @@ impl<'a, F: Function> Env<'a, F> {
             blockparam_ins: vec![],
             bundles: LiveBundles::with_capacity(n),
             ranges: LiveRanges::with_capacity(4 * n),
+            uses: Vec::with_capacity(8 * n),
             spillsets: SpillSets::with_capacity(n),
             vregs: VRegs::with_capacity(n),
             pregs: vec![],

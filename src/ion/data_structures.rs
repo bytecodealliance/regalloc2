@@ -25,6 +25,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::cmp::Ordering;
 use core::fmt::Debug;
+use core::ops::Range;
 use hashbrown::{HashMap, HashSet};
 use smallvec::{smallvec, SmallVec};
 
@@ -97,7 +98,6 @@ impl core::cmp::Ord for CodeRange {
 define_index!(LiveBundleIndex, LiveBundles, LiveBundle);
 define_index!(LiveRangeIndex, LiveRanges, LiveRange);
 define_index!(SpillSetIndex, SpillSets, SpillSet);
-define_index!(UseIndex);
 define_index!(VRegIndex, VRegs, VRegData);
 define_index!(PRegIndex);
 define_index!(SpillSlotIndex);
@@ -112,7 +112,6 @@ pub struct LiveRangeListEntry {
 }
 
 pub type LiveRangeList = SmallVec<[LiveRangeListEntry; 4]>;
-pub type UseList = SmallVec<[Use; 4]>;
 
 #[derive(Clone, Debug)]
 pub struct LiveRange {
@@ -122,7 +121,7 @@ pub struct LiveRange {
     pub bundle: LiveBundleIndex,
     pub uses_spill_weight_and_flags: u32,
 
-    pub uses: UseList,
+    pub use_range: Range<u32>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -171,6 +170,10 @@ impl LiveRange {
         let weight_bits = (weight.to_f32().to_bits() >> 2) & 0x1fff_ffff;
         self.uses_spill_weight_and_flags =
             (self.uses_spill_weight_and_flags & 0xe000_0000) | weight_bits;
+    }
+    #[inline(always)]
+    pub fn uses(&self) -> Range<usize> {
+        self.use_range.start as usize..self.use_range.end as usize
     }
 }
 
@@ -402,8 +405,7 @@ impl LiveRanges {
             vreg: VRegIndex::invalid(),
             bundle: LiveBundleIndex::invalid(),
             uses_spill_weight_and_flags: 0,
-
-            uses: smallvec![],
+            use_range: 0..0,
         })
     }
 }
@@ -455,6 +457,7 @@ pub struct Env<'a, F: Function> {
     pub blockparam_ins: Vec<BlockparamIn>,
 
     pub ranges: LiveRanges,
+    pub uses: Vec<Use>,
     pub bundles: LiveBundles,
     pub spillsets: SpillSets,
     pub vregs: VRegs,
