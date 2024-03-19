@@ -98,10 +98,60 @@ struct OpInfo {
     vreg: VReg,
 }
 
+#[derive(Debug, Clone)]
+enum MaybeManyAllocation {
+    Single(Allocation),
+    /// Allocation in multiple stack locations
+    /// 
+    /// This is a vector to account for cases where
+    /// multiple basic blocks have a single predecessor and
+    /// the branch arguments passed to them are the same.
+    /// For example, if we have an instruction in some block 1:
+    /// `if v0 < v1 goto 2 v0 v1 else goto 3 v0 v1`,
+    /// blocks 2 and 3 are successors. Each of them will have their own
+    /// stack slots for branch params, so virtual registers v0 and v1
+    /// have to be present in both.
+    Many(Vec<Allocation>),
+}
+
+impl MaybeManyAllocation {
+    fn as_reg(&self) -> Option<PReg> {
+        match self {
+            Self::Single(alloc) => alloc.as_reg(),
+            _ => None
+        }
+    }
+
+    fn kind(&self) -> AllocationKind {
+        match self {
+            Self::Single(alloc) => alloc.kind(),
+            _ => AllocationKind::Stack,
+        }
+    }
+
+    fn reg(preg: PReg) -> Self {
+        Self::Single(Allocation::reg(preg))
+    }
+
+    fn is_stack(&self) -> bool {
+        match self {
+            Self::Single(alloc) => alloc.is_stack(),
+            _ => true
+        }
+    }
+
+    fn as_single(&self) -> Option<Allocation> {
+        match self {
+            Self::Single(alloc) => Some(*alloc),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug)]
 struct LiveRegInfo {
     /// The current allocation.
-    alloc: Allocation,
+    alloc: MaybeManyAllocation,
 }
 
 #[derive(Debug)]
@@ -123,6 +173,9 @@ pub struct Env<'a, F: Function> {
     allocd_stackslots: HashMap<VReg, SpillSlot>,
     /// Offset for the next stack slot allocation.
     next_freestack_offset: usize,
+    /// A mapping from a block to the allocations of its block params
+    /// at the beginning of the block.
+    blockparam_allocs: HashMap<Block, Vec<Allocation>>,
 
     // Output.
     allocs: Vec<Allocation>,
@@ -158,6 +211,7 @@ impl<'a, F: Function> Env<'a, F> {
             allocd_stackslots: HashMap::new(),
             preg_info: HashMap::new(),
             next_freestack_offset: 0,
+            blockparam_allocs: HashMap::with_capacity(func.num_blocks()),
         }
     }
 
@@ -212,7 +266,7 @@ impl<'a, F: Function> Env<'a, F> {
             from: stackloc,
             to: Allocation::reg(preg),
         }));
-        self.livevregs.get_mut(&evicted_vreg).unwrap().alloc = stackloc;
+        self.livevregs.get_mut(&evicted_vreg).unwrap().alloc = MaybeManyAllocation::Single(stackloc);
         preg
     }
 
@@ -241,14 +295,84 @@ impl<'a, F: Function> Env<'a, F> {
         };
         self.lru.poke(preg);
         self.livevregs.insert(operand.vreg(), LiveRegInfo {
-            alloc: Allocation::reg(preg)
+            alloc: MaybeManyAllocation::reg(preg)
         });
         self.preg_info.insert(preg, operand.vreg());
         *self.curralloc_mut(inst, idx) = Allocation::reg(preg);
         preg
     }
 
-    fn alloc_inst(&mut self, inst: Inst) -> Result<(), RegAllocError> {
+    fn alloc_inst(&mut self, block: Block, inst: Inst) -> Result<(), RegAllocError> {
+        if self.func.is_branch(inst) {
+            let succs = self.func.block_succs(block);
+            if succs.len() > 1 {
+                // Mapping from branch args to all the stack slots they need to be in
+                // to account for all successors.
+                let mut alloc_map: HashMap<VReg, Vec<Allocation>> = HashMap::new();
+                for succ_idx in 0..succs.len() {
+                    let branchargs = self.func.branch_blockparams(block, inst, succ_idx);
+                    // Each branch arg will be mapped to multiple stack slots
+                    // for each of the spaces reserved for the block params in each successor.
+                    if let Some(blockparam_allocs) = self.blockparam_allocs.get(&succs[succ_idx]) {
+                        assert_eq!(branchargs.len(), blockparam_allocs.len());
+                        for (i, brancharg) in branchargs.iter().enumerate() {
+                            if let Some(slots) = alloc_map.get_mut(brancharg) {
+                                slots.push(blockparam_allocs[i]);
+                            } else {
+                                let mut allocs = Vec::with_capacity(succs.len());
+                                allocs.push(blockparam_allocs[i]);
+                                alloc_map.insert(*brancharg, allocs);
+                            }
+                        }
+                    } else {
+                        // Branching to a block that has not yet been allocated.
+                        // Can happen with loops.
+                        // Make the allocations for the block params now
+                        let mut blockparam_allocs = Vec::with_capacity(branchargs.len());
+                        for brancharg in branchargs {
+                            let stackloc = self.allocstack(*brancharg);
+                            blockparam_allocs.push(stackloc);
+                            if let Some(slots) = alloc_map.get_mut(brancharg) {
+                                slots.push(stackloc);
+                            } else {
+                                let mut allocs = Vec::with_capacity(succs.len());
+                                allocs.push(stackloc);
+                                alloc_map.insert(*brancharg, allocs);
+                            }
+                        }
+                    }
+                }
+                for (vreg, allocs) in alloc_map.into_iter() {
+                    self.livevregs.insert(vreg, LiveRegInfo {
+                        alloc: MaybeManyAllocation::Many(allocs)
+                    });
+                }
+            } else if succs.len() == 1 {
+                let succ_idx = 0;
+                let branchargs = self.func.branch_blockparams(block, inst, succ_idx);
+                // Block has already been allocated.
+                if let Some(blockparam_allocs) = self.blockparam_allocs.get(&succs[succ_idx]) {
+                    assert_eq!(branchargs.len(), blockparam_allocs.len());
+                    for (i, brancharg) in branchargs.iter().enumerate() {
+                        self.livevregs.insert(*brancharg, LiveRegInfo {
+                            alloc: MaybeManyAllocation::Single(blockparam_allocs[i])
+                        });
+                    }
+                } else {
+                    // Branching to a block that has not yet been allocated.
+                    // Can happen with loops.
+                    // Make the allocations for the block params now
+                    let mut blockparam_allocs = Vec::with_capacity(branchargs.len());
+                    for brancharg in branchargs {
+                        let stackloc = self.allocstack(*brancharg);
+                        blockparam_allocs.push(stackloc);
+                        self.livevregs.insert(*brancharg, LiveRegInfo {
+                            alloc: MaybeManyAllocation::Single(stackloc),
+                        });
+                    }
+                }
+            }
+        }
         let operands = self.func.inst_operands(inst);
         self.init_operands_allocs(operands, inst);
         let mut def_operands = Vec::with_capacity(operands.len());
@@ -293,10 +417,22 @@ impl<'a, F: Function> Env<'a, F> {
             };
             if let Some(prevalloc) = prevalloc {
                 if prevalloc.is_stack() {
-                    self.edits.push((ProgPoint::before(inst), Edit::Move {
-                        from: Allocation::reg(preg),
-                        to: Allocation::stack(prevalloc.as_stack().unwrap()),
-                    }));
+                    match prevalloc {
+                        MaybeManyAllocation::Single(alloc) => self.edits.push((ProgPoint::before(inst), Edit::Move {
+                            from: Allocation::reg(preg),
+                            to: Allocation::stack(alloc.as_stack().unwrap()),
+                        })),
+                        MaybeManyAllocation::Many(allocs) => {
+                            println!("multiple moves here {:?}", allocs);
+                            for alloc in allocs.iter() {
+                                self.edits.push((ProgPoint::before(inst), Edit::Move {
+                                    from: Allocation::reg(preg),
+                                    to: Allocation::stack(alloc.as_stack().unwrap()),
+                                }));
+                            }
+                        }
+                    }
+                    
                 }
             }
         }
@@ -307,17 +443,62 @@ impl<'a, F: Function> Env<'a, F> {
     /// Allocates instructions in reverse order.
     fn alloc_basic_block(&mut self, block: Block) -> Result<(), RegAllocError> {
         for inst in self.func.block_insns(block).iter().rev() {
-            self.alloc_inst(inst)?;
+            self.alloc_inst(block, inst)?;
         }
-        // Reversing the result to conform to the external API
-        self.reverse_results();
+        self.reload_at_begin(block);
+        self.livevregs.clear();
+        for preg in self.preg_info.keys() {
+            self.freepregs[preg.class() as usize].push(*preg);
+        }
+        self.preg_info.clear();
         Ok(())
+        // Now, how do I tell the predecessor blocks that the registers live now
+        // are their branch args.
+    }
+
+    /// Insert instructions to load live regs at the beginning of the block.
+    fn reload_at_begin(&mut self, block: Block) {
+        // All registers that are still live were not defined in this block.
+        // So, they should be block params.
+        println!("{:?} in block {:?}", self.livevregs, block);
+        assert_eq!(self.livevregs.len(), self.func.block_params(block).len());
+        let first_inst = self.func.block_insns(block).first();
+        // The block params have already been allocated during processing of a block
+        // that branches to this one.
+        if let Some(blockparam_allocs) = self.blockparam_allocs.get(&block) {
+            for (vreg, reserved) in self.func.block_params(block).iter().zip(blockparam_allocs.iter()) {
+                self.edits.push((ProgPoint::before(first_inst), Edit::Move {
+                    from: *reserved,
+                    to: self.livevregs[vreg].alloc.as_single().unwrap(),
+                }));
+            }
+        } else {
+            // A mapping from block param index to current allocation to
+            // be used to indicate the current location of block args to predecessors.
+            let mut blockparam_allocs = Vec::with_capacity(self.func.block_params(block).len());
+            for vreg in self.func.block_params(block) {
+                let livereg = self.livevregs.get_mut(vreg).unwrap();
+                let alloc = livereg.alloc.as_single().unwrap();
+                if alloc.is_reg() {
+                    let stackloc = self.allocstack(*vreg);
+                    self.edits.push((ProgPoint::before(first_inst), Edit::Move {
+                        from: stackloc,
+                        to: alloc
+                    }));
+                    blockparam_allocs.push(stackloc);
+                } else {
+                    blockparam_allocs.push(alloc);
+                }
+            }
+            self.blockparam_allocs.insert(block, blockparam_allocs);
+        }
     }
 
     fn reverse_results(&mut self) {
         let mut offset = 0;
         let mut prev_end: u32 = self.allocs.len().try_into().unwrap();
         for i in 0..self.inst_alloc_offsets.len() - 1 {
+            //println!("prevend: {:?} inst_alloc_offsets: {:?}", prev_end, self.inst_alloc_offsets[i]);
             let diff = prev_end as u32 - self.inst_alloc_offsets[i];
             prev_end = self.inst_alloc_offsets[i];
             self.inst_alloc_offsets[i] = offset;
@@ -329,9 +510,11 @@ impl<'a, F: Function> Env<'a, F> {
     }
 
     fn run(&mut self) -> Result<(), RegAllocError> {
-        for blocknum in 0..self.func.num_blocks() {
+        for blocknum in (0..self.func.num_blocks()).rev() {
             self.alloc_basic_block(Block::new(blocknum))?;
         }
+        // Reversing the result to conform to the external API
+        self.reverse_results();
         Ok(())
     }
 }
