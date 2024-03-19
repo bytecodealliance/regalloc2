@@ -46,6 +46,7 @@ pub(crate) mod ion;
 pub mod moves;
 pub(crate) mod postorder;
 pub mod ssa;
+pub(crate) mod fastalloc;
 
 #[macro_use]
 mod index;
@@ -1534,7 +1535,11 @@ pub fn run<F: Function>(
     env: &MachineEnv,
     options: &RegallocOptions,
 ) -> Result<Output, RegAllocError> {
-    ion::run(func, env, options.verbose_log, options.validate_ssa)
+    if options.use_fastalloc {
+        fastalloc::run(func, env, options.verbose_log, options.validate_ssa)
+    } else {
+        ion::run(func, env, options.verbose_log, options.validate_ssa)
+    }
 }
 
 /// Options for allocation.
@@ -1545,4 +1550,7 @@ pub struct RegallocOptions {
 
     /// Run the SSA validator before allocating registers.
     pub validate_ssa: bool,
+
+    /// Run the SSRA algorithm
+    pub use_fastalloc: bool,
 }
