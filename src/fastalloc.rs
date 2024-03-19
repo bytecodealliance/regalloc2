@@ -6,8 +6,6 @@ use crate::{cfg::CFGInfo, RegAllocError, Allocation, ion::Stats};
 use alloc::vec::Vec;
 use hashbrown::{HashMap, HashSet};
 
-use std::println;
-
 /// A least recently used cache organized as a linked list based on a vector
 #[derive(Debug)]
 struct Lru {
@@ -423,7 +421,6 @@ impl<'a, F: Function> Env<'a, F> {
                             to: Allocation::stack(alloc.as_stack().unwrap()),
                         })),
                         MaybeManyAllocation::Many(allocs) => {
-                            println!("multiple moves here {:?}", allocs);
                             for alloc in allocs.iter() {
                                 self.edits.push((ProgPoint::before(inst), Edit::Move {
                                     from: Allocation::reg(preg),
@@ -460,7 +457,6 @@ impl<'a, F: Function> Env<'a, F> {
     fn reload_at_begin(&mut self, block: Block) {
         // All registers that are still live were not defined in this block.
         // So, they should be block params.
-        println!("{:?} in block {:?}", self.livevregs, block);
         assert_eq!(self.livevregs.len(), self.func.block_params(block).len());
         let first_inst = self.func.block_insns(block).first();
         // The block params have already been allocated during processing of a block
@@ -498,7 +494,6 @@ impl<'a, F: Function> Env<'a, F> {
         let mut offset = 0;
         let mut prev_end: u32 = self.allocs.len().try_into().unwrap();
         for i in 0..self.inst_alloc_offsets.len() - 1 {
-            //println!("prevend: {:?} inst_alloc_offsets: {:?}", prev_end, self.inst_alloc_offsets[i]);
             let diff = prev_end as u32 - self.inst_alloc_offsets[i];
             prev_end = self.inst_alloc_offsets[i];
             self.inst_alloc_offsets[i] = offset;
