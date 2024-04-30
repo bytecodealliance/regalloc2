@@ -43,7 +43,7 @@ pub(crate) mod cfg;
 pub(crate) mod domtree;
 pub mod indexset;
 pub(crate) mod ion;
-pub mod moves;
+pub(crate) mod moves;
 pub(crate) mod postorder;
 pub mod ssa;
 
