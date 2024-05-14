@@ -262,13 +262,26 @@ impl Iterator for PRegSet {
             None
         }
     }
-}
 
-impl ExactSizeIterator for PRegSet {
-    fn len(&self) -> usize {
-        (self.bits[0].count_ones() + self.bits[1].count_ones()) as usize
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let len = (self.bits[0].count_ones() + self.bits[1].count_ones()) as usize;
+        (len, Some(len))
+    }
+
+    fn last(self) -> Option<PReg> {
+        if self.bits[1] != 0 {
+            let index = 127 - self.bits[1].leading_zeros();
+            Some(PReg::from_index(index as usize + 128))
+        } else if self.bits[0] != 0 {
+            let index = self.bits[0].leading_zeros();
+            Some(PReg::from_index(index as usize))
+        } else {
+            None
+        }
     }
 }
+
+impl ExactSizeIterator for PRegSet {}
 
 impl From<&MachineEnv> for PRegSet {
     fn from(env: &MachineEnv) -> Self {
@@ -1552,4 +1565,16 @@ pub struct RegallocOptions {
 
     /// Run the SSA validator before allocating registers.
     pub validate_ssa: bool,
+}
+
+#[cfg(test)]
+mod test {
+    use super::PRegSet;
+
+    #[test]
+    fn test_set_bits_iter() {
+        let registers = PRegSet { bits: [112, 131] }.into_iter();
+        let last = registers.last().unwrap().bits;
+        assert_eq!(last, 135);
+    }
 }

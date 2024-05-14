@@ -114,9 +114,8 @@ impl<'a, F: Function> Env<'a, F> {
         }
         for class in 0..self.preferred_victim_by_class.len() {
             self.preferred_victim_by_class[class] = self.env.non_preferred_regs_by_class[class]
-                .into_iter()
                 .last()
-                .or(self.env.preferred_regs_by_class[class].into_iter().last())
+                .or(self.env.preferred_regs_by_class[class].last())
                 // .cloned()
                 .unwrap_or(PReg::invalid());
         }
