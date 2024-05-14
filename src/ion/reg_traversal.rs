@@ -1,5 +1,5 @@
 use crate::{MachineEnv, PReg, RegClass};
-
+use alloc::vec::Vec;
 /// This iterator represents a traversal through all allocatable
 /// registers of a given class, in a certain order designed to
 /// minimize allocation contention.
@@ -53,13 +53,13 @@ impl<'a> RegTraversalIter<'a> {
         }
         let hints = [hint_reg, hint2_reg];
         let class = class as u8 as usize;
-        let offset_pref = if env.preferred_regs_by_class[class].len() > 0 {
-            offset % env.preferred_regs_by_class[class].len()
+        let offset_pref = if env.preferred_regs_by_class[class].n_regs() > 0 {
+            offset % env.preferred_regs_by_class[class].n_regs()
         } else {
             0
         };
-        let offset_non_pref = if env.non_preferred_regs_by_class[class].len() > 0 {
-            offset % env.non_preferred_regs_by_class[class].len()
+        let offset_non_pref = if env.non_preferred_regs_by_class[class].n_regs() > 0 {
+            offset % env.non_preferred_regs_by_class[class].n_regs()
         } else {
             0
         };

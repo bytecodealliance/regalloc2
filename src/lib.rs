@@ -240,6 +240,11 @@ impl PRegSet {
         self.bits[0] |= other.bits[0];
         self.bits[1] |= other.bits[1];
     }
+
+    /// Get the number of registers in the set
+    pub fn n_regs(&self) -> usize {
+        self.bits[0].count_ones() as usize + self.bits[1].count_ones() as usize
+    }
 }
 
 impl IntoIterator for PRegSet {
@@ -276,15 +281,11 @@ impl From<&MachineEnv> for PRegSet {
         let mut res = Self::default();
 
         for class in env.preferred_regs_by_class.iter() {
-            for preg in class {
-                res.add(*preg)
-            }
+            res.union_from(*class);
         }
 
         for class in env.non_preferred_regs_by_class.iter() {
-            for preg in class {
-                res.add(*preg)
-            }
+            res.union_from(*class);
         }
 
         res
@@ -1380,7 +1381,7 @@ pub struct MachineEnv {
     ///
     /// If an explicit scratch register is provided in `scratch_by_class` then
     /// it must not appear in this list.
-    pub preferred_regs_by_class: [Vec<PReg>; 3],
+    pub preferred_regs_by_class: [PRegSet; 3],
 
     /// Non-preferred physical registers for each class. These are the
     /// registers that will be allocated if a preferred register is
@@ -1389,7 +1390,7 @@ pub struct MachineEnv {
     ///
     /// If an explicit scratch register is provided in `scratch_by_class` then
     /// it must not appear in this list.
-    pub non_preferred_regs_by_class: [Vec<PReg>; 3],
+    pub non_preferred_regs_by_class: [PRegSet; 3],
 
     /// Optional dedicated scratch register per class. This is needed to perform
     /// moves between registers when cyclic move patterns occur. The
