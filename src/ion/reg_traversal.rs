@@ -1,5 +1,4 @@
 use crate::{MachineEnv, PReg, RegClass};
-use alloc::vec::Vec;
 /// This iterator represents a traversal through all allocatable
 /// registers of a given class, in a certain order designed to
 /// minimize allocation contention.
@@ -100,23 +99,30 @@ impl<'a> core::iter::Iterator for RegTraversalIter<'a> {
             self.hint_idx += 1;
             return h;
         }
-        while self.pref_idx < self.env.preferred_regs_by_class[self.class].len() {
-            let arr = &self.env.preferred_regs_by_class[self.class][..];
-            let r = arr[wrap(self.pref_idx + self.offset_pref, arr.len())];
+
+        let n_pref_regs = self.env.preferred_regs_by_class[self.class].n_regs();
+        while self.pref_idx < n_pref_regs {
+            let mut arr = self.env.preferred_regs_by_class[self.class].into_iter();
+            let r = arr.nth(wrap(self.pref_idx + self.offset_pref, n_pref_regs));
             self.pref_idx += 1;
-            if Some(r) == self.hints[0] || Some(r) == self.hints[1] {
+            if r == self.hints[0] || r == self.hints[1] {
                 continue;
             }
-            return Some(r);
+            return r;
         }
-        while self.non_pref_idx < self.env.non_preferred_regs_by_class[self.class].len() {
-            let arr = &self.env.non_preferred_regs_by_class[self.class][..];
-            let r = arr[wrap(self.non_pref_idx + self.offset_non_pref, arr.len())];
+
+        let n_non_pref_regs = self.env.non_preferred_regs_by_class[self.class].n_regs();
+        while self.non_pref_idx < self.env.non_preferred_regs_by_class[self.class].n_regs() {
+            let mut arr = self.env.non_preferred_regs_by_class[self.class].into_iter();
+            let r = arr.nth(wrap(
+                self.non_pref_idx + self.offset_non_pref,
+                n_non_pref_regs,
+            ));
             self.non_pref_idx += 1;
-            if Some(r) == self.hints[0] || Some(r) == self.hints[1] {
+            if r == self.hints[0] || r == self.hints[1] {
                 continue;
             }
-            return Some(r);
+            return r;
         }
         None
     }
