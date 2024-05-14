@@ -241,25 +241,13 @@ impl PRegSet {
         self.bits[1] |= other.bits[1];
     }
 
-    /// Get the number of registers in the set
-    pub fn n_regs(&self) -> usize {
-        self.bits[0].count_ones() as usize + self.bits[1].count_ones() as usize
-    }
+    // Get the number of registers in the set
+    // pub fn n_regs(&self) -> usize {
+    //     (self.bits[0].count_ones() + self.bits[1].count_ones()) as usize
+    // }
 }
 
-impl IntoIterator for PRegSet {
-    type Item = PReg;
-    type IntoIter = PRegSetIter;
-    fn into_iter(self) -> PRegSetIter {
-        PRegSetIter { bits: self.bits }
-    }
-}
-
-pub struct PRegSetIter {
-    bits: [u128; 2],
-}
-
-impl Iterator for PRegSetIter {
+impl Iterator for PRegSet {
     type Item = PReg;
     fn next(&mut self) -> Option<PReg> {
         if self.bits[0] != 0 {
@@ -273,6 +261,12 @@ impl Iterator for PRegSetIter {
         } else {
             None
         }
+    }
+}
+
+impl ExactSizeIterator for PRegSet {
+    fn len(&self) -> usize {
+        (self.bits[0].count_ones() + self.bits[1].count_ones()) as usize
     }
 }
 
