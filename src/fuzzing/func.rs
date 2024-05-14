@@ -645,15 +645,15 @@ pub fn machine_env() -> MachineEnv {
     fn regs(r: core::ops::Range<usize>, c: RegClass) -> Vec<PReg> {
         r.map(|i| PReg::new(i, c)).collect()
     }
-    let preferred_regs_by_class: [Vec<PReg>; 3] = [
-        regs(0..24, RegClass::Int),
-        regs(0..24, RegClass::Float),
-        regs(0..24, RegClass::Vector),
+    let preferred_regs_by_class: [PRegSet; 3] = [
+        regs(0..24, RegClass::Int).into(),
+        regs(0..24, RegClass::Float).into(),
+        regs(0..24, RegClass::Vector).into(),
     ];
-    let non_preferred_regs_by_class: [Vec<PReg>; 3] = [
-        regs(24..32, RegClass::Int),
-        regs(24..32, RegClass::Float),
-        regs(24..32, RegClass::Vector),
+    let non_preferred_regs_by_class: [PRegSet; 3] = [
+        regs(24..32, RegClass::Int).into(),
+        regs(24..32, RegClass::Float).into(),
+        regs(24..32, RegClass::Vector).into(),
     ];
     let scratch_by_class: [Option<PReg>; 3] = [None, None, None];
     let fixed_stack_slots = (32..63)

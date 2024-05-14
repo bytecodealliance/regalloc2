@@ -292,6 +292,18 @@ impl From<&MachineEnv> for PRegSet {
     }
 }
 
+impl From<Vec<PReg>> for PRegSet {
+    fn from(regs: Vec<PReg>) -> Self {
+        let mut res = Self::default();
+
+        for preg in regs {
+            res.add(preg);
+        }
+
+        res
+    }
+}
+
 /// A virtual register. Contains a virtual register number and a
 /// class.
 ///
