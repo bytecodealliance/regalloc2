@@ -228,7 +228,7 @@ impl PRegSet {
     pub fn add(&mut self, reg: PReg) {
         debug_assert!(reg.index() < 256);
         let bit = reg.index() & 63;
-        let index = reg.index() >> 3;
+        let index = reg.index() >> 6;
         self.bits[index] |= 1u64 << bit;
     }
 
@@ -236,7 +236,7 @@ impl PRegSet {
     pub fn remove(&mut self, reg: PReg) {
         debug_assert!(reg.index() < 256);
         let bit = reg.index() & 63;
-        let index = reg.index() >> 3;
+        let index = reg.index() >> 6;
         self.bits[index] &= !(1u64 << bit);
     }
 
