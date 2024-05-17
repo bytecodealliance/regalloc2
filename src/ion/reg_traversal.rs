@@ -52,13 +52,13 @@ impl<'a> RegTraversalIter<'a> {
         }
         let hints = [hint_reg, hint2_reg];
         let class = class as u8 as usize;
-        let offset_pref = if env.preferred_regs_by_class[class].len() > 0 {
-            offset % env.preferred_regs_by_class[class].len()
+        let offset_pref = if env.preferred_regs_by_class.len_class(class) > 0 {
+            offset % env.preferred_regs_by_class.len_class(class)
         } else {
             0
         };
-        let offset_non_pref = if env.non_preferred_regs_by_class[class].len() > 0 {
-            offset % env.non_preferred_regs_by_class[class].len()
+        let offset_non_pref = if env.non_preferred_regs_by_class.len_class(class) > 0 {
+            offset % env.non_preferred_regs_by_class.len_class(class)
         } else {
             0
         };
@@ -100,9 +100,13 @@ impl<'a> core::iter::Iterator for RegTraversalIter<'a> {
             return h;
         }
 
-        let n_pref_regs = self.env.preferred_regs_by_class[self.class].len();
+        let n_pref_regs = self.env.preferred_regs_by_class.len_class(self.class);
         while self.pref_idx < n_pref_regs {
-            let mut arr = self.env.preferred_regs_by_class[self.class].into_iter();
+            let mut arr = self
+                .env
+                .preferred_regs_by_class
+                .to_preg_class(self.class)
+                .into_iter();
             let r = arr.nth(wrap(self.pref_idx + self.offset_pref, n_pref_regs));
             self.pref_idx += 1;
             if r == self.hints[0] || r == self.hints[1] {
@@ -111,9 +115,13 @@ impl<'a> core::iter::Iterator for RegTraversalIter<'a> {
             return r;
         }
 
-        let n_non_pref_regs = self.env.non_preferred_regs_by_class[self.class].len();
-        while self.non_pref_idx < self.env.non_preferred_regs_by_class[self.class].len() {
-            let mut arr = self.env.non_preferred_regs_by_class[self.class].into_iter();
+        let n_non_pref_regs = self.env.non_preferred_regs_by_class.len_class(self.class);
+        while self.non_pref_idx < n_non_pref_regs {
+            let mut arr = self
+                .env
+                .non_preferred_regs_by_class
+                .to_preg_class(self.class)
+                .into_iter();
             let r = arr.nth(wrap(
                 self.non_pref_idx + self.offset_non_pref,
                 n_non_pref_regs,

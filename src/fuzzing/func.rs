@@ -645,16 +645,24 @@ pub fn machine_env() -> MachineEnv {
     fn regs(r: core::ops::Range<usize>, c: RegClass) -> Vec<PReg> {
         r.map(|i| PReg::new(i, c)).collect()
     }
-    let preferred_regs_by_class: [PRegSet; 3] = [
-        regs(0..24, RegClass::Int).into(),
-        regs(0..24, RegClass::Float).into(),
-        regs(0..24, RegClass::Vector).into(),
-    ];
-    let non_preferred_regs_by_class: [PRegSet; 3] = [
-        regs(24..32, RegClass::Int).into(),
-        regs(24..32, RegClass::Float).into(),
-        regs(24..32, RegClass::Vector).into(),
-    ];
+    let int_regs: PRegSet = regs(0..24, RegClass::Int).into();
+    let float_regs: PRegSet = regs(0..24, RegClass::Float).into();
+    let vector_regs: PRegSet = regs(0..24, RegClass::Vector).into();
+
+    let mut preferred_regs_by_class = PRegSet::default();
+    preferred_regs_by_class.union_from(int_regs);
+    preferred_regs_by_class.union_from(float_regs);
+    preferred_regs_by_class.union_from(vector_regs);
+
+    let int_regs: PRegSet = regs(24..32, RegClass::Int).into();
+    let float_regs: PRegSet = regs(24..32, RegClass::Float).into();
+    let vector_regs: PRegSet = regs(24..32, RegClass::Vector).into();
+
+    let mut non_preferred_regs_by_class = PRegSet::default();
+    non_preferred_regs_by_class.union_from(int_regs);
+    non_preferred_regs_by_class.union_from(float_regs);
+    non_preferred_regs_by_class.union_from(vector_regs);
+
     let scratch_by_class: [Option<PReg>; 3] = [None, None, None];
     let fixed_stack_slots = (32..63)
         .flat_map(|i| {

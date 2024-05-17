@@ -248,10 +248,29 @@ impl PRegSet {
         self.bits[2] |= other.bits[2];
     }
 
-    pub fn last_in_class(&self, class: usize) -> PReg {
-        let i_in_class = 63 - self.bits[class].leading_zeros();
-        let i = i_in_class as usize | (class << 6);
-        PReg::from_index(i)
+    pub fn last_in_class(&self, class: usize) -> Option<PReg> {
+        if self.bits[class] == 0 {
+            None
+        } else {
+            // get the index in the class vec
+            let i_in_class = 63 - self.bits[class].leading_zeros();
+            // apply the class mask
+            let i = i_in_class as u8 | ((class as u8) << 6);
+            // return the PReg
+            Some(PReg::from(i))
+        }
+    }
+
+    pub fn len_class(&self, class: usize) -> usize {
+        self.bits[class].count_ones() as usize
+    }
+
+    /// Get a iterator over only one class in the set
+    fn to_preg_class(&self, class: usize) -> PRegClass {
+        PRegClass {
+            class_mask: (class as u8) << 6,
+            regs: self.bits[class],
+        }
     }
 }
 
@@ -287,10 +306,10 @@ impl Iterator for PRegSet {
             let index = 63 - self.bits[2].leading_zeros();
             Some(PReg::from_index(index as usize + 128))
         } else if self.bits[1] != 0 {
-            let index = self.bits[1].leading_zeros();
+            let index = 63 - self.bits[1].leading_zeros();
             Some(PReg::from_index(index as usize + 64))
         } else if self.bits[0] != 0 {
-            let index = self.bits[0].leading_zeros();
+            let index = 63 - self.bits[0].leading_zeros();
             Some(PReg::from_index(index as usize))
         } else {
             None
@@ -304,13 +323,9 @@ impl From<&MachineEnv> for PRegSet {
     fn from(env: &MachineEnv) -> Self {
         let mut res = Self::default();
 
-        for class in env.preferred_regs_by_class.iter() {
-            res.union_from(*class);
-        }
+        res.union_from(env.preferred_regs_by_class);
 
-        for class in env.non_preferred_regs_by_class.iter() {
-            res.union_from(*class);
-        }
+        res.union_from(env.non_preferred_regs_by_class);
 
         res
     }
@@ -327,6 +342,45 @@ impl From<Vec<PReg>> for PRegSet {
         res
     }
 }
+
+/// A compact iterator over a single register class
+struct PRegClass {
+    // bit mask containing class data in UPPER two bits
+    class_mask: u8,
+    // bit packed vec of registers
+    regs: u64,
+}
+
+impl Iterator for PRegClass {
+    type Item = PReg;
+    fn next(&mut self) -> Option<PReg> {
+        if self.regs == 0 {
+            None
+        } else {
+            let index = self.regs.trailing_zeros() as u8;
+            self.regs &= !(1u64 << index);
+            let reg_index = index as u8 | self.class_mask;
+            Some(PReg::from_index(reg_index as usize))
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let len = (self.regs.count_ones()) as usize;
+        (len, Some(len))
+    }
+
+    fn last(self) -> Option<PReg> {
+        if self.regs == 0 {
+            None
+        } else {
+            let index = 63 - self.regs.leading_zeros();
+            let reg_index = index as u8 | self.class_mask;
+            Some(PReg::from_index(reg_index as usize))
+        }
+    }
+}
+
+impl ExactSizeIterator for PRegClass {}
 
 /// A virtual register. Contains a virtual register number and a
 /// class.
@@ -1417,7 +1471,7 @@ pub struct MachineEnv {
     ///
     /// If an explicit scratch register is provided in `scratch_by_class` then
     /// it must not appear in this list.
-    pub preferred_regs_by_class: [PRegSet; 3],
+    pub preferred_regs_by_class: PRegSet,
 
     /// Non-preferred physical registers for each class. These are the
     /// registers that will be allocated if a preferred register is
@@ -1426,7 +1480,7 @@ pub struct MachineEnv {
     ///
     /// If an explicit scratch register is provided in `scratch_by_class` then
     /// it must not appear in this list.
-    pub non_preferred_regs_by_class: [PRegSet; 3],
+    pub non_preferred_regs_by_class: PRegSet,
 
     /// Optional dedicated scratch register per class. This is needed to perform
     /// moves between registers when cyclic move patterns occur. The

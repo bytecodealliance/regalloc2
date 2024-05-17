@@ -113,9 +113,11 @@ impl<'a, F: Function> Env<'a, F> {
             self.pregs[preg.index()].is_stack = true;
         }
         for class in 0..self.preferred_victim_by_class.len() {
-            self.preferred_victim_by_class[class] = self.env.non_preferred_regs_by_class[class]
-                .last()
-                .or(self.env.preferred_regs_by_class[class].last())
+            self.preferred_victim_by_class[class] = self
+                .env
+                .non_preferred_regs_by_class
+                .last_in_class(class)
+                .or(self.env.preferred_regs_by_class.last_in_class(class))
                 // .cloned()
                 .unwrap_or(PReg::invalid());
         }

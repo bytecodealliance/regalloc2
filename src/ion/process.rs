@@ -1221,10 +1221,16 @@ impl<'a, F: Function> Env<'a, F> {
                     let mut min_bundles_assigned = 0;
                     let mut fixed_assigned = 0;
                     let mut total_regs = 0;
-                    for preg in self.env.preferred_regs_by_class[class as u8 as usize]
+                    for preg in self
+                        .env
+                        .preferred_regs_by_class
+                        .to_preg_class(class as u8 as usize)
                         .into_iter()
                         .chain(
-                            self.env.non_preferred_regs_by_class[class as u8 as usize].into_iter(),
+                            self.env
+                                .non_preferred_regs_by_class
+                                .to_preg_class(class as u8 as usize)
+                                .into_iter(),
                         )
                     {
                         trace!(" -> PR {:?}", preg);
