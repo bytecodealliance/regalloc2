@@ -160,6 +160,12 @@ impl PReg {
     }
 }
 
+impl From<u8> for PReg {
+    fn from(raw_index: u8) -> Self {
+        PReg { bits: raw_index }
+    }
+}
+
 impl core::fmt::Debug for PReg {
     fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
         write!(
@@ -191,47 +197,47 @@ impl core::fmt::Display for PReg {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 #[cfg_attr(feature = "enable-serde", derive(Serialize, Deserialize))]
 pub struct PRegSet {
-    bits: [u128; 2],
+    bits: [u64; 3],
 }
 
 impl PRegSet {
     /// Create an empty set.
     pub const fn empty() -> Self {
-        Self { bits: [0; 2] }
+        Self { bits: [0; 3] }
     }
 
     /// Returns whether the given register is part of the set.
     pub fn contains(&self, reg: PReg) -> bool {
         debug_assert!(reg.index() < 256);
-        let bit = reg.index() & 127;
-        let index = reg.index() >> 7;
-        self.bits[index] & (1u128 << bit) != 0
+        let bit = reg.index() & 63;
+        let index = reg.index() >> 6;
+        self.bits[index] & (1u64 << bit) != 0
     }
 
     /// Add a physical register (PReg) to the set, returning the new value.
     pub const fn with(self, reg: PReg) -> Self {
         debug_assert!(reg.index() < 256);
-        let bit = reg.index() & 127;
-        let index = reg.index() >> 7;
+        let bit = reg.index() & 63;
+        let index = reg.index() >> 6;
         let mut out = self;
-        out.bits[index] |= 1u128 << bit;
+        out.bits[index] |= 1u64 << bit;
         out
     }
 
     /// Add a physical register (PReg) to the set.
     pub fn add(&mut self, reg: PReg) {
         debug_assert!(reg.index() < 256);
-        let bit = reg.index() & 127;
-        let index = reg.index() >> 7;
-        self.bits[index] |= 1u128 << bit;
+        let bit = reg.index() & 63;
+        let index = reg.index() >> 3;
+        self.bits[index] |= 1u64 << bit;
     }
 
     /// Remove a physical register (PReg) from the set.
     pub fn remove(&mut self, reg: PReg) {
         debug_assert!(reg.index() < 256);
-        let bit = reg.index() & 127;
-        let index = reg.index() >> 7;
-        self.bits[index] &= !(1u128 << bit);
+        let bit = reg.index() & 63;
+        let index = reg.index() >> 3;
+        self.bits[index] &= !(1u64 << bit);
     }
 
     /// Add all of the registers in one set to this one, mutating in
@@ -239,12 +245,14 @@ impl PRegSet {
     pub fn union_from(&mut self, other: PRegSet) {
         self.bits[0] |= other.bits[0];
         self.bits[1] |= other.bits[1];
+        self.bits[2] |= other.bits[2];
     }
 
-    // Get the number of registers in the set
-    // pub fn n_regs(&self) -> usize {
-    //     (self.bits[0].count_ones() + self.bits[1].count_ones()) as usize
-    // }
+    pub fn last_in_class(&self, class: usize) -> PReg {
+        let i_in_class = 63 - self.bits[class].leading_zeros();
+        let i = i_in_class as usize | (class << 6);
+        PReg::from_index(i)
+    }
 }
 
 impl Iterator for PRegSet {
@@ -252,11 +260,15 @@ impl Iterator for PRegSet {
     fn next(&mut self) -> Option<PReg> {
         if self.bits[0] != 0 {
             let index = self.bits[0].trailing_zeros();
-            self.bits[0] &= !(1u128 << index);
+            self.bits[0] &= !(1u64 << index);
             Some(PReg::from_index(index as usize))
         } else if self.bits[1] != 0 {
             let index = self.bits[1].trailing_zeros();
-            self.bits[1] &= !(1u128 << index);
+            self.bits[1] &= !(1u64 << index);
+            Some(PReg::from_index(index as usize + 64))
+        } else if self.bits[2] != 0 {
+            let index = self.bits[2].trailing_zeros();
+            self.bits[2] &= !(1u64 << index);
             Some(PReg::from_index(index as usize + 128))
         } else {
             None
@@ -264,14 +276,19 @@ impl Iterator for PRegSet {
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let len = (self.bits[0].count_ones() + self.bits[1].count_ones()) as usize;
+        let len = (self.bits[0].count_ones()
+            + self.bits[1].count_ones()
+            + self.bits[2].count_ones()) as usize;
         (len, Some(len))
     }
 
     fn last(self) -> Option<PReg> {
-        if self.bits[1] != 0 {
-            let index = 127 - self.bits[1].leading_zeros();
+        if self.bits[2] != 0 {
+            let index = 63 - self.bits[2].leading_zeros();
             Some(PReg::from_index(index as usize + 128))
+        } else if self.bits[1] != 0 {
+            let index = self.bits[1].leading_zeros();
+            Some(PReg::from_index(index as usize + 64))
         } else if self.bits[0] != 0 {
             let index = self.bits[0].leading_zeros();
             Some(PReg::from_index(index as usize))
@@ -1573,7 +1590,10 @@ mod test {
 
     #[test]
     fn test_set_bits_iter() {
-        let registers = PRegSet { bits: [112, 131] }.into_iter();
+        let registers = PRegSet {
+            bits: [112, 0, 131],
+        }
+        .into_iter();
         let last = registers.last().unwrap().bits;
         assert_eq!(last, 135);
     }
