@@ -85,25 +85,22 @@ impl core::iter::Iterator for RegTraversalIter {
     type Item = PReg;
 
     fn next(&mut self) -> Option<PReg> {
+        // only take the fixed register if it exists
         if self.is_fixed {
             let ret = self.fixed;
             self.fixed = None;
             return ret;
         }
 
-        fn wrap(idx: usize, limit: usize) -> usize {
-            if idx >= limit {
-                idx - limit
-            } else {
-                idx
-            }
-        }
+        // if there are hints, return them first
         if self.hint_idx < 2 && self.hints[self.hint_idx].is_some() {
             let h = self.hints[self.hint_idx];
             self.hint_idx += 1;
             return h;
         }
 
+        // iterate over the preferred register rotated by offset
+        // ignoring hint register
         let n_pref_regs = self.pref_regs_by_class.len();
         while self.pref_idx < n_pref_regs {
             let mut arr = self.pref_regs_by_class.into_iter();
@@ -115,6 +112,8 @@ impl core::iter::Iterator for RegTraversalIter {
             return r;
         }
 
+        // iterate over the nonpreferred register rotated by offset
+        // ignoring hint register
         let n_non_pref_regs = self.non_pref_regs_by_class.len();
         while self.non_pref_idx < n_non_pref_regs {
             let mut arr = self.non_pref_regs_by_class.into_iter();
@@ -129,5 +128,14 @@ impl core::iter::Iterator for RegTraversalIter {
             return r;
         }
         None
+    }
+}
+
+/// Wrapping function to wrap around the index for an iterator
+fn wrap(idx: usize, limit: usize) -> usize {
+    if idx >= limit {
+        idx - limit
+    } else {
+        idx
     }
 }
