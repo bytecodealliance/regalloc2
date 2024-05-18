@@ -346,6 +346,7 @@ impl From<Vec<PReg>> for PRegSet {
 }
 
 /// A compact iterator over a single register class
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct PRegClass {
     // bit mask containing class data in UPPER two bits
     class_mask: u8,
