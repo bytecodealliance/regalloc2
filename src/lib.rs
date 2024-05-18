@@ -389,7 +389,7 @@ impl Iterator for PRegClass {
         } else {
             let n_from_right = self.len() - n;
             // this is the number of trailing zeros for the n-th set bit from the right
-            let index = find_nth(self.regs, n_from_right as u64);
+            let index = find_nth(self.regs, n_from_right as u64) as u8;
             // clear those bits
             self.regs &= u64::MAX << index;
             self.regs &= !(1u64 << index);
@@ -403,7 +403,8 @@ impl Iterator for PRegClass {
 // find the n-th set bit from the RIGHT,
 // using 1 based indexing
 // returns distance from the LEFT
-fn find_nth(v: u64, mut r: u64) -> u64 {
+// saturates on 0 if the bit requested exceeds the set amount
+fn find_nth(v: u64, mut r: u64) -> u8 {
     const C: u64 = 0b00000000_11111111_00000000_11111111_00000000_11111111_00000000_11111111; // 0x00FF00FF
     const D: u64 = 0b00001111_00001111_00001111_00001111_00001111_00001111_00001111_00001111; // 0xF0F0F0F0
     const E: u64 = 0b00110011_00110011_00110011_00110011_00110011_00110011_00110011_00110011; // 0x33333333
@@ -417,28 +418,28 @@ fn find_nth(v: u64, mut r: u64) -> u64 {
     let mut t = (d >> 32) + (d >> 48);
     let mut s = 64;
     // if (r > t) {s -= 32; r -= t;}
-    s -= ((t - r) & 256) >> 3;
-    r -= t & ((t - r) >> 8);
+    s -= ((t.wrapping_sub(r)) & 256) >> 3;
+    r -= t & ((t.wrapping_sub(r)) >> 8);
     t = (d >> (s - 16)) & 0xff;
     // if (r > t) {s -= 16; r -= t;}
-    s -= ((t - r) & 256) >> 4;
-    r -= t & ((t - r) >> 8);
-    t = (c >> (s - 8)) & 0xf;
+    s -= ((t.wrapping_sub(r)) & 256) >> 4;
+    r -= t & ((t.wrapping_sub(r)) >> 8);
+    t = (c >> (s.wrapping_sub(8))) & 0xf;
     // if (r > t) {s -= 8; r -= t;}
-    s -= ((t - r) & 256) >> 5;
-    r -= t & ((t - r) >> 8);
-    t = (b >> (s - 4)) & 0x7;
+    s -= ((t.wrapping_sub(r)) & 256) >> 5;
+    r -= t & ((t.wrapping_sub(r)) >> 8);
+    t = (b >> (s.wrapping_sub(4))) & 0x7;
     // if (r > t) {s -= 4; r -= t;}
-    s -= ((t - r) & 256) >> 6;
-    r -= t & ((t - r) >> 8);
-    t = (a >> (s - 2)) & 0x3;
+    s -= ((t.wrapping_sub(r)) & 256) >> 6;
+    r -= t & ((t.wrapping_sub(r)) >> 8);
+    t = (a >> (s.wrapping_sub(2))) & 0x3;
     // if (r > t) {s -= 2; r -= t;}
-    s -= ((t - r) & 256) >> 7;
-    r -= t & ((t - r) >> 8);
-    t = (v >> (s - 1)) & 0x1;
+    s -= ((t.wrapping_sub(r)) & 256) >> 7;
+    r -= t & ((t.wrapping_sub(r)) >> 8);
+    t = (v >> (s.wrapping_sub(1))) & 0x1;
     // if (r > t) s--;
-    s -= ((t - r) & 256) >> 8;
-    s - 1
+    s -= ((t.wrapping_sub(r)) & 256) >> 8;
+    (s as u8).wrapping_sub(1)
 }
 
 impl ExactSizeIterator for PRegClass {}
