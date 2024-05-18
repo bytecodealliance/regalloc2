@@ -1,4 +1,4 @@
-use crate::{MachineEnv, PReg, RegClass};
+use crate::{MachineEnv, PReg, PRegSet, RegClass};
 /// This iterator represents a traversal through all allocatable
 /// registers of a given class, in a certain order designed to
 /// minimize allocation contention.
@@ -13,8 +13,9 @@ use crate::{MachineEnv, PReg, RegClass};
 ///   usage, these consist of caller-save and callee-save registers
 ///   respectively, to minimize clobber-saves; but they need not.)
 
-pub struct RegTraversalIter<'a> {
-    env: &'a MachineEnv,
+pub struct RegTraversalIter {
+    pref_regs_by_class: PRegSet,
+    non_pref_regs_by_class: PRegSet,
     class: usize,
     hints: [Option<PReg>; 2],
     hint_idx: usize,
@@ -26,9 +27,9 @@ pub struct RegTraversalIter<'a> {
     fixed: Option<PReg>,
 }
 
-impl<'a> RegTraversalIter<'a> {
+impl RegTraversalIter {
     pub fn new(
-        env: &'a MachineEnv,
+        env: &MachineEnv,
         class: RegClass,
         hint_reg: PReg,
         hint2_reg: PReg,
@@ -63,7 +64,8 @@ impl<'a> RegTraversalIter<'a> {
             0
         };
         Self {
-            env,
+            pref_regs_by_class: env.preferred_regs_by_class,
+            non_pref_regs_by_class: env.non_preferred_regs_by_class,
             class,
             hints,
             hint_idx: 0,
@@ -77,7 +79,7 @@ impl<'a> RegTraversalIter<'a> {
     }
 }
 
-impl<'a> core::iter::Iterator for RegTraversalIter<'a> {
+impl core::iter::Iterator for RegTraversalIter {
     type Item = PReg;
 
     fn next(&mut self) -> Option<PReg> {
@@ -100,11 +102,10 @@ impl<'a> core::iter::Iterator for RegTraversalIter<'a> {
             return h;
         }
 
-        let n_pref_regs = self.env.preferred_regs_by_class.len_class(self.class);
+        let n_pref_regs = self.pref_regs_by_class.len_class(self.class);
         while self.pref_idx < n_pref_regs {
             let mut arr = self
-                .env
-                .preferred_regs_by_class
+                .pref_regs_by_class
                 .to_preg_class(self.class)
                 .into_iter();
             let r = arr.nth(wrap(self.pref_idx + self.offset_pref, n_pref_regs));
@@ -115,11 +116,10 @@ impl<'a> core::iter::Iterator for RegTraversalIter<'a> {
             return r;
         }
 
-        let n_non_pref_regs = self.env.non_preferred_regs_by_class.len_class(self.class);
+        let n_non_pref_regs = self.non_pref_regs_by_class.len_class(self.class);
         while self.non_pref_idx < n_non_pref_regs {
             let mut arr = self
-                .env
-                .non_preferred_regs_by_class
+                .non_pref_regs_by_class
                 .to_preg_class(self.class)
                 .into_iter();
             let r = arr.nth(wrap(
