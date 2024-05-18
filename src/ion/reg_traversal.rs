@@ -16,7 +16,6 @@ use crate::{MachineEnv, PReg, PRegClass, RegClass};
 pub struct RegTraversalIter {
     pref_regs_by_class: PRegClass,
     non_pref_regs_by_class: PRegClass,
-    class: usize,
     hints: [Option<PReg>; 2],
     hint_idx: usize,
     pref_idx: usize,
@@ -53,20 +52,23 @@ impl RegTraversalIter {
         }
         let hints = [hint_reg, hint2_reg];
         let class = class as u8 as usize;
-        let offset_pref = if env.preferred_regs_by_class.len_class(class) > 0 {
-            offset % env.preferred_regs_by_class.len_class(class)
+
+        let pref_regs_by_class = env.preferred_regs_by_class.to_preg_class(class);
+        let non_pref_regs_by_class = env.non_preferred_regs_by_class.to_preg_class(class);
+
+        let offset_pref = if pref_regs_by_class.len() > 0 {
+            offset % pref_regs_by_class.len()
         } else {
             0
         };
-        let offset_non_pref = if env.non_preferred_regs_by_class.len_class(class) > 0 {
-            offset % env.non_preferred_regs_by_class.len_class(class)
+        let offset_non_pref = if non_pref_regs_by_class.len() > 0 {
+            offset % non_pref_regs_by_class.len()
         } else {
             0
         };
         Self {
-            pref_regs_by_class: env.preferred_regs_by_class.to_preg_class(class),
-            non_pref_regs_by_class: env.non_preferred_regs_by_class.to_preg_class(class),
-            class,
+            pref_regs_by_class,
+            non_pref_regs_by_class,
             hints,
             hint_idx: 0,
             pref_idx: 0,
