@@ -248,6 +248,7 @@ impl PRegSet {
         self.bits[2] |= other.bits[2];
     }
 
+    /// Get the last register in a specific register class
     pub fn last_in_class(&self, class: usize) -> Option<PReg> {
         if self.bits[class] == 0 {
             None
@@ -261,6 +262,7 @@ impl PRegSet {
         }
     }
 
+    /// Get the number of registers in a specific register class
     pub fn len_class(&self, class: usize) -> usize {
         self.bits[class].count_ones() as usize
     }
@@ -278,17 +280,17 @@ impl Iterator for PRegSet {
     type Item = PReg;
     fn next(&mut self) -> Option<PReg> {
         if self.bits[0] != 0 {
-            let index = self.bits[0].trailing_zeros();
+            let index = self.bits[0].trailing_zeros() as u8;
             self.bits[0] &= !(1u64 << index);
-            Some(PReg::from_index(index as usize))
+            Some(PReg::from(index))
         } else if self.bits[1] != 0 {
-            let index = self.bits[1].trailing_zeros();
+            let index = self.bits[1].trailing_zeros() as u8;
             self.bits[1] &= !(1u64 << index);
-            Some(PReg::from_index(index as usize + 64))
+            Some(PReg::from(index + 64))
         } else if self.bits[2] != 0 {
-            let index = self.bits[2].trailing_zeros();
+            let index = self.bits[2].trailing_zeros() as u8;
             self.bits[2] &= !(1u64 << index);
-            Some(PReg::from_index(index as usize + 128))
+            Some(PReg::from(index + 128))
         } else {
             None
         }
@@ -303,14 +305,14 @@ impl Iterator for PRegSet {
 
     fn last(self) -> Option<PReg> {
         if self.bits[2] != 0 {
-            let index = 63 - self.bits[2].leading_zeros();
-            Some(PReg::from_index(index as usize + 128))
+            let index = 63 - self.bits[2].leading_zeros() as u8;
+            Some(PReg::from(index + 128))
         } else if self.bits[1] != 0 {
-            let index = 63 - self.bits[1].leading_zeros();
-            Some(PReg::from_index(index as usize + 64))
+            let index = 63 - self.bits[1].leading_zeros() as u8;
+            Some(PReg::from(index + 64))
         } else if self.bits[0] != 0 {
-            let index = 63 - self.bits[0].leading_zeros();
-            Some(PReg::from_index(index as usize))
+            let index = 63 - self.bits[0].leading_zeros() as u8;
+            Some(PReg::from(index))
         } else {
             None
         }
@@ -360,7 +362,7 @@ impl Iterator for PRegClass {
             let index = self.regs.trailing_zeros() as u8;
             self.regs &= !(1u64 << index);
             let reg_index = index as u8 | self.class_mask;
-            Some(PReg::from_index(reg_index as usize))
+            Some(PReg::from(reg_index))
         }
     }
 
@@ -375,7 +377,7 @@ impl Iterator for PRegClass {
         } else {
             let index = 63 - self.regs.leading_zeros();
             let reg_index = index as u8 | self.class_mask;
-            Some(PReg::from_index(reg_index as usize))
+            Some(PReg::from(reg_index))
         }
     }
 }
