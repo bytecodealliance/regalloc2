@@ -1,4 +1,4 @@
-use crate::{MachineEnv, PReg, PRegClass, RegClass};
+use crate::{find_nth, MachineEnv, PReg, RegClass};
 /// This iterator represents a traversal through all allocatable
 /// registers of a given class, in a certain order designed to
 /// minimize allocation contention.
@@ -14,16 +14,14 @@ use crate::{MachineEnv, PReg, PRegClass, RegClass};
 ///   respectively, to minimize clobber-saves; but they need not.)
 
 pub struct RegTraversalIter {
-    pref_regs_by_class: PRegClass,
-    non_pref_regs_by_class: PRegClass,
-    hints: [Option<PReg>; 2],
-    hint_idx: usize,
-    pref_idx: usize,
-    non_pref_idx: usize,
-    offset_pref: usize,
-    offset_non_pref: usize,
+    pref_regs_first: u64,
+    pref_regs_second: u64,
+    non_pref_regs_first: u64,
+    non_pref_regs_second: u64,
+    hint_regs: u64,
     is_fixed: bool,
     fixed: Option<PReg>,
+    class_mask: u8,
 }
 
 impl RegTraversalIter {
@@ -35,48 +33,69 @@ impl RegTraversalIter {
         offset: usize,
         fixed: Option<PReg>,
     ) -> Self {
-        let mut hint_reg = if hint_reg != PReg::invalid() {
-            Some(hint_reg)
-        } else {
-            None
-        };
-        let mut hint2_reg = if hint2_reg != PReg::invalid() {
-            Some(hint2_reg)
-        } else {
-            None
-        };
+        // get a mask for the hint registers
+        let mut hint_mask = 0u64;
 
-        if hint_reg.is_none() {
-            hint_reg = hint2_reg;
-            hint2_reg = None;
+        if hint_reg != PReg::invalid() {
+            let mask = 1u64 << (hint_reg.bits & 0b0011_1111);
+            hint_mask |= mask;
         }
-        let hints = [hint_reg, hint2_reg];
+
+        if hint2_reg != PReg::invalid() {
+            let mask = 1u64 << (hint2_reg.bits & 0b0011_1111);
+            hint_mask |= mask;
+        }
+
         let class = class as u8 as usize;
 
-        let pref_regs_by_class = env.preferred_regs_by_class.to_preg_class(class);
-        let non_pref_regs_by_class = env.non_preferred_regs_by_class.to_preg_class(class);
+        let pref_regs_by_class = env.preferred_regs_by_class.bits[class];
+        let non_pref_regs_by_class = env.non_preferred_regs_by_class.bits[class];
 
-        let offset_pref = if pref_regs_by_class.len() > 0 {
-            offset % pref_regs_by_class.len()
+        let n_pref_regs = pref_regs_by_class.count_ones() as usize;
+        let n_non_pref_regs = non_pref_regs_by_class.count_ones() as usize;
+
+        let offset_pref = if n_pref_regs > 0 {
+            offset % n_pref_regs
         } else {
             0
         };
-        let offset_non_pref = if non_pref_regs_by_class.len() > 0 {
-            offset % non_pref_regs_by_class.len()
+        let offset_non_pref = if n_non_pref_regs > 0 {
+            offset % n_non_pref_regs
         } else {
             0
         };
+
+        // we want to split the pref registers bit vectors into two sets
+        // with the offset lowest bits in one and the rest in the other
+        let split_num = (n_pref_regs - offset_pref) as u64;
+        let split_pos = find_nth(pref_regs_by_class, split_num);
+        let mask = (1 << split_pos) - 1;
+        let pref_regs_first = pref_regs_by_class & !mask;
+        let pref_regs_second = pref_regs_by_class & mask;
+
+        let split_num = (n_non_pref_regs - offset_non_pref) as u64;
+        let split_pos = find_nth(non_pref_regs_by_class, split_num);
+        let mask = (1 << split_pos) - 1;
+        let non_pref_regs_first = non_pref_regs_by_class & !mask;
+        let non_pref_regs_second = non_pref_regs_by_class & mask;
+
+        // remove the hint registers from the bit vectors
+        let pref_regs_first = pref_regs_first & !hint_mask;
+        let pref_regs_second = pref_regs_second & !hint_mask;
+        let non_pref_regs_first = non_pref_regs_first & !hint_mask;
+        let non_pref_regs_second = non_pref_regs_second & !hint_mask;
+
+        let class_mask = (class as u8) << 6;
+
         Self {
-            pref_regs_by_class,
-            non_pref_regs_by_class,
-            hints,
-            hint_idx: 0,
-            pref_idx: 0,
-            non_pref_idx: 0,
-            offset_pref,
-            offset_non_pref,
+            pref_regs_first,
+            pref_regs_second,
+            non_pref_regs_first,
+            non_pref_regs_second,
+            hint_regs: hint_mask,
             is_fixed: fixed.is_some(),
             fixed,
+            class_mask,
         }
     }
 }
@@ -93,39 +112,43 @@ impl core::iter::Iterator for RegTraversalIter {
         }
 
         // if there are hints, return them first
-        if self.hint_idx < 2 && self.hints[self.hint_idx].is_some() {
-            let h = self.hints[self.hint_idx];
-            self.hint_idx += 1;
-            return h;
+        if self.hint_regs != 0 {
+            let index = self.hint_regs.trailing_zeros() as u8;
+            self.hint_regs &= !(1u64 << index);
+            let reg_index = index as u8 | self.class_mask;
+            return Some(PReg::from(reg_index));
         }
 
         // iterate over the preferred register rotated by offset
-        // ignoring hint register
-        let n_pref_regs = self.pref_regs_by_class.len();
-        while self.pref_idx < n_pref_regs {
-            let mut arr = self.pref_regs_by_class.into_iter();
-            let r = arr.nth(wrap(self.pref_idx + self.offset_pref, n_pref_regs));
-            self.pref_idx += 1;
-            if r == self.hints[0] || r == self.hints[1] {
-                continue;
-            }
-            return r;
+        // iterate over first half
+        if self.pref_regs_first != 0 {
+            let index = self.pref_regs_first.trailing_zeros() as u8;
+            self.pref_regs_first &= !(1u64 << index);
+            let reg_index = index as u8 | self.class_mask;
+            return Some(PReg::from(reg_index));
+        }
+        // iterate over second half
+        if self.pref_regs_second != 0 {
+            let index = self.pref_regs_second.trailing_zeros() as u8;
+            self.pref_regs_second &= !(1u64 << index);
+            let reg_index = index as u8 | self.class_mask;
+            return Some(PReg::from(reg_index));
         }
 
         // iterate over the nonpreferred register rotated by offset
-        // ignoring hint register
-        let n_non_pref_regs = self.non_pref_regs_by_class.len();
-        while self.non_pref_idx < n_non_pref_regs {
-            let mut arr = self.non_pref_regs_by_class.into_iter();
-            let r = arr.nth(wrap(
-                self.non_pref_idx + self.offset_non_pref,
-                n_non_pref_regs,
-            ));
-            self.non_pref_idx += 1;
-            if r == self.hints[0] || r == self.hints[1] {
-                continue;
-            }
-            return r;
+        // iterate over first half
+        if self.non_pref_regs_first != 0 {
+            let index = self.non_pref_regs_first.trailing_zeros() as u8;
+            self.non_pref_regs_first &= !(1u64 << index);
+            let reg_index = index as u8 | self.class_mask;
+            return Some(PReg::from(reg_index));
+        }
+        // iterate over second half
+        if self.non_pref_regs_second != 0 {
+            let index = self.non_pref_regs_second.trailing_zeros() as u8;
+            self.non_pref_regs_second &= !(1u64 << index);
+            let reg_index = index as u8 | self.class_mask;
+            return Some(PReg::from(reg_index));
         }
         None
     }

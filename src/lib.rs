@@ -400,11 +400,11 @@ impl Iterator for PRegClass {
     }
 }
 
-// find the n-th set bit from the RIGHT,
+// find the r-th set bit in v from the RIGHT,
 // using 1 based indexing
 // returns distance from the LEFT
 // saturates on 0 if the bit requested exceeds the set amount
-fn find_nth(v: u64, mut r: u64) -> u8 {
+pub(crate) fn find_nth(v: u64, mut r: u64) -> u8 {
     const C: u64 = 0b00000000_11111111_00000000_11111111_00000000_11111111_00000000_11111111; // 0x00FF00FF
     const D: u64 = 0b00001111_00001111_00001111_00001111_00001111_00001111_00001111_00001111; // 0xF0F0F0F0
     const E: u64 = 0b00110011_00110011_00110011_00110011_00110011_00110011_00110011_00110011; // 0x33333333
