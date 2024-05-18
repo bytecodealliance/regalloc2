@@ -1,4 +1,4 @@
-use crate::{MachineEnv, PReg, PRegSet, RegClass};
+use crate::{MachineEnv, PReg, PRegClass, RegClass};
 /// This iterator represents a traversal through all allocatable
 /// registers of a given class, in a certain order designed to
 /// minimize allocation contention.
@@ -14,8 +14,8 @@ use crate::{MachineEnv, PReg, PRegSet, RegClass};
 ///   respectively, to minimize clobber-saves; but they need not.)
 
 pub struct RegTraversalIter {
-    pref_regs_by_class: PRegSet,
-    non_pref_regs_by_class: PRegSet,
+    pref_regs_by_class: PRegClass,
+    non_pref_regs_by_class: PRegClass,
     class: usize,
     hints: [Option<PReg>; 2],
     hint_idx: usize,
@@ -64,8 +64,8 @@ impl RegTraversalIter {
             0
         };
         Self {
-            pref_regs_by_class: env.preferred_regs_by_class,
-            non_pref_regs_by_class: env.non_preferred_regs_by_class,
+            pref_regs_by_class: env.preferred_regs_by_class.to_preg_class(class),
+            non_pref_regs_by_class: env.non_preferred_regs_by_class.to_preg_class(class),
             class,
             hints,
             hint_idx: 0,
@@ -102,12 +102,9 @@ impl core::iter::Iterator for RegTraversalIter {
             return h;
         }
 
-        let n_pref_regs = self.pref_regs_by_class.len_class(self.class);
+        let n_pref_regs = self.pref_regs_by_class.len();
         while self.pref_idx < n_pref_regs {
-            let mut arr = self
-                .pref_regs_by_class
-                .to_preg_class(self.class)
-                .into_iter();
+            let mut arr = self.pref_regs_by_class.into_iter();
             let r = arr.nth(wrap(self.pref_idx + self.offset_pref, n_pref_regs));
             self.pref_idx += 1;
             if r == self.hints[0] || r == self.hints[1] {
@@ -116,12 +113,9 @@ impl core::iter::Iterator for RegTraversalIter {
             return r;
         }
 
-        let n_non_pref_regs = self.non_pref_regs_by_class.len_class(self.class);
+        let n_non_pref_regs = self.non_pref_regs_by_class.len();
         while self.non_pref_idx < n_non_pref_regs {
-            let mut arr = self
-                .non_pref_regs_by_class
-                .to_preg_class(self.class)
-                .into_iter();
+            let mut arr = self.non_pref_regs_by_class.into_iter();
             let r = arr.nth(wrap(
                 self.non_pref_idx + self.offset_non_pref,
                 n_non_pref_regs,
