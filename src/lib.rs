@@ -160,6 +160,12 @@ impl PReg {
     }
 }
 
+impl From<u8> for PReg {
+    fn from(raw_index: u8) -> Self {
+        PReg { bits: raw_index }
+    }
+}
+
 impl core::fmt::Debug for PReg {
     fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
         write!(
@@ -191,47 +197,47 @@ impl core::fmt::Display for PReg {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 #[cfg_attr(feature = "enable-serde", derive(Serialize, Deserialize))]
 pub struct PRegSet {
-    bits: [u128; 2],
+    bits: [u64; 3],
 }
 
 impl PRegSet {
     /// Create an empty set.
     pub const fn empty() -> Self {
-        Self { bits: [0; 2] }
+        Self { bits: [0; 3] }
     }
 
     /// Returns whether the given register is part of the set.
     pub fn contains(&self, reg: PReg) -> bool {
         debug_assert!(reg.index() < 256);
-        let bit = reg.index() & 127;
-        let index = reg.index() >> 7;
-        self.bits[index] & (1u128 << bit) != 0
+        let bit = reg.index() & 63;
+        let index = reg.index() >> 6;
+        self.bits[index] & (1u64 << bit) != 0
     }
 
     /// Add a physical register (PReg) to the set, returning the new value.
     pub const fn with(self, reg: PReg) -> Self {
         debug_assert!(reg.index() < 256);
-        let bit = reg.index() & 127;
-        let index = reg.index() >> 7;
+        let bit = reg.index() & 63;
+        let index = reg.index() >> 6;
         let mut out = self;
-        out.bits[index] |= 1u128 << bit;
+        out.bits[index] |= 1u64 << bit;
         out
     }
 
     /// Add a physical register (PReg) to the set.
     pub fn add(&mut self, reg: PReg) {
         debug_assert!(reg.index() < 256);
-        let bit = reg.index() & 127;
-        let index = reg.index() >> 7;
-        self.bits[index] |= 1u128 << bit;
+        let bit = reg.index() & 63;
+        let index = reg.index() >> 6;
+        self.bits[index] |= 1u64 << bit;
     }
 
     /// Remove a physical register (PReg) from the set.
     pub fn remove(&mut self, reg: PReg) {
         debug_assert!(reg.index() < 256);
-        let bit = reg.index() & 127;
-        let index = reg.index() >> 7;
-        self.bits[index] &= !(1u128 << bit);
+        let bit = reg.index() & 63;
+        let index = reg.index() >> 6;
+        self.bits[index] &= !(1u64 << bit);
     }
 
     /// Add all of the registers in one set to this one, mutating in
@@ -239,57 +245,204 @@ impl PRegSet {
     pub fn union_from(&mut self, other: PRegSet) {
         self.bits[0] |= other.bits[0];
         self.bits[1] |= other.bits[1];
+        self.bits[2] |= other.bits[2];
+    }
+
+    /// Get the last register in a specific register class
+    pub fn last_in_class(&self, class: usize) -> Option<PReg> {
+        if self.bits[class] == 0 {
+            None
+        } else {
+            // get the index in the class vec
+            let i_in_class = 63 - self.bits[class].leading_zeros();
+            // apply the class mask
+            let i = i_in_class as u8 | ((class as u8) << 6);
+            // return the PReg
+            Some(PReg::from(i))
+        }
+    }
+
+    /// Get the number of registers in a specific register class
+    pub fn len_class(&self, class: usize) -> usize {
+        self.bits[class].count_ones() as usize
+    }
+
+    /// Get a iterator over only one class in the set
+    fn to_preg_class(&self, class: usize) -> PRegClass {
+        PRegClass {
+            class_mask: (class as u8) << 6,
+            regs: self.bits[class],
+        }
     }
 }
 
-impl IntoIterator for PRegSet {
-    type Item = PReg;
-    type IntoIter = PRegSetIter;
-    fn into_iter(self) -> PRegSetIter {
-        PRegSetIter { bits: self.bits }
-    }
-}
-
-pub struct PRegSetIter {
-    bits: [u128; 2],
-}
-
-impl Iterator for PRegSetIter {
+impl Iterator for PRegSet {
     type Item = PReg;
     fn next(&mut self) -> Option<PReg> {
         if self.bits[0] != 0 {
-            let index = self.bits[0].trailing_zeros();
-            self.bits[0] &= !(1u128 << index);
-            Some(PReg::from_index(index as usize))
+            let index = self.bits[0].trailing_zeros() as u8;
+            self.bits[0] &= !(1u64 << index);
+            Some(PReg::from(index))
         } else if self.bits[1] != 0 {
-            let index = self.bits[1].trailing_zeros();
-            self.bits[1] &= !(1u128 << index);
-            Some(PReg::from_index(index as usize + 128))
+            let index = self.bits[1].trailing_zeros() as u8;
+            self.bits[1] &= !(1u64 << index);
+            Some(PReg::from(index + 64))
+        } else if self.bits[2] != 0 {
+            let index = self.bits[2].trailing_zeros() as u8;
+            self.bits[2] &= !(1u64 << index);
+            Some(PReg::from(index + 128))
+        } else {
+            None
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let len = (self.bits[0].count_ones()
+            + self.bits[1].count_ones()
+            + self.bits[2].count_ones()) as usize;
+        (len, Some(len))
+    }
+
+    fn last(self) -> Option<PReg> {
+        if self.bits[2] != 0 {
+            let index = 63 - self.bits[2].leading_zeros() as u8;
+            Some(PReg::from(index + 128))
+        } else if self.bits[1] != 0 {
+            let index = 63 - self.bits[1].leading_zeros() as u8;
+            Some(PReg::from(index + 64))
+        } else if self.bits[0] != 0 {
+            let index = 63 - self.bits[0].leading_zeros() as u8;
+            Some(PReg::from(index))
         } else {
             None
         }
     }
 }
 
+impl ExactSizeIterator for PRegSet {}
+
 impl From<&MachineEnv> for PRegSet {
     fn from(env: &MachineEnv) -> Self {
         let mut res = Self::default();
 
-        for class in env.preferred_regs_by_class.iter() {
-            for preg in class {
-                res.add(*preg)
-            }
-        }
+        res.union_from(env.preferred_regs_by_class);
 
-        for class in env.non_preferred_regs_by_class.iter() {
-            for preg in class {
-                res.add(*preg)
-            }
+        res.union_from(env.non_preferred_regs_by_class);
+
+        res
+    }
+}
+
+impl From<Vec<PReg>> for PRegSet {
+    fn from(regs: Vec<PReg>) -> Self {
+        let mut res = Self::default();
+
+        for preg in regs {
+            res.add(preg);
         }
 
         res
     }
 }
+
+/// A compact iterator over a single register class
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct PRegClass {
+    // bit mask containing class data in UPPER two bits
+    class_mask: u8,
+    // bit packed vec of registers
+    regs: u64,
+}
+
+impl Iterator for PRegClass {
+    type Item = PReg;
+    fn next(&mut self) -> Option<PReg> {
+        if self.regs == 0 {
+            None
+        } else {
+            let index = self.regs.trailing_zeros() as u8;
+            self.regs &= !(1u64 << index);
+            let reg_index = index as u8 | self.class_mask;
+            Some(PReg::from(reg_index))
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let len = (self.regs.count_ones()) as usize;
+        (len, Some(len))
+    }
+
+    fn last(self) -> Option<PReg> {
+        if self.regs == 0 {
+            None
+        } else {
+            let index = 63 - self.regs.leading_zeros();
+            let reg_index = index as u8 | self.class_mask;
+            Some(PReg::from(reg_index))
+        }
+    }
+
+    fn nth(&mut self, n: usize) -> Option<Self::Item> {
+        if n >= self.len() {
+            self.regs = 0;
+            None
+        } else {
+            let n_from_right = self.len() - n;
+            // this is the number of trailing zeros for the n-th set bit from the right
+            let index = find_nth(self.regs, n_from_right as u64) as u8;
+            // clear those bits
+            self.regs &= u64::MAX << index;
+            self.regs &= !(1u64 << index);
+            // calculate the PReg
+            let reg_index = index as u8 | self.class_mask;
+            Some(PReg::from(reg_index))
+        }
+    }
+}
+
+// find the r-th set bit in v from the RIGHT,
+// using 1 based indexing
+// returns distance from the LEFT
+// saturates on 0 if the bit requested exceeds the set amount
+pub(crate) fn find_nth(v: u64, mut r: u64) -> u8 {
+    const C: u64 = 0b00000000_11111111_00000000_11111111_00000000_11111111_00000000_11111111; // 0x00FF00FF
+    const D: u64 = 0b00001111_00001111_00001111_00001111_00001111_00001111_00001111_00001111; // 0xF0F0F0F0
+    const E: u64 = 0b00110011_00110011_00110011_00110011_00110011_00110011_00110011_00110011; // 0x33333333
+    const F: u64 = 0b01010101_01010101_01010101_01010101_01010101_01010101_01010101_01010101; // 0x55555555
+
+    // from https://graphics.stanford.edu/~seander/bithacks.html##SelectPosFromMSBRank: uses 1 based indexing
+    let a = (v & F) + ((v >> 1) & F);
+    let b = (a & E) + ((a >> 2) & E);
+    let c = (b & D) + ((b >> 4) & D);
+    let d = (c & C) + ((c >> 8) & C);
+    let mut t = (d >> 32) + (d >> 48);
+    let mut s = 64;
+    // if (r > t) {s -= 32; r -= t;}
+    s -= ((t.wrapping_sub(r)) & 256) >> 3;
+    r -= t & ((t.wrapping_sub(r)) >> 8);
+    t = (d >> (s - 16)) & 0xff;
+    // if (r > t) {s -= 16; r -= t;}
+    s -= ((t.wrapping_sub(r)) & 256) >> 4;
+    r -= t & ((t.wrapping_sub(r)) >> 8);
+    t = (c >> (s.wrapping_sub(8))) & 0xf;
+    // if (r > t) {s -= 8; r -= t;}
+    s -= ((t.wrapping_sub(r)) & 256) >> 5;
+    r -= t & ((t.wrapping_sub(r)) >> 8);
+    t = (b >> (s.wrapping_sub(4))) & 0x7;
+    // if (r > t) {s -= 4; r -= t;}
+    s -= ((t.wrapping_sub(r)) & 256) >> 6;
+    r -= t & ((t.wrapping_sub(r)) >> 8);
+    t = (a >> (s.wrapping_sub(2))) & 0x3;
+    // if (r > t) {s -= 2; r -= t;}
+    s -= ((t.wrapping_sub(r)) & 256) >> 7;
+    r -= t & ((t.wrapping_sub(r)) >> 8);
+    t = (v >> (s.wrapping_sub(1))) & 0x1;
+    // if (r > t) s--;
+    s -= ((t.wrapping_sub(r)) & 256) >> 8;
+    (s as u8).wrapping_sub(1)
+}
+
+impl ExactSizeIterator for PRegClass {}
 
 /// A virtual register. Contains a virtual register number and a
 /// class.
@@ -1380,7 +1533,7 @@ pub struct MachineEnv {
     ///
     /// If an explicit scratch register is provided in `scratch_by_class` then
     /// it must not appear in this list.
-    pub preferred_regs_by_class: [Vec<PReg>; 3],
+    pub preferred_regs_by_class: PRegSet,
 
     /// Non-preferred physical registers for each class. These are the
     /// registers that will be allocated if a preferred register is
@@ -1389,7 +1542,7 @@ pub struct MachineEnv {
     ///
     /// If an explicit scratch register is provided in `scratch_by_class` then
     /// it must not appear in this list.
-    pub non_preferred_regs_by_class: [Vec<PReg>; 3],
+    pub non_preferred_regs_by_class: PRegSet,
 
     /// Optional dedicated scratch register per class. This is needed to perform
     /// moves between registers when cyclic move patterns occur. The
@@ -1545,4 +1698,19 @@ pub struct RegallocOptions {
 
     /// Run the SSA validator before allocating registers.
     pub validate_ssa: bool,
+}
+
+#[cfg(test)]
+mod test {
+    use super::PRegSet;
+
+    #[test]
+    fn test_set_bits_iter() {
+        let registers = PRegSet {
+            bits: [112, 0, 131],
+        }
+        .into_iter();
+        let last = registers.last().unwrap().bits;
+        assert_eq!(last, 135);
+    }
 }
