@@ -49,6 +49,12 @@ path = "fuzz_targets/ion_checker.rs"
 test = false
 doc = false
 
+[[bin]]
+name = "fastalloc_checker"
+path = "fuzz_targets/fastalloc_checker.rs"
+test = false
+doc = false
+
 # Enable debug assertions and overflow checks when fuzzing
 [profile.release]
 debug = true

@@ -32,6 +32,7 @@ fn main() {
     let options = RegallocOptions {
         verbose_log: true,
         validate_ssa: true,
+        use_fastalloc: true,
     };
     let output = match regalloc2::run(&function, function.machine_env(), &options) {
         Ok(output) => output,
