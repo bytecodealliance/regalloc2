@@ -153,12 +153,3 @@ impl core::iter::Iterator for RegTraversalIter {
         None
     }
 }
-
-/// Wrapping function to wrap around the index for an iterator
-fn wrap(idx: usize, limit: usize) -> usize {
-    if idx >= limit {
-        idx - limit
-    } else {
-        idx
-    }
-}
