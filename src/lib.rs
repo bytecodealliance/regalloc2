@@ -410,7 +410,7 @@ pub(crate) fn find_nth(v: u64, mut r: u64) -> u8 {
     const E: u64 = 0b00110011_00110011_00110011_00110011_00110011_00110011_00110011_00110011; // 0x33333333
     const F: u64 = 0b01010101_01010101_01010101_01010101_01010101_01010101_01010101_01010101; // 0x55555555
 
-    // from https://graphics.stanford.edu/~seander/bithacks.html: uses 1 based indexing
+    // from https://graphics.stanford.edu/~seander/bithacks.html##SelectPosFromMSBRank: uses 1 based indexing
     let a = (v & F) + ((v >> 1) & F);
     let b = (a & E) + ((a >> 2) & E);
     let c = (b & D) + ((b >> 4) & D);
