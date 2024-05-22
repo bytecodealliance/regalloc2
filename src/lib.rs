@@ -183,6 +183,9 @@ impl core::fmt::Display for PReg {
     }
 }
 
+/// A type for internal bit arrays.
+type Bits = u64;
+
 /// A physical register set. Used to represent clobbers
 /// efficiently.
 ///
@@ -191,54 +194,61 @@ impl core::fmt::Display for PReg {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 #[cfg_attr(feature = "enable-serde", derive(Serialize, Deserialize))]
 pub struct PRegSet {
-    bits: [u128; 2],
+    bits: [Bits; Self::LEN],
 }
 
 impl PRegSet {
+    /// The number of bits per element in the internal bit array.
+    const BITS: usize = core::mem::size_of::<Bits>() * 8;
+
+    /// Length of the internal bit array.
+    const LEN: usize = (PReg::NUM_INDEX + Self::BITS - 1) / Self::BITS;
+
     /// Create an empty set.
     pub const fn empty() -> Self {
-        Self { bits: [0; 2] }
+        Self {
+            bits: [0; Self::LEN],
+        }
+    }
+
+    /// Splits the given register index into parts to access the internal bit array.
+    const fn split_index(reg: PReg) -> (usize, usize) {
+        let index = reg.index();
+        (index >> Self::BITS.ilog2(), index & (Self::BITS - 1))
     }
 
     /// Returns whether the given register is part of the set.
     pub fn contains(&self, reg: PReg) -> bool {
-        debug_assert!(reg.index() < 256);
-        let bit = reg.index() & 127;
-        let index = reg.index() >> 7;
-        self.bits[index] & (1u128 << bit) != 0
+        let (index, bit) = Self::split_index(reg);
+        self.bits[index] & (1 << bit) != 0
     }
 
     /// Add a physical register (PReg) to the set, returning the new value.
     pub const fn with(self, reg: PReg) -> Self {
-        debug_assert!(reg.index() < 256);
-        let bit = reg.index() & 127;
-        let index = reg.index() >> 7;
+        let (index, bit) = Self::split_index(reg);
         let mut out = self;
-        out.bits[index] |= 1u128 << bit;
+        out.bits[index] |= 1 << bit;
         out
     }
 
     /// Add a physical register (PReg) to the set.
     pub fn add(&mut self, reg: PReg) {
-        debug_assert!(reg.index() < 256);
-        let bit = reg.index() & 127;
-        let index = reg.index() >> 7;
-        self.bits[index] |= 1u128 << bit;
+        let (index, bit) = Self::split_index(reg);
+        self.bits[index] |= 1 << bit;
     }
 
     /// Remove a physical register (PReg) from the set.
     pub fn remove(&mut self, reg: PReg) {
-        debug_assert!(reg.index() < 256);
-        let bit = reg.index() & 127;
-        let index = reg.index() >> 7;
-        self.bits[index] &= !(1u128 << bit);
+        let (index, bit) = Self::split_index(reg);
+        self.bits[index] &= !(1 << bit);
     }
 
     /// Add all of the registers in one set to this one, mutating in
     /// place.
     pub fn union_from(&mut self, other: PRegSet) {
-        self.bits[0] |= other.bits[0];
-        self.bits[1] |= other.bits[1];
+        for i in 0..self.bits.len() {
+            self.bits[i] |= other.bits[i];
+        }
     }
 }
 
@@ -246,27 +256,30 @@ impl IntoIterator for PRegSet {
     type Item = PReg;
     type IntoIter = PRegSetIter;
     fn into_iter(self) -> PRegSetIter {
-        PRegSetIter { bits: self.bits }
+        PRegSetIter {
+            bits: self.bits,
+            cur: 0,
+        }
     }
 }
 
 pub struct PRegSetIter {
-    bits: [u128; 2],
+    bits: [Bits; PRegSet::LEN],
+    cur: usize,
 }
 
 impl Iterator for PRegSetIter {
     type Item = PReg;
     fn next(&mut self) -> Option<PReg> {
-        if self.bits[0] != 0 {
-            let index = self.bits[0].trailing_zeros();
-            self.bits[0] &= !(1u128 << index);
-            Some(PReg::from_index(index as usize))
-        } else if self.bits[1] != 0 {
-            let index = self.bits[1].trailing_zeros();
-            self.bits[1] &= !(1u128 << index);
-            Some(PReg::from_index(index as usize + 128))
-        } else {
-            None
+        loop {
+            let bits = self.bits.get_mut(self.cur)?;
+            if *bits != 0 {
+                let bit = bits.trailing_zeros();
+                *bits &= !(1 << bit);
+                let index = bit as usize + self.cur * PRegSet::BITS;
+                return Some(PReg::from_index(index));
+            }
+            self.cur += 1;
         }
     }
 }
