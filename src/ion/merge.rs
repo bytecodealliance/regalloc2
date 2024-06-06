@@ -265,7 +265,7 @@ impl<'a, F: Function> Env<'a, F> {
             let mut fixed_def = false;
             let mut stack = false;
             for entry in &self.bundles[bundle].ranges {
-                for u in &self.ranges[entry.index].uses {
+                for u in &self.uses[self.ranges[entry.index].uses()] {
                     if let OperandConstraint::FixedReg(_) = u.operand.constraint() {
                         fixed = true;
                         if u.operand.kind() == OperandKind::Def {

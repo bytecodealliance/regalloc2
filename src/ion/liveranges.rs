@@ -239,7 +239,9 @@ impl<'a, F: Function> Env<'a, F> {
         // because those will be computed during the multi-fixed-reg
         // fixup pass later (after all uses are inserted).
 
-        self.ranges[into].uses.push(u);
+        // We also defer calculating the use range in the uses vector until
+        // that vector is sorted by vreg and position.
+        self.uses.push(u);
 
         // Update stats.
         let range_weight = self.ranges[into].uses_spill_weight() + weight;
@@ -764,15 +766,9 @@ impl<'a, F: Function> Env<'a, F> {
             }
         }
 
-        for range in &mut self.ranges {
-            range.uses.reverse();
-            debug_assert!(range.uses.windows(2).all(|win| win[0].pos <= win[1].pos));
-        }
-
         // Insert safepoint virtual stack uses, if needed.
         for &vreg in self.func.reftype_vregs() {
             let vreg = VRegIndex::new(vreg.vreg());
-            let mut inserted = false;
             let mut safepoint_idx = 0;
             for range_idx in 0..self.vregs[vreg].ranges.len() {
                 let LiveRangeListEntry { range, index } = self.vregs[vreg].ranges[range_idx];
@@ -802,18 +798,33 @@ impl<'a, F: Function> Env<'a, F> {
 
                     self.insert_use_into_liverange(index, Use::new(operand, pos, SLOT_NONE));
                     safepoint_idx += 1;
-
-                    inserted = true;
-                }
-
-                if inserted {
-                    self.ranges[index].uses.sort_unstable_by_key(|u| u.pos);
                 }
 
                 if safepoint_idx >= self.safepoints.len() {
                     break;
                 }
             }
+        }
+
+        // Sort uses by VReg and by position (and by slot to keep the
+        // ordering stable). Then assign ranges of uses to each live range.
+        self.uses
+            .sort_unstable_by_key(|u| (u.operand.vreg(), u.pos, u.slot));
+        for range in &mut self.ranges {
+            let start = self.uses.partition_point(|u| {
+                VRegIndex::new(u.operand.vreg().vreg())
+                    .cmp(&range.vreg)
+                    .then(u.pos.cmp(&range.range.from))
+                    .is_lt()
+            });
+            let end = self.uses.partition_point(|u| {
+                VRegIndex::new(u.operand.vreg().vreg())
+                    .cmp(&range.vreg)
+                    .then(u.pos.cmp(&range.range.to))
+                    .is_lt()
+            });
+            debug_assert!(start <= end);
+            range.use_range = (start as u32)..(end as u32);
         }
 
         self.blockparam_ins.sort_unstable_by_key(|x| x.key());
@@ -843,7 +854,8 @@ impl<'a, F: Function> Env<'a, F> {
                 trace!("multi-fixed-reg cleanup: vreg {:?} range {:?}", vreg, range,);
 
                 // Find groups of uses that occur in at the same program point.
-                for uses in self.ranges[range].uses.linear_group_by_key_mut(|u| u.pos) {
+                for uses in self.uses[self.ranges[range].uses()].linear_group_by_key_mut(|u| u.pos)
+                {
                     if uses.len() < 2 {
                         continue;
                     }

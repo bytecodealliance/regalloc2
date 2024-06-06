@@ -48,7 +48,7 @@ impl<'a, F: Function> Env<'a, F> {
                 r.bundle,
                 r.uses_spill_weight(),
             );
-            for u in &r.uses {
+            for u in &self.uses[r.uses()] {
                 trace!(" * use at {:?} (slot {}): {:?}", u.pos, u.slot, u.operand);
             }
         }
