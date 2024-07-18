@@ -20,7 +20,7 @@ impl Arbitrary<'_> for TestCase {
             func: Func::arbitrary_with_options(
                 u,
                 &Options {
-                    reused_inputs: false,
+                    reused_inputs: true,
                     fixed_regs: false,
                     fixed_nonallocatable: false,
                     clobbers: false,
