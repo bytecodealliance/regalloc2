@@ -505,6 +505,11 @@ impl<'a, F: Function> Env<'a, F> {
     /// Only processes non reuse-input operands
     fn process_operand_allocation(&mut self, inst: Inst, op: Operand, op_idx: usize) {
         debug_assert!(!matches!(op.constraint(), OperandConstraint::Reuse(_)));
+        if let Some(preg) = op.as_fixed_nonallocatable() {
+            self.allocs[(inst.index(), op_idx)] = Allocation::reg(preg);
+            trace!("Allocation for instruction {:?} and operand {:?}: {:?}", inst, op, self.allocs[(inst.index(), op_idx)]);
+            return;
+        }
         self.live_vregs.insert(op.vreg());
         if !self.allocd_within_constraint(op) {
             let prev_alloc = self.vreg_allocs[op.vreg().vreg()];
