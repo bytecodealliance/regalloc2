@@ -25,7 +25,7 @@ impl PartialEq<OperandConstraint> for OperandConstraintKind {
 struct SearchConstraint {
     kind: Option<OperandKind>,
     pos: Option<OperandPos>,
-    must_not_have_constraint: Option<OperandConstraintKind>,
+    must_not_have_constraints: [Option<OperandConstraintKind>; 2],
     must_have_constraint: Option<OperandConstraintKind>,
 }
 
@@ -43,10 +43,12 @@ impl SearchConstraint {
                 return false;
             }
         };
-        match self.must_not_have_constraint {
-            None => (),
-            Some(should_not_be_constraint) => if should_not_be_constraint == op.constraint() {
-                return false;
+        for must_not_have_constraint in self.must_not_have_constraints.iter().cloned() {
+            match must_not_have_constraint {
+                None => (),
+                Some(should_not_be_constraint) => if should_not_be_constraint == op.constraint() {
+                    return false;
+                }
             }
         }
         match self.must_have_constraint {
@@ -191,20 +193,20 @@ impl<'a> Iterator for ByPosOperands<'a> {
     }
 }*/
 
-pub struct NonReuseLateOperands<'a>(Operands<'a>);
+pub struct NonFixedNonReuseLateOperands<'a>(Operands<'a>);
 
-impl<'a> NonReuseLateOperands<'a> {
+impl<'a> NonFixedNonReuseLateOperands<'a> {
     pub fn new(operands: &'a [Operand]) -> Self {
         Self(Operands::new(operands, SearchConstraint {
             pos: Some(OperandPos::Late),
             kind: None,
-            must_not_have_constraint: Some(OperandConstraintKind::Reuse),
+            must_not_have_constraints: [Some(OperandConstraintKind::Reuse), Some(OperandConstraintKind::FixedReg)],
             must_have_constraint: None,
         }))
     }
 }
 
-impl<'a> Iterator for NonReuseLateOperands<'a> {
+impl<'a> Iterator for NonFixedNonReuseLateOperands<'a> {
     type Item = (usize, Operand);
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -212,20 +214,20 @@ impl<'a> Iterator for NonReuseLateOperands<'a> {
     }
 }
 
-pub struct NonReuseEarlyOperands<'a>(Operands<'a>);
+pub struct NonFixedNonReuseEarlyOperands<'a>(Operands<'a>);
 
-impl<'a> NonReuseEarlyOperands<'a> {
+impl<'a> NonFixedNonReuseEarlyOperands<'a> {
     pub fn new(operands: &'a [Operand]) -> Self {
         Self(Operands::new(operands, SearchConstraint {
             pos: Some(OperandPos::Early),
             kind: None,
-            must_not_have_constraint: Some(OperandConstraintKind::Reuse),
+            must_not_have_constraints: [Some(OperandConstraintKind::Reuse), Some(OperandConstraintKind::FixedReg)],
             must_have_constraint: None,
         }))
     }
 }
 
-impl<'a> Iterator for NonReuseEarlyOperands<'a> {
+impl<'a> Iterator for NonFixedNonReuseEarlyOperands<'a> {
     type Item = (usize, Operand);
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -240,7 +242,7 @@ impl<'a> NonReuseLateDefOperands<'a> {
         Self(Operands::new(operands, SearchConstraint {
             kind: Some(OperandKind::Def),
             pos: Some(OperandPos::Late),
-            must_not_have_constraint: Some(OperandConstraintKind::Reuse),
+            must_not_have_constraints: [Some(OperandConstraintKind::Reuse), None],
             must_have_constraint: None,
         }))
     }
@@ -262,7 +264,7 @@ impl<'a> NonReuseEarlyDefOperands<'a> {
             kind: Some(OperandKind::Def),
             pos: Some(OperandPos::Early),
             must_have_constraint: None,
-            must_not_have_constraint: Some(OperandConstraintKind::Reuse),
+            must_not_have_constraints: [Some(OperandConstraintKind::Reuse), None],
         }))
     }
 }
@@ -285,7 +287,7 @@ impl<'a> ReuseOperands<'a> {
             kind: None,
             pos: None,
             must_have_constraint: Some(OperandConstraintKind::Reuse),
-            must_not_have_constraint: None,
+            must_not_have_constraints: [None, None],
         }))
     }
 }
@@ -298,11 +300,74 @@ impl<'a> Iterator for ReuseOperands<'a> {
     }
 }
 
+pub struct FixedLateOperands<'a>(Operands<'a>);
+
+impl<'a> FixedLateOperands<'a> {
+    pub fn new(operands: &'a [Operand]) -> Self {
+        Self(Operands::new(operands, SearchConstraint {
+            kind: None,
+            pos: Some(OperandPos::Late),
+            must_have_constraint: Some(OperandConstraintKind::FixedReg),
+            must_not_have_constraints: [None, None],
+        }))
+    }
+}
+
+impl<'a> Iterator for FixedLateOperands<'a> {
+    type Item = (usize, Operand);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.next()
+    }
+}
+
+pub struct FixedEarlyOperands<'a>(Operands<'a>);
+
+impl<'a> FixedEarlyOperands<'a> {
+    pub fn new(operands: &'a [Operand]) -> Self {
+        Self(Operands::new(operands, SearchConstraint {
+            kind: None,
+            pos: Some(OperandPos::Early),
+            must_have_constraint: Some(OperandConstraintKind::FixedReg),
+            must_not_have_constraints: [None, None],
+        }))
+    }
+}
+
+impl<'a> Iterator for FixedEarlyOperands<'a> {
+    type Item = (usize, Operand);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.next()
+    }
+}
+
+pub struct NonReuseDefOperands<'a>(Operands<'a>);
+
+impl<'a> NonReuseDefOperands<'a> {
+    pub fn new(operands: &'a [Operand]) -> Self {
+        Self(Operands::new(operands, SearchConstraint {
+            kind: Some(OperandKind::Def),
+            pos: None,
+            must_have_constraint: None,
+            must_not_have_constraints: [Some(OperandConstraintKind::Reuse), None],
+        }))
+    }
+}
+
+impl<'a> Iterator for NonReuseDefOperands<'a> {
+    type Item = (usize, Operand);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.next()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::vec::Vec;
     use alloc::vec;
-    use crate::RegClass;
+    use crate::{PReg, RegClass};
     use super::*;
 
     // Using a new function because Operand::new isn't a const function
@@ -362,7 +427,44 @@ mod tests {
         operand(vreg_no, OperandConstraint::Any, OperandKind::Def, OperandPos::Early)
     }
 
-    static OPERANDS: [Operand; 10] = [
+    const fn fixed_late_def_operand(vreg_no: u32) -> Operand {
+        operand(
+            vreg_no,
+            OperandConstraint::FixedReg(PReg::new(1, RegClass::Int)),
+            OperandKind::Def,
+            OperandPos::Late,
+        )
+    }
+
+    const fn fixed_early_def_operand(vreg_no: u32) -> Operand {
+        operand(
+            vreg_no,
+            OperandConstraint::FixedReg(PReg::new(1, RegClass::Int)),
+            OperandKind::Def,
+            OperandPos::Early,
+        )
+    }
+
+
+    const fn fixed_late_use_operand(vreg_no: u32) -> Operand {
+        operand(
+            vreg_no,
+            OperandConstraint::FixedReg(PReg::new(1, RegClass::Int)),
+            OperandKind::Use,
+            OperandPos::Late,
+        )
+    }
+
+    const fn fixed_early_use_operand(vreg_no: u32) -> Operand {
+        operand(
+            vreg_no,
+            OperandConstraint::FixedReg(PReg::new(1, RegClass::Int)),
+            OperandKind::Use,
+            OperandPos::Early,
+        )
+    }
+
+    static OPERANDS: [Operand; 14] = [
         late_reuse_def_operand(0),
         late_def_operand(1),
         early_reuse_def_operand(2),
@@ -373,11 +475,16 @@ mod tests {
         late_reuse_use_operand(7),
         early_def_operand(8),
         early_use_operand(9),
+        
+        fixed_late_def_operand(10),
+        fixed_early_def_operand(11),
+        fixed_late_use_operand(12),
+        fixed_early_use_operand(13),
     ];
 
     #[test]
     fn late() {
-        let late_operands: Vec<Operand> = NonReuseLateOperands::new(&OPERANDS)
+        let late_operands: Vec<Operand> = NonFixedNonReuseLateOperands::new(&OPERANDS)
             .map(|(_, op)| op)
             .collect();
         assert_eq!(late_operands, vec![
@@ -391,12 +498,15 @@ mod tests {
         let late_def_operands: Vec<Operand> = NonReuseLateDefOperands::new(&OPERANDS)
             .map(|(_, op)| op)
             .collect();
-        assert_eq!(late_def_operands, vec![ late_def_operand(1) ]);
+        assert_eq!(late_def_operands, vec![
+            late_def_operand(1),
+            fixed_late_def_operand(10),
+        ]);
     }
 
     #[test]
     fn early() {
-        let early_operands: Vec<Operand> = NonReuseEarlyOperands::new(&OPERANDS)
+        let early_operands: Vec<Operand> = NonFixedNonReuseEarlyOperands::new(&OPERANDS)
             .map(|(_, op)| op)
             .collect();
         assert_eq!(early_operands, vec![
@@ -415,6 +525,7 @@ mod tests {
         assert_eq!(early_def_operands, vec![
             early_def_operand(4),
             early_def_operand(8),
+            fixed_early_def_operand(11),
         ]);
     }
 
@@ -428,6 +539,42 @@ mod tests {
             early_reuse_def_operand(2),
             late_reuse_def_operand(5),
             late_reuse_use_operand(7),
+        ]);
+    }
+
+    #[test]
+    fn fixed_late() {
+        let fixed_late_operands: Vec<Operand> = FixedLateOperands::new(&OPERANDS)
+            .map(|(_, op)| op)
+            .collect();
+        assert_eq!(fixed_late_operands, vec![
+            fixed_late_def_operand(10),
+            fixed_late_use_operand(12),
+        ]);
+    }
+
+    #[test]
+    fn fixed_early() {
+        let fixed_early_operands: Vec<Operand> = FixedEarlyOperands::new(&OPERANDS)
+            .map(|(_, op)| op)
+            .collect();
+        assert_eq!(fixed_early_operands, vec![
+            fixed_early_def_operand(11),
+            fixed_early_use_operand(13),
+        ]);
+    }
+
+    #[test]
+    fn def() {
+        let def_operands: Vec<Operand> = NonReuseDefOperands::new(&OPERANDS)
+            .map(|(_, op)| op)
+            .collect();
+        assert_eq!(def_operands, vec![
+            late_def_operand(1),
+            early_def_operand(4),
+            early_def_operand(8),
+            fixed_late_def_operand(10),
+            fixed_early_def_operand(11),
         ]);
     }
 }

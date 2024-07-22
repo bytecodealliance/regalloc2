@@ -71,6 +71,15 @@ impl Lru {
         self.data[inext].prev = self.data[i].prev;
     }
 
+    /// Sets the node `i` to the last in the list.
+    pub fn append(&mut self, i: usize) {
+        let last_node = self.data[self.head].prev;
+        self.data[last_node].next = i;
+        self.data[self.head].prev = i;
+        self.data[i].prev = last_node;
+        self.data[i].next = self.head;
+    }
+
     /// Insert node `i` before node `j` in the list.
     pub fn insert_before(&mut self, i: usize, j: usize) {
         let prev = self.data[j].prev;

@@ -21,7 +21,7 @@ impl Arbitrary<'_> for TestCase {
                 u,
                 &Options {
                     reused_inputs: true,
-                    fixed_regs: false,
+                    fixed_regs: true,
                     fixed_nonallocatable: false,
                     clobbers: false,
                     reftypes: false,
