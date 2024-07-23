@@ -123,6 +123,10 @@ pub struct Env<'a, F: Function> {
     /// for a reuse operand was reused by a use operand, and make decisions on
     /// whether or not to free the allocation.
     allocs_used_by_use_ops: HashSet<Allocation>,
+    /// Used to check if a clobbered register in the current instruction is an
+    /// allocatable register, to make decisions on whether or not is should be returned to
+    /// the free register list after allocation of the instruction's operands.
+    clobbered_reg_is_allocatable: HashSet<PReg>,
     fixed_stack_slots: Vec<PReg>,
 
     // Output.
@@ -176,6 +180,7 @@ impl<'a, F: Function> Env<'a, F> {
             freed_def_pregs: PartedByRegClass { items: [BTreeSet::new(), BTreeSet::new(), BTreeSet::new()] },
             first_use: HashSet::new(),
             allocs_used_by_use_ops: HashSet::new(),
+            clobbered_reg_is_allocatable: HashSet::new(),
             allocs: Allocs::new(func, env),
             edits: VecDeque::new(),
             num_spillslots: 0,
@@ -329,12 +334,17 @@ impl<'a, F: Function> Env<'a, F> {
         self.add_move_later(inst, self.vreg_allocs[vreg.vreg()], to, vreg.class(), InstPosition::Before, false);
     }
 
-    fn allocd_within_constraint(&self, op: Operand) -> bool {
+    fn allocd_within_constraint(&self, inst: Inst, op: Operand) -> bool {
         let curr_alloc = self.vreg_allocs[op.vreg().vreg()];
-        self.alloc_meets_op_constraint(curr_alloc, op.class(), op.constraint())
+        self.alloc_meets_op_constraint(inst, curr_alloc, op.class(), op.constraint())
     }
     
-    fn alloc_meets_op_constraint(&self, alloc: Allocation, class: RegClass, constraint: OperandConstraint) -> bool {
+    fn alloc_meets_op_constraint(&self, inst: Inst, alloc: Allocation, class: RegClass, constraint: OperandConstraint) -> bool {
+        if let Some(preg) = alloc.as_reg() {
+            if self.func.inst_clobbers(inst).contains(preg) {
+                return false;
+            }
+        }
         match constraint {
             OperandConstraint::Any => alloc.is_some(),
             OperandConstraint::Reg => {
@@ -511,7 +521,7 @@ impl<'a, F: Function> Env<'a, F> {
             return;
         }
         self.live_vregs.insert(op.vreg());
-        if !self.allocd_within_constraint(op) {
+        if !self.allocd_within_constraint(inst, op) {
             let prev_alloc = self.vreg_allocs[op.vreg().vreg()];
             self.alloc_operand(inst, op, op_idx);
             // Need to insert a move to propagate flow from the current
@@ -813,7 +823,7 @@ impl<'a, F: Function> Env<'a, F> {
         // TODO: Ensure that the reuse operand and its reused input have the
         // same register class.
         trace!("Move Reason: Reuse constraints");
-
+        
         let reused_op_first_use = self.first_use.contains(&reused_op.vreg());
         if self.vreg_allocs[op.vreg().vreg()].is_some() {
             let op_prev_alloc = self.vreg_allocs[op.vreg().vreg()];
@@ -1033,29 +1043,6 @@ impl<'a, F: Function> Env<'a, F> {
 
         reset_temp_idx(&mut next_temp_idx);
 
-        /*for (succ_idx, succ) in self.func.block_succs(block).iter().enumerate() {
-            let succ_params = self.func.block_params(*succ);
-
-            // Move from temporaries to post block locations.
-            for vreg in self.func.branch_blockparams(block, inst, succ_idx).iter() {
-                let temp_slot = self.temp_spillslots[vreg.class()][next_temp_idx[vreg.class()]];
-                let temp = Allocation::stack(temp_slot);
-                next_temp_idx[vreg.class()] += 1;
-                if succ_params.contains(vreg) {
-                    // Skip to avoid overwriting the new value for the block param,
-                    // which will be moved into its spillslot from its temporary.
-                    continue;
-                }
-                let prev_alloc = self.vreg_allocs[vreg.vreg()];
-                if prev_alloc.is_some() {
-                    trace!("{:?} which is going to be in {:?} inserting move to {:?}", vreg, temp, prev_alloc);
-                    self.add_move_later(inst, temp, prev_alloc, vreg.class(), InstPosition::Before);
-                } else {
-                    trace!("{:?} prev alloc is none, so no moving here", vreg);
-                }
-            }
-        }*/
-
         for (succ_idx, _) in self.func.block_succs(block).iter().enumerate() {
             for vreg in self.func.branch_blockparams(block, inst, succ_idx).iter() {
                 // All branch arguments should be in their spillslots at the end of the function.
@@ -1069,6 +1056,11 @@ impl<'a, F: Function> Env<'a, F> {
             self.process_branch(block, inst);
         }
         let operands = self.func.inst_operands(inst);
+        for preg in self.func.inst_clobbers(inst) {
+            if self.freepregs[preg.class()].remove(&preg) {
+                self.clobbered_reg_is_allocatable.insert(preg);
+            }
+        }
         for (op_idx, op) in FixedLateOperands::new(operands) {
             self.process_operand_allocation(inst, op, op_idx);
         }
@@ -1093,6 +1085,54 @@ impl<'a, F: Function> Env<'a, F> {
             };
             self.process_reuse_operand_allocation(inst, op, op_idx, operands[reused_idx], reused_idx);
         }
+        for clobbered_preg in self.func.inst_clobbers(inst) {
+            // If the instruction clobbers a register holding a live vreg,
+            // insert edits to save the live reg and restore it
+            // after the instruction.
+            // For example:
+            //
+            // 1. def v2
+            // 2. use v0, use v1 - clobbers p0
+            // 3. use v2 (fixed: p0)
+            //
+            // In the above, v2 is assigned to p0 first. During the processing of inst 2,
+            // p0 is clobbered, so v2 is no longer in it and p0 no longer contains v2 at inst 2.
+            // p0 is allocated to the v2 def operand in inst 1. The flow ends up wrong because of
+            // the clobbering.
+            let vreg = self.vreg_in_preg[clobbered_preg.index()];
+            if vreg != VReg::invalid() {
+                let preg_alloc = Allocation::reg(clobbered_preg);
+                let slot = if self.vreg_spillslots[vreg.vreg()].is_valid() {
+                    self.vreg_spillslots[vreg.vreg()]
+                } else {
+                    self.vreg_spillslots[vreg.vreg()] = self.allocstack(&vreg);
+                    self.vreg_spillslots[vreg.vreg()]
+                };
+                let slot_alloc = Allocation::stack(slot);
+                self.add_move_later(
+                    inst,
+                    preg_alloc,
+                    slot_alloc,
+                    vreg.class(),
+                    InstPosition::Before,
+                    true
+                );
+                self.add_move_later(
+                    inst,
+                    slot_alloc,
+                    preg_alloc,
+                    vreg.class(),
+                    InstPosition::After,
+                    false,
+                );
+            }
+        }
+        for preg in self.func.inst_clobbers(inst) {
+            if self.clobbered_reg_is_allocatable.contains(&preg) {
+                self.freepregs[preg.class()].insert(preg);
+            }
+        }
+        self.clobbered_reg_is_allocatable.clear();
         for i in (0..self.inst_post_edits.len()).rev() {
             let (point, edit, class) = self.inst_post_edits[i].clone();
             self.process_edit(point, edit, class);
@@ -1156,11 +1196,6 @@ impl<'a, F: Function> Env<'a, F> {
                 InstPosition::Before,
                 true
             );
-            /*self.move_before_inst(
-                self.func.block_insns(block).first(),
-                vreg,
-                prev_alloc,
-            );*/
         }
         for i in (0..self.inst_post_edits.len()).rev() {
             let (point, edit, class) = self.inst_post_edits[i].clone();
@@ -1200,7 +1235,6 @@ impl<'a, F: Function> Env<'a, F> {
         for block in (0..self.func.num_blocks()).rev() {
             self.alloc_block(Block::new(block));
         }
-        //self.edits.reverse();
 
         /////////////////////////////////////////////////////////////////////////////////////
         trace!("Done!");
