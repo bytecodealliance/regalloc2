@@ -778,6 +778,20 @@ impl Operand {
         VReg::new(vreg_idx, self.class())
     }
 
+    /// Get the raw 32bit encoding of the [`VReg`] associated with this 
+    /// Operand
+    #[inline(always)]
+    pub fn vreg_raw(self) -> u32 {
+        self.bits & VReg::MAX as u32
+    }
+
+    /// Rename the [`VReg`] associated with this operand by modifying
+    /// the 32bit encoding directly.
+    #[inline(always)]
+    pub fn rename_vreg_raw(&mut self, new_name: u32) {
+        self.bits = (self.bits & (!(VReg::MAX as u32))) | new_name
+    }
+
     /// Get the register class used by this operand.
     #[inline(always)]
     pub fn class(self) -> RegClass {
