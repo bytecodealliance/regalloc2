@@ -788,7 +788,7 @@ impl Operand {
     /// Rename the [`VReg`] associated with this operand by modifying
     /// the 32bit encoding directly.
     #[inline(always)]
-    pub fn rename_vreg_raw(&mut self, new_name: u32) {
+    pub fn set_vreg_raw(&mut self, new_name: u32) {
         self.bits = (self.bits & (!(VReg::MAX as u32))) | new_name
     }
 
