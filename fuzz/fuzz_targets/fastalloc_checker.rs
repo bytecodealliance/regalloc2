@@ -24,7 +24,7 @@ impl Arbitrary<'_> for TestCase {
                     fixed_regs: true,
                     fixed_nonallocatable: true,
                     clobbers: true,
-                    reftypes: false,
+                    reftypes: true,
                 },
             )?,
         })

@@ -1,7 +1,8 @@
 use core::convert::TryInto;
 use core::iter::FromIterator;
 use core::ops::{Index, IndexMut};
-use crate::{Block, Inst, OperandKind, Operand, PReg, RegClass, VReg, SpillSlot, AllocationKind, OperandConstraint, InstPosition};
+use crate::domtree::dominates;
+use crate::{domtree, postorder, AllocationKind, Block, Inst, InstPosition, Operand, OperandConstraint, OperandKind, PReg, RegClass, SpillSlot, VReg};
 use crate::{Function, MachineEnv, ssa::validate_ssa, ProgPoint, Edit, Output};
 use crate::{cfg::CFGInfo, RegAllocError, Allocation, ion::Stats};
 use alloc::collections::{BTreeSet, VecDeque};
@@ -127,11 +128,33 @@ pub struct Env<'a, F: Function> {
     /// allocatable register, to make decisions on whether or not is should be returned to
     /// the free register list after allocation of the instruction's operands.
     clobbered_reg_is_allocatable: HashSet<PReg>,
+    /// All the safepoint instructions encountered during allocation and their blocks.
+    /// When allocation is completed, this contains all the safepoint instructions
+    /// in the function.
+    /// This is used to build the stackmap after allocation is complete.
+    safepoint_insts: Vec<(Block, Inst)>,
+    /// All the liveout vregs encountered during allocation.
+    /// When allocation is completed, this contains all the liveout vregs in
+    /// the function.
+    /// This is used to build the stackmap after allocation is complete.
+    liveout_vregs: HashSet<VReg>,
+    /// When allocation is completed, `liveout_vreg_def_inst[i]` holds the block
+    /// and instruction in which liveout vreg `i` is defined. If vreg `i` is not liveout,
+    /// then the block and instruction will be invalid.
+    /// This is used to build the stackmap after allocation is complete.
+    liveout_vreg_def_inst: Vec<(Block, Inst)>,
+    /// When allocation is completed, this holds all the reftype vregs that
+    /// already have a slot in the stackmap.
+    /// This is used while building the stackmap after allocation is completed,
+    /// to avoid adding duplicate entries for liveout vregs.
+    slot_is_in_stackmap: HashSet<(Inst, VReg)>,
+
     fixed_stack_slots: Vec<PReg>,
 
     // Output.
     allocs: Allocs,
     edits: VecDeque<(ProgPoint, Edit)>,
+    safepoint_slots: Vec<(ProgPoint, Allocation)>,
     num_spillslots: u32,
     stats: Stats,
 }
@@ -181,8 +204,13 @@ impl<'a, F: Function> Env<'a, F> {
             first_use: HashSet::new(),
             allocs_used_by_use_ops: HashSet::new(),
             clobbered_reg_is_allocatable: HashSet::new(),
+            safepoint_insts: Vec::new(),
+            liveout_vregs: HashSet::new(),
+            liveout_vreg_def_inst: vec![(Block::invalid(), Inst::invalid()); func.num_vregs()],
+            slot_is_in_stackmap: HashSet::new(),
             allocs: Allocs::new(func, env),
             edits: VecDeque::new(),
+            safepoint_slots: Vec::new(),
             num_spillslots: 0,
             stats: Stats::default(),
         }
@@ -257,74 +285,6 @@ impl<'a, F: Function> Env<'a, F> {
             }, class));
         }
     }
-
-    /*
-    fn add_move(&mut self, inst: Inst, from: Allocation, to: Allocation, class: RegClass, pos: InstPosition) {
-        if self.is_stack(from) && self.is_stack(to) {
-            let scratch_reg = if self.freepregs[class].is_empty() {
-                self.evict_any_reg(inst, class)
-            } else {
-                // The physical register used as a scratch register here has to be explicitly
-                // removed from the free registers list. This is to avoid scenarios like the
-                // following:
-                // 1. def v0, use v1, use v2
-                // If v2 needs to be moved from a stack slot to some other specific stack slot
-                // for the constraints to be satisified, then some scratch register p0 has to be
-                // used to avoid stack-to-stack moves. If p0 is not a dedicated scratch register,
-                // then the following sequence is possible:
-                // First, p0 is used as a scratch register to move from the stack to whatever stackslot
-                // v2 is supposed to be in and the moves are inserted before the instruction.
-                // Second, v1 is allocated to p0 (thinking p0 is free). But before the instruction,
-                // p0 is overwritten by v2, so v2 will be used instead of v1.
-                //
-                // So, rather than leave the register in the free list, it's removed from this list
-                // and added back after the complete processing of all the operands in the instruction.
-                self.freepregs[class].pop().unwrap()
-            };
-            self.free_after_curr_inst.push(scratch_reg);
-            // Remove the scratch register from the LRU to stop it from
-            // being used as an allocatable register for the current instruction.
-            // It should be added back after processing the current instruction.
-            self.lrus[class].remove(scratch_reg.hw_enc());
-            let scratch_alloc = Allocation::reg(scratch_reg);
-            let mut target_edits = &mut self.edits;
-            if pos == InstPosition::Before {
-                target_edits = &mut self.pre_edits;
-            }
-            // Edits are added in reverse order because the edits
-            // will be reversed when all allocation is completed.
-            trace!("Edit: {:?}", (ProgPoint::new(inst, pos), Edit::Move {
-                from: scratch_alloc,
-                to,
-            }));
-            target_edits.push((ProgPoint::new(inst, pos), Edit::Move {
-                from: scratch_alloc,
-                to,
-            }));
-            trace!("Edit: {:?}", (ProgPoint::new(inst, pos), Edit::Move {
-                from,
-                to: scratch_alloc,
-            }));
-            target_edits.push((ProgPoint::new(inst, pos), Edit::Move {
-                from,
-                to: scratch_alloc,
-            }))
-            
-        } else {
-            let mut target_edits = &mut self.edits;
-            if pos == InstPosition::Before {
-                target_edits = &mut self.pre_edits;
-            }
-            trace!("Edit: {:?}", (ProgPoint::new(inst, pos), Edit::Move {
-                from,
-                to,
-            }));
-            target_edits.push((ProgPoint::new(inst, pos), Edit::Move {
-                from,
-                to,
-            }));
-        }
-    }*/
 
     fn move_after_inst(&mut self, inst: Inst, vreg: VReg, to: Allocation) {
         self.add_move_later(inst, self.vreg_allocs[vreg.vreg()], to, vreg.class(), InstPosition::After, false);
@@ -410,6 +370,7 @@ impl<'a, F: Function> Env<'a, F> {
         }
         self.vreg_allocs[vreg.vreg()] = Allocation::none();
         self.live_vregs.remove(&vreg);
+        trace!("{:?} curr alloc is now {:?}", vreg, self.vreg_allocs[vreg.vreg()]);
     }
     
     /// Allocates a spill slot on the stack for `vreg`
@@ -433,8 +394,12 @@ impl<'a, F: Function> Env<'a, F> {
 
     /// Allocates a physical register for the operand `op`.
     fn alloc_reg_for_operand(&mut self, inst: Inst, op: Operand) {
-        trace!("freepregs: {:?}", self.freepregs[RegClass::Int]);
-        trace!("freed_def_pregs: {:?}", self.freed_def_pregs[RegClass::Int]);
+        trace!("freepregs int: {:?}", self.freepregs[RegClass::Int]);
+        trace!("freepregs vector: {:?}", self.freepregs[RegClass::Vector]);
+        trace!("freepregs float: {:?}", self.freepregs[RegClass::Float]);
+        trace!("freed_def_pregs int: {:?}", self.freed_def_pregs[RegClass::Int]);
+        trace!("freed_def_pregs vector: {:?}", self.freed_def_pregs[RegClass::Vector]);
+        trace!("freed_def_pregs float: {:?}", self.freed_def_pregs[RegClass::Float]);
         trace!("");
         if let Some(freed_def_preg) = self.freed_def_pregs[op.class()].pop_last() {
             // Don't poke the LRU because the freed def register is no
@@ -459,7 +424,7 @@ impl<'a, F: Function> Env<'a, F> {
     }
 
     fn alloc_fixed_reg_for_operand(&mut self, inst: Inst, op: Operand, preg: PReg) {
-        trace!("The fixed preg: {:?}", preg);
+        trace!("The fixed preg: {:?} for operand {:?}", preg, op);
         let mut preg_is_allocatable = false;
         if self.vreg_in_preg[preg.index()] != VReg::invalid() {
             // Something is already in that register. Evict it.
@@ -940,151 +905,7 @@ impl<'a, F: Function> Env<'a, F> {
         }
     }
 
-    /// If instruction `inst` is a branch in `block`,
-    /// this function places branch arguments in the spillslots
-    /// expected by the destination blocks.
-    /// 
-    /// The process used to do this is as follows:
-    /// 
-    /// 1. Move all branch arguments into corresponding temporary spillslots.
-    /// 2. Move values from the temporary spillslots to corresponding block param spillslots.
-    /// 3. Move values from the temporary spillslots to post-block locatioks, if any, for
-    /// non-block-param arguments.
-    /// 
-    /// These temporaries are used because the moves have to be parallel in the case where
-    /// a block parameter of the successor block is a branch argument.
-    fn process_branch(&mut self, block: Block, inst: Inst) {
-        
-        // Used to know which temporary spillslot should be used next.
-        let mut next_temp_idx = PartedByRegClass { items: [0, 0, 0] };
-
-        fn reset_temp_idx(next_temp_idx: &mut PartedByRegClass<usize>) {
-            next_temp_idx[RegClass::Int] = 0;
-            next_temp_idx[RegClass::Float] = 0;
-            next_temp_idx[RegClass::Vector] = 0;
-        }
-
-        // In the case where the block param of a successor is also a branch arg,
-        // the reading of all the block params must be done before the writing.
-        // This is necessary to prevent overwriting the branch arg's value before
-        // placing it in the corresponding branch param spillslot.
-        
-        // NO LONGER BEING INSERTED IN REVERSE.
-        // And because edits are inserted in reverse, the algorithm has to process
-        // the branch args which are not branch params first. This will result in the
-        // output code processing branch args which are params before the others.
-
-        for succ in self.func.block_succs(block).iter() {
-            self.alloc_slots_for_block_params(*succ);
-        }
-
-        for (succ_idx, _) in self.func.block_succs(block).iter().enumerate() {
-            // Move from branch args spillslots to temporaries.
-            //
-            // Consider a scenario: block X branches to block Y and block Y branches to block X.
-            // Block Y has block param vp and block X uses virtual register va as the branch arg for vp.
-            // Block X has an instruction that uses vp.
-            // In the case where branch arg va is defined in a predecessor, there is a possibility
-            // that, at the beginning of the block, during the reload, that va will always overwrite vp.
-            // This could happen because at the end of the block, va is allocated to be in vp's
-            // spillslot. If va isn't used throughout the block (or if all its use constraints allow it to be
-            // in vp's spillslot), then during reload, it will still be allocated to vp's spillslot.
-            // This will mean that at the beginning of the block, both va and vp will be expected to be
-            // in vp's spillslot. An edit will be inserted to move from va's spillslot to vp's.
-            // And depending on the constraints of vp's use, an edit may or may not be inserted to move 
-            // from vp's spillslot to somewhere else.
-            // Either way, the correctness of the dataflow will depend on the order of edits.
-            // If vp is required in be on the stack, then no edit will be inserted for it (it's already on
-            // the stack, in its spillslot). But an edit will be inserted to move from va's spillslot
-            // to vp's.
-            // If block Y has other predecessors that define vp to be other values, then this dataflow
-            // is clearly wrong.
-            //
-            // To avoid this scenario, branch args are placed into their own spillslots here
-            // so that if they aren't moved at all throughout the block, they will not be expected to 
-            // be in another vreg's spillslot at the block beginning.
-            for vreg in self.func.branch_blockparams(block, inst, succ_idx).iter() {
-                self.live_vregs.insert(*vreg);
-                if self.vreg_spillslots[vreg.vreg()].is_invalid() {
-                    self.vreg_spillslots[vreg.vreg()] = self.allocstack(vreg);
-                    trace!("Block arg {:?} is going to be in {:?}", vreg, Allocation::stack(self.vreg_spillslots[vreg.vreg()]));
-                }
-                if self.temp_spillslots[vreg.class()].len() == next_temp_idx[vreg.class()] {
-                    let newslot = self.allocstack(vreg);
-                    self.temp_spillslots[vreg.class()].push(newslot);
-                }
-                let temp_slot = self.temp_spillslots[vreg.class()][next_temp_idx[vreg.class()]];
-                let temp = Allocation::stack(temp_slot);
-                next_temp_idx[vreg.class()] += 1;
-                let vreg_spill = Allocation::stack(self.vreg_spillslots[vreg.vreg()]);
-                trace!("{:?} which is going to be in {:?} inserting move to {:?}", vreg, vreg_spill, temp);
-                self.add_move_later(inst, vreg_spill, temp, vreg.class(), InstPosition::Before, false);
-            }
-        }
-    
-        reset_temp_idx(&mut next_temp_idx);
-
-        for (succ_idx, succ) in self.func.block_succs(block).iter().enumerate() {
-            let succ_params = self.func.block_params(*succ);
-
-            // Move from temporaries to block param spillslots.
-            for (pos, vreg) in self.func.branch_blockparams(block, inst, succ_idx).iter().enumerate() {
-                let succ_param_vreg = succ_params[pos];
-                let param_alloc = Allocation::stack(self.vreg_spillslots[succ_param_vreg.vreg()]);
-                let temp_slot = self.temp_spillslots[vreg.class()][next_temp_idx[vreg.class()]];
-                let temp = Allocation::stack(temp_slot);
-                self.vreg_allocs[vreg.vreg()] = temp;
-                next_temp_idx[vreg.class()] += 1;
-                trace!(" --- Placing branch arg {:?} in {:?}", vreg, temp);
-                trace!("{:?} which is now in {:?} inserting move to {:?}", vreg, temp, param_alloc);
-                self.add_move_later(inst, temp, param_alloc, vreg.class(), InstPosition::Before, false);
-            }
-        }
-
-        reset_temp_idx(&mut next_temp_idx);
-
-        for (succ_idx, _) in self.func.block_succs(block).iter().enumerate() {
-            for vreg in self.func.branch_blockparams(block, inst, succ_idx).iter() {
-                // All branch arguments should be in their spillslots at the end of the function.
-                self.vreg_allocs[vreg.vreg()] = Allocation::stack(self.vreg_spillslots[vreg.vreg()]);
-            }
-        }
-    }
-
-    fn alloc_inst(&mut self, block: Block, inst: Inst) {
-        if self.func.is_branch(inst) {
-            self.process_branch(block, inst);
-        }
-        let operands = self.func.inst_operands(inst);
-        for preg in self.func.inst_clobbers(inst) {
-            if self.freepregs[preg.class()].remove(&preg) {
-                self.clobbered_reg_is_allocatable.insert(preg);
-            }
-        }
-        for (op_idx, op) in FixedLateOperands::new(operands) {
-            self.process_operand_allocation(inst, op, op_idx);
-        }
-        for (op_idx, op) in NonFixedNonReuseLateOperands::new(operands) {
-            self.process_operand_allocation(inst, op, op_idx);
-        }
-        for (_, op) in NonReuseLateDefOperands::new(operands) {
-            self.freealloc(op.vreg(), true);
-        }
-        for (op_idx, op) in FixedEarlyOperands::new(operands) {
-            self.process_operand_allocation(inst, op, op_idx);
-        }
-        for (op_idx, op) in NonFixedNonReuseEarlyOperands::new(operands) {
-            self.process_operand_allocation(inst, op, op_idx);
-        }
-        for (_, op) in NonReuseEarlyDefOperands::new(operands) {
-            self.freealloc(op.vreg(), true);
-        }
-        for (op_idx, op) in ReuseOperands::new(operands) {
-            let OperandConstraint::Reuse(reused_idx) = op.constraint() else {
-                unreachable!()
-            };
-            self.process_reuse_operand_allocation(inst, op, op_idx, operands[reused_idx], reused_idx);
-        }
+    fn save_and_restore_clobbered_registers(&mut self, inst: Inst) {
         for clobbered_preg in self.func.inst_clobbers(inst) {
             // If the instruction clobbers a register holding a live vreg,
             // insert edits to save the live reg and restore it
@@ -1127,6 +948,216 @@ impl<'a, F: Function> Env<'a, F> {
                 );
             }
         }
+    }
+
+    /// If instruction `inst` is a branch in `block`,
+    /// this function places branch arguments in the spillslots
+    /// expected by the destination blocks.
+    /// 
+    /// The process used to do this is as follows:
+    /// 
+    /// 1. Move all branch arguments into corresponding temporary spillslots.
+    /// 2. Move values from the temporary spillslots to corresponding block param spillslots.
+    /// 3. Move values from the temporary spillslots to post-block locatioks, if any, for
+    /// non-block-param arguments.
+    /// 
+    /// These temporaries are used because the moves have to be parallel in the case where
+    /// a block parameter of the successor block is a branch argument.
+    fn process_branch(&mut self, block: Block, inst: Inst) {
+        
+        // Used to know which temporary spillslot should be used next.
+        let mut next_temp_idx = PartedByRegClass { items: [0, 0, 0] };
+
+        fn reset_temp_idx(next_temp_idx: &mut PartedByRegClass<usize>) {
+            next_temp_idx[RegClass::Int] = 0;
+            next_temp_idx[RegClass::Float] = 0;
+            next_temp_idx[RegClass::Vector] = 0;
+        }
+
+        // In the case where the block param of a successor is also a branch arg,
+        // the reading of all the block params must be done before the writing.
+        // This is necessary to prevent overwriting the branch arg's value before
+        // placing it in the corresponding branch param spillslot.
+
+        for succ in self.func.block_succs(block).iter() {
+            self.alloc_slots_for_block_params(*succ);
+        }
+
+        for (succ_idx, _) in self.func.block_succs(block).iter().enumerate() {
+            // Move from branch args spillslots to temporaries.
+            //
+            // Consider a scenario: block X branches to block Y and block Y branches to block X.
+            // Block Y has block param vp and block X uses virtual register va as the branch arg for vp.
+            // Block X has an instruction that uses vp.
+            // In the case where branch arg va is defined in a predecessor, there is a possibility
+            // that, at the beginning of the block, during the reload, that va will always overwrite vp.
+            // This could happen because at the end of the block, va is allocated to be in vp's
+            // spillslot. If va isn't used throughout the block (or if all its use constraints allow it to be
+            // in vp's spillslot), then during reload, it will still be allocated to vp's spillslot.
+            // This will mean that at the beginning of the block, both va and vp will be expected to be
+            // in vp's spillslot. An edit will be inserted to move from va's spillslot to vp's.
+            // And depending on the constraints of vp's use, an edit may or may not be inserted to move 
+            // from vp's spillslot to somewhere else.
+            // Either way, the correctness of the dataflow will depend on the order of edits.
+            // If vp is required in be on the stack, then no edit will be inserted for it (it's already on
+            // the stack, in its spillslot). But an edit will be inserted to move from va's spillslot
+            // to vp's.
+            // If block Y has other predecessors that define vp to be other values, then this dataflow
+            // is clearly wrong.
+            //
+            // To avoid this scenario, branch args are placed into their own spillslots here
+            // so that if they aren't moved at all throughout the block, they will not be expected to 
+            // be in another vreg's spillslot at the block beginning.
+            for vreg in self.func.branch_blockparams(block, inst, succ_idx).iter() {
+                if self.vreg_spillslots[vreg.vreg()].is_invalid() {
+                    self.vreg_spillslots[vreg.vreg()] = self.allocstack(vreg);
+                    trace!("Block arg {:?} is going to be in {:?}", vreg, Allocation::stack(self.vreg_spillslots[vreg.vreg()]));
+                }
+                if self.temp_spillslots[vreg.class()].len() == next_temp_idx[vreg.class()] {
+                    let newslot = self.allocstack(vreg);
+                    self.temp_spillslots[vreg.class()].push(newslot);
+                }
+                let temp_slot = self.temp_spillslots[vreg.class()][next_temp_idx[vreg.class()]];
+                let temp = Allocation::stack(temp_slot);
+                next_temp_idx[vreg.class()] += 1;
+                let vreg_spill = Allocation::stack(self.vreg_spillslots[vreg.vreg()]);
+                trace!("{:?} which is going to be in {:?} inserting move to {:?}", vreg, vreg_spill, temp);
+                self.add_move_later(inst, vreg_spill, temp, vreg.class(), InstPosition::Before, false);
+            }
+        }
+    
+        reset_temp_idx(&mut next_temp_idx);
+
+        for (succ_idx, succ) in self.func.block_succs(block).iter().enumerate() {
+            let succ_params = self.func.block_params(*succ);
+
+            // Move from temporaries to block param spillslots.
+            for (pos, vreg) in self.func.branch_blockparams(block, inst, succ_idx).iter().enumerate() {
+                let succ_param_vreg = succ_params[pos];
+                let param_alloc = Allocation::stack(self.vreg_spillslots[succ_param_vreg.vreg()]);
+                let temp_slot = self.temp_spillslots[vreg.class()][next_temp_idx[vreg.class()]];
+                let temp = Allocation::stack(temp_slot);
+                self.vreg_allocs[vreg.vreg()] = temp;
+                next_temp_idx[vreg.class()] += 1;
+                trace!(" --- Placing branch arg {:?} in {:?}", vreg, temp);
+                trace!("{:?} which is now in {:?} inserting move to {:?}", vreg, temp, param_alloc);
+                self.add_move_later(inst, temp, param_alloc, vreg.class(), InstPosition::Before, false);
+            }
+        }
+
+        reset_temp_idx(&mut next_temp_idx);
+
+        for (succ_idx, _) in self.func.block_succs(block).iter().enumerate() {
+            for vreg in self.func.branch_blockparams(block, inst, succ_idx).iter() {
+                // All branch arguments should be in their spillslots at the end of the function.
+                self.vreg_allocs[vreg.vreg()] = Allocation::stack(self.vreg_spillslots[vreg.vreg()]);
+                self.live_vregs.insert(*vreg);
+            }
+        }
+    }
+
+    fn alloc_inst(&mut self, block: Block, inst: Inst) {
+        if self.func.is_branch(inst) {
+            self.process_branch(block, inst);
+        }
+        let operands = self.func.inst_operands(inst);
+        for preg in self.func.inst_clobbers(inst) {
+            if self.freepregs[preg.class()].remove(&preg) {
+                self.clobbered_reg_is_allocatable.insert(preg);
+            }
+        }
+        for (op_idx, op) in FixedLateOperands::new(operands) {
+            self.process_operand_allocation(inst, op, op_idx);
+        }
+        for (op_idx, op) in NonFixedNonReuseLateOperands::new(operands) {
+            self.process_operand_allocation(inst, op, op_idx);
+        }
+        for (_, op) in NonReuseLateDefOperands::new(operands) {
+            if self.liveout_vregs.contains(&op.vreg()) {
+                // Need to remember the instruction in which a liveout
+                // vreg was defined when adding reftype vregs to the stackmap.
+                self.liveout_vreg_def_inst[op.vreg().vreg()] = (block, inst);
+            }
+            self.freealloc(op.vreg(), true);
+        }
+        for (op_idx, op) in FixedEarlyOperands::new(operands) {
+            self.process_operand_allocation(inst, op, op_idx);
+        }
+        for (op_idx, op) in NonFixedNonReuseEarlyOperands::new(operands) {
+            self.process_operand_allocation(inst, op, op_idx);
+        }
+        for (_, op) in NonReuseEarlyDefOperands::new(operands) {
+            if self.liveout_vregs.contains(&op.vreg()) {
+                // Need to remember the instruction in which a liveout
+                // vreg was defined when adding reftype vregs to the stackmap.
+                self.liveout_vreg_def_inst[op.vreg().vreg()] = (block, inst);
+            }
+            self.freealloc(op.vreg(), true);
+        }
+        for (op_idx, op) in ReuseOperands::new(operands) {
+            let OperandConstraint::Reuse(reused_idx) = op.constraint() else {
+                unreachable!()
+            };
+            if self.liveout_vregs.contains(&op.vreg()) {
+                // Need to remember the instruction in which a liveout
+                // vreg was defined when adding reftype vregs to the stackmap.
+                self.liveout_vreg_def_inst[op.vreg().vreg()] = (block, inst);
+            }
+            self.process_reuse_operand_allocation(inst, op, op_idx, operands[reused_idx], reused_idx);
+        }
+        self.save_and_restore_clobbered_registers(inst);
+        if self.func.requires_refs_on_stack(inst) {
+            trace!("{:?} is a safepoint instruction. Need to move reftypes to stack", inst);
+            // Need to remember that this is a safepoint instruction when adding reftype
+            // liveout vregs to the stackmap.
+            self.safepoint_insts.push((block, inst));
+            // Insert edits to save and restore live reftype vregs
+            // not already on the stack.
+            for reftype_vreg in self.func.reftype_vregs() {
+                trace!("{:?} is a reftype vreg and needs to be on the stack", reftype_vreg);
+                let curr_alloc = self.vreg_allocs[reftype_vreg.vreg()];
+                trace!("curr_alloc: {:?}", curr_alloc);
+                if let Some(_preg) = curr_alloc.as_reg() {
+                    trace!("{:?} is currently in a preg. Inserting moves to save and restore it", reftype_vreg);
+                    let slot = if self.vreg_spillslots[reftype_vreg.vreg()].is_valid() {
+                        self.vreg_spillslots[reftype_vreg.vreg()]
+                    } else {
+                        self.vreg_spillslots[reftype_vreg.vreg()] = self.allocstack(&reftype_vreg);
+                        self.vreg_spillslots[reftype_vreg.vreg()]
+                    };
+                    let slot_alloc = Allocation::stack(slot);
+                    self.add_move_later(
+                        inst,
+                        curr_alloc,
+                        slot_alloc,
+                        reftype_vreg.class(),
+                        InstPosition::Before,
+                        true
+                    );
+                    self.add_move_later(
+                        inst,
+                        slot_alloc,
+                        curr_alloc,
+                        reftype_vreg.class(),
+                        InstPosition::After,
+                        false
+                    );
+                    self.safepoint_slots.push((ProgPoint::new(inst, InstPosition::Before), slot_alloc));
+                    // Need to remember that this reftype's slot is already in the stackmap to
+                    // avoid adding duplicated entries when adding entries for liveout reftype vregs.
+                    self.slot_is_in_stackmap.insert((inst, *reftype_vreg));
+                } else if let Some(slot) = curr_alloc.as_stack() {
+                    trace!("{:?} is already on the stack.", reftype_vreg);
+                    self.safepoint_slots.push((
+                        ProgPoint::new(inst, InstPosition::Before),
+                        Allocation::stack(slot)
+                    ));
+                    // Need to remember that this reftype's slot is already in the stackmap to
+                    // avoid adding duplicated entries when adding entries for liveout reftype vregs.
+                    self.slot_is_in_stackmap.insert((inst, *reftype_vreg));
+                }
+            }
+        }
         for preg in self.func.inst_clobbers(inst) {
             if self.clobbered_reg_is_allocatable.contains(&preg) {
                 self.freepregs[preg.class()].insert(preg);
@@ -1141,12 +1172,13 @@ impl<'a, F: Function> Env<'a, F> {
             let (point, edit, class) = self.inst_pre_edits[i].clone();
             self.process_edit(point, edit, class);
         }
-        self.inst_post_edits.clear();
-        self.inst_pre_edits.clear();
         for preg in self.free_after_curr_inst.iter().cloned() {
             self.freepregs[preg.class()].insert(preg);
             self.lrus[preg.class()].append(preg.hw_enc());
         }
+        self.free_after_curr_inst.clear();
+        self.inst_post_edits.clear();
+        self.inst_pre_edits.clear();
         for class in [RegClass::Int, RegClass::Float, RegClass::Vector] {
             // Add the remaining freed def pregs back to the free list.
             for preg in self.freed_def_pregs[class].iter().cloned() {
@@ -1154,7 +1186,6 @@ impl<'a, F: Function> Env<'a, F> {
             }
             self.freed_def_pregs[class].clear();
         }
-        self.free_after_curr_inst.clear();
         self.vregs_allocd_in_curr_inst.clear();
         self.first_use.clear();
         self.allocs_used_by_use_ops.clear();
@@ -1167,6 +1198,9 @@ impl<'a, F: Function> Env<'a, F> {
     /// the allocations where they are expected to be before the first
     /// instruction. 
     fn reload_at_begin(&mut self, block: Block) {
+        trace!("Reloading live registers at the beginning of block {:?}", block);
+        trace!("Live registers at the beginning of block {:?}: {:?}", block, self.live_vregs);
+        trace!("Block params at block {:?} beginning: {:?}", block, self.func.block_params(block));
         // We need to check for the registers that are still live.
         // These registers are livein and they should be stack-allocated.
         let live_vregs = self.live_vregs.clone();
@@ -1177,11 +1211,37 @@ impl<'a, F: Function> Env<'a, F> {
             // The allocation where the vreg is expected to be before
             // the first instruction.
             let prev_alloc = self.vreg_allocs[vreg.vreg()];
-            if prev_alloc.is_reg() {
-                self.freealloc(vreg, true);
-            }
             let slot = Allocation::stack(self.vreg_spillslots[vreg.vreg()]);
-            self.vreg_allocs[vreg.vreg()] = slot;
+            if self.func.block_params(block).contains(&vreg) {
+                // A block's block param is not live before the block.
+                // And `vreg_allocs[i]` of a virtual register i is none for
+                // dead vregs.
+                self.freealloc(vreg, true);
+                if self.func.reftype_vregs().contains(&vreg) {
+                    // This marks the definition of the block param.
+                    // Record this information which will be used while building
+                    // the stackmap later.
+                    self.liveout_vreg_def_inst[vreg.vreg()] = (block, self.func.block_insns(block).first());
+                }
+            } else {
+                // It is a liveout vreg from a predecessor.
+                self.vreg_allocs[vreg.vreg()] = slot;
+                // Need to remember that this is a liveout vreg so that its
+                // spillslot, if it's a reftype, can be recorded in the stackmap
+                // later.
+                self.liveout_vregs.insert(vreg);
+                if let Some(preg) = prev_alloc.as_reg() {
+                    // Nothing is in that preg anymore. Return it to
+                    // the free preg list.
+                    self.vreg_in_preg[preg.index()] = VReg::invalid();
+                    if !self.is_stack(prev_alloc) {
+                        // Using this instead of directly adding it to
+                        // freepregs to prevent allocated registers from being
+                        // used as scratch registers.
+                        self.freed_def_pregs[preg.class()].insert(preg);
+                    }
+                }
+            }
             if slot == prev_alloc {
                 // No need to do any movements if the spillslot is where the vreg is expected to be.
                 trace!("No need to reload {:?} because it's already in its expected allocation", vreg);
@@ -1197,6 +1257,9 @@ impl<'a, F: Function> Env<'a, F> {
                 true
             );
         }
+        for block_param_vreg in self.func.block_params(block) {
+            self.live_vregs.remove(block_param_vreg);
+        }
         for i in (0..self.inst_post_edits.len()).rev() {
             let (point, edit, class) = self.inst_post_edits[i].clone();
             self.process_edit(point, edit, class);
@@ -1220,13 +1283,66 @@ impl<'a, F: Function> Env<'a, F> {
         self.free_after_curr_inst.clear();
     }
 
+    fn build_safepoint_stackmap(&mut self) {
+        let postorder = postorder::calculate(self.func.num_blocks(), self.func.entry_block(), |block| {
+            self.func.block_succs(block)
+        });
+        let domtree = domtree::calculate(
+            self.func.num_blocks(),
+            |block| self.func.block_preds(block),
+            &postorder[..],
+            self.func.entry_block(),
+        );
+        // Check if the liveout vreg was defined before the safepoint
+        // instruction. If it was defined before it, then record the liveout
+        // with its spillslot in the stackmap (because the liveout vreg's first
+        // use hasn't been encountered yet. It is possible that a loop could).
+        for (safepoint_block, safepoint_inst) in self.safepoint_insts.iter() {
+            for liveout_vreg in self.liveout_vregs.iter() {
+                let (liveout_vreg_def_block, liveout_vreg_def_inst) = self.liveout_vreg_def_inst[liveout_vreg.vreg()];
+                if self.func.reftype_vregs().contains(liveout_vreg) 
+                    && !self.slot_is_in_stackmap.contains(&(*safepoint_inst, *liveout_vreg))
+                    && dominates(&domtree, liveout_vreg_def_block, *safepoint_block)
+                {
+                    if self.func.block_params(liveout_vreg_def_block).contains(liveout_vreg) {
+                        // Since block params aren't explicitly defined, they are marked as defined
+                        // in the first instruction in the block, even though they are actually
+                        // defined just before that.
+                        // This is the reason why <= is used here instead of just <.
+                        if liveout_vreg_def_inst <= *safepoint_inst {
+                            trace!("Liveout vreg inst: {:?}", self.liveout_vreg_def_inst[liveout_vreg.vreg()]);
+                            trace!("Safepoint inst: {:?}", safepoint_inst);
+                            trace!("Adding a stackmap slot for liveout vreg {:?}", liveout_vreg);
+                            self.safepoint_slots.push((
+                                ProgPoint::before(*safepoint_inst),
+                                Allocation::stack(self.vreg_spillslots[liveout_vreg.vreg()])
+                            ));
+                        }
+                    }
+                    // The definition of the vreg must come before the safepoint instruction
+                    // This is necessary because, while the `dominates` call checks for different
+                    // blocks, in the case where the vreg definition and the safepoint instructions 
+                    // are in the same block, we need to make this check.
+                    else if liveout_vreg_def_inst < *safepoint_inst {
+                        self.safepoint_slots.push((
+                            ProgPoint::before(*safepoint_inst),
+                            Allocation::stack(self.vreg_spillslots[liveout_vreg.vreg()])
+                        ));
+                    }
+                }
+            }
+        }
+        self.safepoint_slots.sort_by(
+            |slot0, slot1| slot0.0.cmp(&slot1.0)
+        );
+    }
+
     fn alloc_block(&mut self, block: Block) {
         trace!("{:?} start", block);
         for inst in self.func.block_insns(block).iter().rev() {
             self.alloc_inst(block, inst);
         }
         self.reload_at_begin(block);
-        self.live_vregs.clear();
         trace!("{:?} end\n", block);
     }
 
@@ -1235,6 +1351,7 @@ impl<'a, F: Function> Env<'a, F> {
         for block in (0..self.func.num_blocks()).rev() {
             self.alloc_block(Block::new(block));
         }
+        self.build_safepoint_stackmap();
 
         /////////////////////////////////////////////////////////////////////////////////////
         trace!("Done!");
@@ -1274,13 +1391,14 @@ pub fn run<F: Function>(
     env.run()?;
 
 trace!("Final edits: {:?}", env.edits);
+trace!("safepoint_slots: {:?}", env.safepoint_slots);
     Ok(Output {
         edits: env.edits.make_contiguous().to_vec(),
         allocs: env.allocs.allocs,
         inst_alloc_offsets: env.allocs.inst_alloc_offsets,
         num_spillslots: env.num_spillslots as usize,
         debug_locations: Vec::new(),
-        safepoint_slots: Vec::new(),
+        safepoint_slots: env.safepoint_slots,
         stats: env.stats,
     })
 }
