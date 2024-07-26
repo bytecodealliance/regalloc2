@@ -464,7 +464,10 @@ impl<'a, F: Function> Env<'a, F> {
                 self.alloc_reg_for_operand(inst, op);
             }
             OperandConstraint::Stack => {
-                panic!("Stack only allocations aren't supported yet");
+                if self.vreg_spillslots[op.vreg().vreg()].is_invalid() {
+                    self.vreg_spillslots[op.vreg().vreg()] = self.allocstack(&op.vreg());
+                }
+                self.vreg_allocs[op.vreg().vreg()] = Allocation::stack(self.vreg_spillslots[op.vreg().vreg()]);
             }
             OperandConstraint::FixedReg(preg) => {
                 self.alloc_fixed_reg_for_operand(inst, op, preg);
