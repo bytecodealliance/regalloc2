@@ -1,0 +1,59 @@
+/*
+ * Released under the terms of the Apache 2.0 license with LLVM
+ * exception. See `LICENSE` for details.
+ */
+
+#![no_main]
+use regalloc2::fuzzing::arbitrary::{Arbitrary, Result, Unstructured};
+use regalloc2::fuzzing::checker::Checker;
+use regalloc2::fuzzing::func::{Func, Options};
+use regalloc2::fuzzing::fuzz_target;
+
+#[derive(Clone, Debug)]
+struct TestCase {
+    func: Func,
+}
+
+impl Arbitrary<'_> for TestCase {
+    fn arbitrary(u: &mut Unstructured) -> Result<TestCase> {
+        Ok(TestCase {
+            func: Func::arbitrary_with_options(
+                u,
+                &Options {
+                    reused_inputs: true,
+                    fixed_regs: true,
+                    fixed_nonallocatable: true,
+                    clobbers: true,
+                    reftypes: true,
+                },
+            )?,
+        })
+    }
+}
+
+fuzz_target!(|testcase: TestCase| {
+    let func = testcase.func;
+    let _ = env_logger::try_init();
+    log::trace!("func:\n{:?}", func);
+    let env = regalloc2::fuzzing::func::machine_env();
+
+    thread_local! {
+        // We test that ctx is cleared properly between runs.
+        static CTX: std::cell::RefCell<regalloc2::fuzzing::ion::Ctx> = std::cell::RefCell::default();
+    }
+
+    CTX.with(|ctx| {
+        let options = regalloc2::RegallocOptions {
+            verbose_log: true,
+            validate_ssa: true,
+            algorithm: regalloc2::Algorithm::Regalloc3,
+        };
+        let mut ctx = ctx.borrow_mut();
+        let out = regalloc2::run_with_ctx(&func, &env, &options, &mut *ctx)
+            .expect("regalloc did not succeed");
+
+        let mut checker = Checker::new(&func, &env);
+        checker.prepare(&out);
+        checker.run().expect("checker failed");
+    });
+});

@@ -16,6 +16,7 @@ use super::liveranges::SpillWeight;
 use crate::cfg::{CFGInfo, CFGInfoCtx};
 use crate::index::ContainerComparator;
 use crate::indexset::IndexSet;
+use crate::regalloc3::Regalloc3Ctx;
 use crate::Vec2;
 use crate::{
     define_index, Allocation, Block, Bump, Edit, Function, FxHashMap, FxHashSet, MachineEnv,
@@ -489,6 +490,8 @@ pub struct Ctx {
     pub(crate) scratch_workqueue_set: FxHashSet<Block>,
 
     pub(crate) scratch_bump: Bump,
+
+    pub(crate) ra3_ctx: Regalloc3Ctx,
 }
 
 impl Ctx {

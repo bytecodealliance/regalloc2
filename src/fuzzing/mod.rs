@@ -27,6 +27,9 @@ pub mod ion {
 pub mod fastalloc {
     pub use crate::fastalloc::*;
 }
+pub mod regalloc3 {
+    pub use crate::regalloc3::*;
+}
 pub mod checker {
     pub use crate::checker::*;
 }

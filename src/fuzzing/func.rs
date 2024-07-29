@@ -313,7 +313,10 @@ impl Func {
         let mut out_blocks = vec![];
         let mut in_blocks = vec![];
         while from < num_blocks {
-            in_blocks.push(from);
+            // regalloc3 doesn't allow the entry block to have predecessors.
+            if from != 0 {
+                in_blocks.push(from);
+            }
             if num_blocks > 3 && from < num_blocks - 3 && bool::arbitrary(u)? {
                 // To avoid critical edges, we use from+1 as an edge
                 // block, and advance `from` an extra block; `from+2`

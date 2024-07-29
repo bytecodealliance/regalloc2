@@ -14,6 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v3
+    - uses: dtolnay/rust-toolchain@stable
     - name: Install rustfmt
       run: rustup component add rustfmt
     - name: Run rustfmt and check there's no difference
@@ -24,6 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v3
+    - uses: dtolnay/rust-toolchain@stable
     - name: Build
       run: cargo build
     - name: Run tests
@@ -34,6 +36,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v3
+    - uses: dtolnay/rust-toolchain@stable
     - name: Check with all features
       run: cargo check --all-features
 
@@ -42,6 +45,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v3
+    - uses: dtolnay/rust-toolchain@stable
     - name: Install thumbv6m-none-eabi target
       run: rustup target add thumbv6m-none-eabi
     - name: Check no_std build
