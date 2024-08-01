@@ -1,4 +1,5 @@
 use alloc::vec::Vec;
+use alloc::vec;
 use core::ops::IndexMut;
 use std::ops::Index;
 use crate::{RegClass, PReg};
@@ -26,21 +27,23 @@ pub struct LruNode {
 }
 
 impl Lru {
-    pub fn new(regclass: RegClass, no_of_regs: usize) -> Self {
-        let mut data = Vec::with_capacity(no_of_regs);
-        for _ in 0..no_of_regs {
-            data.push(LruNode { prev: 0, next: 0 });
+    pub fn new(regclass: RegClass, regs: &[PReg]) -> Self {
+        let mut data = vec![LruNode { prev: 0, next: 0 }; PReg::MAX + 1];
+        let no_of_regs = regs.len();
+        for i in 0..no_of_regs {
+            let (reg, prev_reg, next_reg) = (
+                regs[i],
+                regs[i.checked_sub(1).unwrap_or(no_of_regs - 1)],
+                regs[if i >= no_of_regs - 1 { 0 } else { i + 1 }]
+            );
+            data[reg.hw_enc()].prev = prev_reg.hw_enc();
+            data[reg.hw_enc()].next = next_reg.hw_enc();
         }
-        let mut lru = Self {
-            head: 0,
+        Self {
+            head: if regs.is_empty() { usize::MAX } else { regs[0].hw_enc() },
             data,
             regclass,
-        };
-        for i in 0..no_of_regs {
-            lru.data[i].prev = i.checked_sub(1).unwrap_or(no_of_regs - 1);
-            lru.data[i].next = (i + 1) % no_of_regs;
         }
-        lru
     }
 
     /// Marks the physical register `i` as the most recently used
@@ -115,12 +118,12 @@ impl<T: std::fmt::Debug> IndexMut<RegClass> for PartedByRegClass<T> {
 pub type Lrus = PartedByRegClass<Lru>;
 
 impl Lrus {
-    pub fn new(no_of_int_regs: usize, no_of_float_regs: usize, no_of_vec_regs: usize) -> Self {
+    pub fn new(int_regs: &[PReg], float_regs: &[PReg], vec_regs: &[PReg]) -> Self {
         Self {
             items: [
-                Lru::new(RegClass::Int, no_of_int_regs),
-                Lru::new(RegClass::Float, no_of_float_regs),
-                Lru::new(RegClass::Vector, no_of_vec_regs),
+                Lru::new(RegClass::Int, int_regs),
+                Lru::new(RegClass::Float, float_regs),
+                Lru::new(RegClass::Vector, vec_regs),
             ]
         }
     }

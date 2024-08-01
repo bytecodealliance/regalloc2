@@ -185,9 +185,9 @@ impl<'a, F: Function> Env<'a, F> {
                 ]
             },
             lrus: Lrus::new(
-                regs[0].len(),
-                regs[1].len(),
-                regs[2].len()
+                &regs[0],
+                &regs[1],
+                &regs[2]
             ),
             vreg_in_preg: vec![VReg::invalid(); PReg::NUM_INDEX],
             fixed_stack_slots: env.fixed_stack_slots.clone(),
