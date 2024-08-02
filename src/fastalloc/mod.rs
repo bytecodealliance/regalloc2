@@ -148,6 +148,10 @@ pub struct Env<'a, F: Function> {
     /// This is used while building the stackmap after allocation is completed,
     /// to avoid adding duplicate entries for liveout vregs.
     slot_is_in_stackmap: HashSet<(Inst, VReg)>,
+    /// Used to determine if a scratch register is needed for an
+    /// instruction's moves during the `process_edit` calls.
+    inst_needs_scratch_reg: PartedByRegClass<bool>,
+    dedicated_scratch_regs: PartedByRegClass<Option<PReg>>,
 
     fixed_stack_slots: Vec<PReg>,
 
@@ -207,6 +211,12 @@ impl<'a, F: Function> Env<'a, F> {
             safepoint_insts: Vec::new(),
             liveout_vregs: HashSet::new(),
             liveout_vreg_def_inst: vec![(Block::invalid(), Inst::invalid()); func.num_vregs()],
+            inst_needs_scratch_reg: PartedByRegClass { items: [false, false, false] },
+            dedicated_scratch_regs: PartedByRegClass { items: [
+                env.scratch_by_class[0],
+                env.scratch_by_class[1],
+                env.scratch_by_class[2],
+            ] },
             slot_is_in_stackmap: HashSet::new(),
             allocs: Allocs::new(func, env),
             edits: VecDeque::new(),
@@ -226,11 +236,83 @@ impl<'a, F: Function> Env<'a, F> {
         false
     }
 
-    fn process_edit(&mut self, point: ProgPoint, edit: Edit, class: RegClass) {
+    fn add_freed_regs_to_freelist(&mut self) {
+        for class in [RegClass::Int, RegClass::Float, RegClass::Vector] {
+            for preg in self.freed_def_pregs[class].iter().cloned() {
+                self.freepregs[class].insert(preg);
+            }
+            self.freed_def_pregs[class].clear();
+        }
+        for preg in self.free_after_curr_inst.iter().cloned() {
+            self.freepregs[preg.class()].insert(preg);
+            self.lrus[preg.class()].append(preg.hw_enc());
+        }
+        self.free_after_curr_inst.clear();
+    }
+
+    /// The scratch registers needed for processing the edits generated
+    /// during a `reload_at_begin` call.
+    ///
+    /// This function is only called when all instructions in a block have
+    /// already been processed. The only edits being processed will be for the
+    /// ones to move a liveout vreg or block param from its spillslot to its
+    /// expected allocation.
+    fn get_scratch_regs_for_reloading(&self) -> PartedByRegClass<Option<PReg>> {
+        let mut scratch_regs = PartedByRegClass{ items: [None, None, None] };
+        for class in [RegClass::Int, RegClass::Float, RegClass::Vector] {
+            if self.inst_needs_scratch_reg[class] {
+                if self.dedicated_scratch_regs[class].is_some() {
+                    scratch_regs[class] = self.dedicated_scratch_regs[class];
+                } else {
+                    scratch_regs[class] = Some(*self.freepregs[class].last().expect("Allocation impossible?"));
+                }
+            }
+        }
+        scratch_regs
+    }
+
+    /// The scratch registers needed for processing edits generated while
+    /// processing instructions.
+    fn get_scratch_regs(&mut self, inst: Inst) -> PartedByRegClass<Option<PReg>> {
+        let mut scratch_regs = PartedByRegClass { items: [None, None, None] };
+        for class in [RegClass::Int, RegClass::Float, RegClass::Vector] {
+            if self.inst_needs_scratch_reg[class] {
+                if let Some(reg) = self.dedicated_scratch_regs[class] {
+                    scratch_regs[class] = Some(reg);
+                } else {
+                    let reg = if let Some(preg) = self.freepregs[class].last() {
+                        *preg
+                    } else {
+                        self.evict_any_reg(inst, class)
+                    };
+                    scratch_regs[class] = Some(reg);
+                }
+            }
+        }
+        scratch_regs
+    }
+
+    fn process_edits(&mut self, scratch_regs: PartedByRegClass<Option<PReg>>) {
+        for i in (0..self.inst_post_edits.len()).rev() {
+            let (point, edit, class) = self.inst_post_edits[i].clone();
+            self.process_edit(point, edit, scratch_regs[class]);
+        }
+        for i in (0..self.inst_pre_edits.len()).rev() {
+            let (point, edit, class) = self.inst_pre_edits[i].clone();
+            self.process_edit(point, edit, scratch_regs[class]);
+        }
+        for class in [RegClass::Int, RegClass::Float, RegClass::Vector] {
+            self.inst_needs_scratch_reg[class] = false;
+        }
+        self.inst_post_edits.clear();
+        self.inst_pre_edits.clear();
+    }
+
+    fn process_edit(&mut self, point: ProgPoint, edit: Edit, scratch_reg: Option<PReg>) {
         trace!("Processing edit: {:?}", edit);
         let Edit::Move { from, to } = edit;
         if self.is_stack(from) && self.is_stack(to) {
-            let scratch_reg = *self.freepregs[class].last().expect("Allocation impossible?");
+            let scratch_reg = scratch_reg.unwrap();
             trace!("Edit is stack-to-stack, generating two moves with a scratch register {:?}", scratch_reg);
             let scratch_alloc = Allocation::reg(scratch_reg);
             trace!("Processed Edit: {:?}", (point, Edit::Move {
@@ -263,6 +345,9 @@ impl<'a, F: Function> Env<'a, F> {
     }
 
     fn add_move_later(&mut self, inst: Inst, from: Allocation, to: Allocation, class: RegClass, pos: InstPosition, prepend: bool) {
+        if self.is_stack(from) && self.is_stack(to) {
+            self.inst_needs_scratch_reg[class] = true;
+        }
         let target_edits = match pos {
             InstPosition::After => &mut self.inst_post_edits,
             InstPosition::Before => &mut self.inst_pre_edits
@@ -1167,28 +1252,9 @@ impl<'a, F: Function> Env<'a, F> {
             }
         }
         self.clobbered_reg_is_allocatable.clear();
-        for i in (0..self.inst_post_edits.len()).rev() {
-            let (point, edit, class) = self.inst_post_edits[i].clone();
-            self.process_edit(point, edit, class);
-        }
-        for i in (0..self.inst_pre_edits.len()).rev() {
-            let (point, edit, class) = self.inst_pre_edits[i].clone();
-            self.process_edit(point, edit, class);
-        }
-        for preg in self.free_after_curr_inst.iter().cloned() {
-            self.freepregs[preg.class()].insert(preg);
-            self.lrus[preg.class()].append(preg.hw_enc());
-        }
-        self.free_after_curr_inst.clear();
-        self.inst_post_edits.clear();
-        self.inst_pre_edits.clear();
-        for class in [RegClass::Int, RegClass::Float, RegClass::Vector] {
-            // Add the remaining freed def pregs back to the free list.
-            for preg in self.freed_def_pregs[class].iter().cloned() {
-                self.freepregs[class].insert(preg);
-            }
-            self.freed_def_pregs[class].clear();
-        }
+        let scratch_regs = self.get_scratch_regs(inst);
+        self.process_edits(scratch_regs);
+        self.add_freed_regs_to_freelist();
         self.vregs_allocd_in_curr_inst.clear();
         self.first_use.clear();
         self.allocs_used_by_use_ops.clear();
@@ -1263,27 +1329,8 @@ impl<'a, F: Function> Env<'a, F> {
         for block_param_vreg in self.func.block_params(block) {
             self.live_vregs.remove(block_param_vreg);
         }
-        for i in (0..self.inst_post_edits.len()).rev() {
-            let (point, edit, class) = self.inst_post_edits[i].clone();
-            self.process_edit(point, edit, class);
-        }
-        for i in (0..self.inst_pre_edits.len()).rev() {
-            let (point, edit, class) = self.inst_pre_edits[i].clone();
-            self.process_edit(point, edit, class);
-        }
-        self.inst_post_edits.clear();
-        self.inst_pre_edits.clear();
-        for class in [RegClass::Int, RegClass::Float, RegClass::Vector] {
-            for preg in self.freed_def_pregs[class].iter().cloned() {
-                self.freepregs[class].insert(preg);
-            }
-            self.freed_def_pregs[class].clear();
-        }
-        for preg in self.free_after_curr_inst.iter().cloned() {
-            self.freepregs[preg.class()].insert(preg);
-            self.lrus[preg.class()].append(preg.hw_enc());
-        }
-        self.free_after_curr_inst.clear();
+        self.process_edits(self.get_scratch_regs_for_reloading());
+        self.add_freed_regs_to_freelist();
     }
 
     fn build_safepoint_stackmap(&mut self) {
@@ -1388,6 +1435,18 @@ pub fn run<F: Function>(
 
     if enable_ssa_checker {
         validate_ssa(func, &cfginfo)?;
+    }
+
+    trace!("Processing a new function");
+    for block in 0..func.num_blocks() {
+        let block = Block::new(block);
+        trace!("Block {:?}. preds: {:?}. succs: {:?}",
+            block, func.block_preds(block), func.block_succs(block)
+        );
+        for inst in func.block_insns(block).iter() {
+            trace!("inst{:?}: {:?}", inst.index(), func.inst_operands(inst));
+        }
+        trace!("");
     }
 
     let mut env = Env::new(func, mach_env);
