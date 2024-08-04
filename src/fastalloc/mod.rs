@@ -1316,8 +1316,10 @@ impl<'a, F: Function> Env<'a, F> {
         let operands = self.func.inst_operands(inst);
         let clobbers = self.func.inst_clobbers(inst);
         for preg in clobbers {
-            if self.freepregs[preg.class()].remove(&preg) {
+            //if self.freepregs[preg.class()].remove(&preg) {
+            if !self.is_stack(Allocation::reg(preg)) {
                 trace!("Removing {:?} from the freelist because it's a clobber", preg);
+                self.freepregs[preg.class()].remove(&preg);
                 self.lrus[preg.class()].remove(preg.hw_enc());
                 self.clobbered_reg_is_allocatable.insert(preg);
             }
