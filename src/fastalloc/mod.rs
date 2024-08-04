@@ -9,6 +9,7 @@ use alloc::collections::{BTreeSet, VecDeque};
 use alloc::vec::Vec;
 use hashbrown::{HashSet, HashMap};
 
+use std::println;
 use std::format;
 
 mod lru;
@@ -518,14 +519,16 @@ impl<'a, F: Function> Env<'a, F> {
                             // a clobber can be newly allocated to a vreg in the instruction is to
                             // use a fixed register constraint.
                             self.free_after_curr_inst.insert(preg);
+                            // No need to remove the preg from the LRU because clobbers
+                            // have already been removed from the LRU.
                         } else {
                             // Added to the freed def pregs list, not the free pregs
                             // list to avoid a def's allocated register being used
                             // as a scratch register.
                             self.freed_def_pregs[vreg.class()].insert(preg);
+                            // Don't allow this register to be evicted.
+                            self.lrus[vreg.class()].remove(preg.hw_enc());
                         }
-                        // Don't allow this register to be evicted.
-                        self.lrus[vreg.class()].remove(preg.hw_enc());
                     }
                 }
             }
@@ -664,9 +667,6 @@ impl<'a, F: Function> Env<'a, F> {
             // If it's not there, then it must be be a fixed stack slot or
             // a clobber, since clobbers are removed from the free preg list before allocation begins.
             self.freepregs[op.class()].remove(&preg);
-            if is_allocatable {
-                self.lrus[preg.class()].append(preg.hw_enc());
-            }
         }
         if is_allocatable {
             self.lrus[op.class()].poke(preg);
@@ -886,10 +886,14 @@ impl<'a, F: Function> Env<'a, F> {
                     // If it's a fixed stack slot, then it's not allocatable.
                     if !self.is_stack(prev_alloc) {
                         trace!("{:?} is no longer using preg {:?}, so freeing it after instruction", op.vreg(), preg);
-                        self.free_after_curr_inst.insert(preg);
-                        // Clobbers have already been removed from the LRU.
+                        // A clobber will have already been removed from the LRU
+                        // and will be freed after the instruction has completed processing
+                        // if no vreg is still present in it.
                         if !self.func.inst_clobbers(inst).contains(preg) {
+                            self.free_after_curr_inst.insert(preg);
                             self.lrus[preg.class()].remove(preg.hw_enc());
+                        } else {
+                            trace!("{:?} is a clobber, so not bothering with the state update", preg);
                         }
                     }
                 }
@@ -1464,12 +1468,6 @@ impl<'a, F: Function> Env<'a, F> {
             }
         }
         trace!("vreg_in_preg: {:?}", map);
-        let clobbers = self.func.inst_clobbers(inst);
-        let mut cls = Vec::new();
-        for c in clobbers {
-            cls.push(c);
-        }
-        trace!("Clobbers: {:?}", cls);
         trace!("Int LRU: {:?}", self.lrus[RegClass::Int]);
         trace!("Float LRU: {:?}", self.lrus[RegClass::Float]);
         trace!("Vector LRU: {:?}", self.lrus[RegClass::Vector]);
@@ -1559,6 +1557,30 @@ impl<'a, F: Function> Env<'a, F> {
         }
         self.process_edits(self.get_scratch_regs_for_reloading());
         self.add_freed_regs_to_freelist();
+
+        // After reload_at_begin
+        trace!("");
+        trace!("State after instruction reload_at_begin of {:?}", block);
+        let mut map = HashMap::new();
+        for (vreg_idx, alloc) in self.vreg_allocs.iter().enumerate() {
+            if *alloc != Allocation::none() {
+                map.insert(format!("vreg{vreg_idx}"), alloc);
+            }
+        }
+        trace!("vreg_allocs: {:?}", map);
+        let mut map = HashMap::new();
+        for i in 0..self.vreg_in_preg.len() {
+            if self.vreg_in_preg[i] != VReg::invalid() {
+                map.insert(self.preg_index_to_class_and_hw_enc[&i], self.vreg_in_preg[i]);
+            }
+        }
+        trace!("vreg_in_preg: {:?}", map);
+        trace!("Int LRU: {:?}", self.lrus[RegClass::Int]);
+        trace!("Float LRU: {:?}", self.lrus[RegClass::Float]);
+        trace!("Vector LRU: {:?}", self.lrus[RegClass::Vector]);
+        trace!("Free int pregs: {:?}", self.freepregs[RegClass::Int]);
+        trace!("Free float pregs: {:?}", self.freepregs[RegClass::Float]);
+        trace!("Free vector pregs: {:?}", self.freepregs[RegClass::Vector]);
     }
 
     fn build_safepoint_stackmap(&mut self) {
@@ -1668,8 +1690,9 @@ pub fn run<F: Function>(
     trace!("Processing a new function");
     for block in 0..func.num_blocks() {
         let block = Block::new(block);
-        trace!("Block {:?}. preds: {:?}. succs: {:?}",
-            block, func.block_preds(block), func.block_succs(block)
+        trace!("Block {:?}. preds: {:?}. succs: {:?}, params: {:?}",
+            block, func.block_preds(block), func.block_succs(block),
+            func.block_params(block)
         );
         for inst in func.block_insns(block).iter() {
             let clobbers = func.inst_clobbers(inst);
@@ -1677,7 +1700,15 @@ pub fn run<F: Function>(
             for c in clobbers {
                 cls.push(c);
             }
+            use std::print;
             trace!("inst{:?}: {:?}. Clobbers: {:?}", inst.index(), func.inst_operands(inst), cls);
+            if func.is_branch(inst) {
+                trace!("Block args: ");
+                for (succ_idx, _succ) in func.block_succs(block).iter().enumerate() {
+                    trace!(" {:?}", func.branch_blockparams(block, inst, succ_idx));
+                }
+            }
+            trace!("");
         }
         trace!("");
     }
