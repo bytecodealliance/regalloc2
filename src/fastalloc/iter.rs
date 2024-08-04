@@ -235,6 +235,48 @@ impl<'a> Iterator for NonFixedNonReuseEarlyOperands<'a> {
     }
 }
 
+pub struct NonFixedNonReuseLateDefOperands<'a>(Operands<'a>);
+
+impl<'a> NonFixedNonReuseLateDefOperands<'a> {
+    pub fn new(operands: &'a [Operand]) -> Self {
+        Self(Operands::new(operands, SearchConstraint {
+            pos: Some(OperandPos::Late),
+            kind: Some(OperandKind::Def),
+            must_not_have_constraints: [Some(OperandConstraintKind::Reuse), Some(OperandConstraintKind::FixedReg)],
+            must_have_constraint: None,
+        }))
+    }
+}
+
+impl<'a> Iterator for NonFixedNonReuseLateDefOperands<'a> {
+    type Item = (usize, Operand);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.next()
+    }
+}
+
+pub struct NonFixedNonReuseLateUseOperands<'a>(Operands<'a>);
+
+impl<'a> NonFixedNonReuseLateUseOperands<'a> {
+    pub fn new(operands: &'a [Operand]) -> Self {
+        Self(Operands::new(operands, SearchConstraint {
+            pos: Some(OperandPos::Late),
+            kind: Some(OperandKind::Use),
+            must_not_have_constraints: [Some(OperandConstraintKind::Reuse), Some(OperandConstraintKind::FixedReg)],
+            must_have_constraint: None,
+        }))
+    }
+}
+
+impl<'a> Iterator for NonFixedNonReuseLateUseOperands<'a> {
+    type Item = (usize, Operand);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.next()
+    }
+}
+
 pub struct NonReuseLateDefOperands<'a>(Operands<'a>);
 
 impl<'a> NonReuseLateDefOperands<'a> {
@@ -575,6 +617,27 @@ mod tests {
             early_def_operand(8),
             fixed_late_def_operand(10),
             fixed_early_def_operand(11),
+        ]);
+    }
+
+
+    #[test]
+    fn non_fixed_non_reuse_late_def() {
+        let def_operands: Vec<Operand> = NonFixedNonReuseLateDefOperands::new(&OPERANDS)
+            .map(|(_, op)| op)
+            .collect();
+        assert_eq!(def_operands, vec![
+            late_def_operand(1),
+        ]);
+    }
+
+    #[test]
+    fn non_fixed_non_reuse_late_use() {
+        let late_operands: Vec<Operand> = NonFixedNonReuseLateUseOperands::new(&OPERANDS)
+            .map(|(_, op)| op)
+            .collect();
+        assert_eq!(late_operands, vec![
+            late_use_operand(6),
         ]);
     }
 }

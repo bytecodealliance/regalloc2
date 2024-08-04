@@ -1,11 +1,10 @@
 use alloc::vec::Vec;
 use alloc::vec;
-use core::ops::IndexMut;
+use core::{fmt, ops::IndexMut};
 use std::ops::Index;
 use crate::{RegClass, PReg};
 
 /// A least-recently-used cache organized as a linked list based on a vector.
-#[derive(Debug)]
 pub struct Lru {
     /// The list of node information.
     ///
@@ -28,7 +27,7 @@ pub struct LruNode {
 
 impl Lru {
     pub fn new(regclass: RegClass, regs: &[PReg]) -> Self {
-        let mut data = vec![LruNode { prev: 0, next: 0 }; PReg::MAX + 1];
+        let mut data = vec![LruNode { prev: usize::MAX, next: usize::MAX }; PReg::MAX + 1];
         let no_of_regs = regs.len();
         for i in 0..no_of_regs {
             let (reg, prev_reg, next_reg) = (
@@ -63,6 +62,9 @@ impl Lru {
 
     /// Gets the least recently used physical register.
     pub fn pop(&mut self) -> PReg {
+        if self.is_empty() {
+            panic!("LRU is empty");
+        }
         let oldest = self.data[self.head].prev;
         PReg::new(oldest, self.regclass)
     }
@@ -72,15 +74,36 @@ impl Lru {
         let (iprev, inext) = (self.data[i].prev, self.data[i].next);
         self.data[iprev].next = self.data[i].next;
         self.data[inext].prev = self.data[i].prev;
+        self.data[i].prev = usize::MAX;
+        self.data[i].next = usize::MAX;
+        if i == self.head {
+            if i == inext {
+                // There are no regs in the LRU
+                self.head = usize::MAX;
+            } else {
+                self.head = inext;
+            }
+        }
     }
 
     /// Sets the node `i` to the last in the list.
     pub fn append(&mut self, i: usize) {
-        let last_node = self.data[self.head].prev;
-        self.data[last_node].next = i;
-        self.data[self.head].prev = i;
-        self.data[i].prev = last_node;
-        self.data[i].next = self.head;
+        if self.head != usize::MAX {
+            let last_node = self.data[self.head].prev;
+            self.data[last_node].next = i;
+            self.data[self.head].prev = i;
+            self.data[i].prev = last_node;
+            self.data[i].next = self.head;
+        } else {
+            self.head = i;
+            self.data[i].prev = i;
+            self.data[i].next = i;
+        }
+    }
+
+    pub fn append_and_poke(&mut self, preg: PReg) {
+        self.append(preg.hw_enc());
+        self.poke(preg);
     }
 
     /// Insert node `i` before node `j` in the list.
@@ -92,6 +115,32 @@ impl Lru {
             next: j,
             prev,
         };
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.head == usize::MAX
+    }
+}
+
+impl fmt::Debug for Lru {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use std::format;
+        let data_str = if self.head == usize::MAX {
+            format!("<empty>")
+        } else {
+            let mut data_str = format!("p{}", self.head);
+            let mut node = self.data[self.head].next;
+            while node != self.head {
+                data_str += &format!(" -> p{}", node);
+                node = self.data[node].next;
+            }
+            data_str
+        };
+        f.debug_struct("Lru")
+            .field("head", if self.is_empty() { &"none" } else { &self.head })
+            .field("class", &self.regclass)
+            .field("data", &data_str)
+            .finish()
     }
 }
 
