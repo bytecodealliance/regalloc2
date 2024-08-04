@@ -616,11 +616,13 @@ impl<'a, F: Function> Env<'a, F> {
         // It is an error for a fixed register clobber to be used for a defined vreg
         // that outlives the instruction, because it will be impossible to restore it.
         if self.func.inst_clobbers(inst).contains(preg) && op.kind() == OperandKind::Def
-            && self.vregs_first_seen_in_curr_inst.contains(&op.vreg())
+            && (!self.vregs_first_seen_in_curr_inst.contains(&op.vreg())
+                || self.liveout_vregs.contains(&op.vreg()))
         {
             panic!("Invalid input");
         }
-        let mut preg_is_allocatable = false;
+        let is_allocatable = !self.is_stack(Allocation::reg(preg))
+            && !self.func.inst_clobbers(inst).contains(preg);
         if self.vreg_in_preg[preg.index()] != VReg::invalid() {
             // Something is already in that register. Evict it.
             // TODO: Check if the evicted register is a register in the
@@ -635,7 +637,6 @@ impl<'a, F: Function> Env<'a, F> {
             // has finished processing.
             // To avoid the preg being added back to the free list, it must be removed
             // from `freed_def_pregs` here.
-            preg_is_allocatable = true;
             self.freed_def_pregs[preg.class()].remove(&preg);
             self.lrus[preg.class()].append(preg.hw_enc());
         } else if self.free_after_curr_inst.contains(&preg) {
@@ -654,23 +655,25 @@ impl<'a, F: Function> Env<'a, F> {
             // To prevent reallocating a register while a live one is still in it,
             // this register has to be removed from the list.
             trace!("{:?} is now using preg {:?}. Removing it from the free after instruction list", op.vreg(), preg);
-            preg_is_allocatable = true;
             self.free_after_curr_inst.remove(&preg);
-            self.lrus[preg.class()].append(preg.hw_enc());
+            if is_allocatable {
+                self.lrus[preg.class()].append(preg.hw_enc());
+            }
         } else {
             // Find the register in the list of free registers (if it's there).
             // If it's not there, then it must be be a fixed stack slot or
             // a clobber, since clobbers are removed from the free preg list before allocation begins.
-            preg_is_allocatable = self.freepregs[op.class()].remove(&preg);
-            if !preg_is_allocatable {
-                preg_is_allocatable = self.clobbered_reg_is_allocatable.contains(&preg);
+            self.freepregs[op.class()].remove(&preg);
+            if is_allocatable {
+                self.lrus[preg.class()].append(preg.hw_enc());
             }
         }
-        if preg_is_allocatable {
+        if is_allocatable {
             self.lrus[op.class()].poke(preg);
         }
         self.vreg_allocs[op.vreg().vreg()] = Allocation::reg(preg);
         self.vreg_in_preg[preg.index()] = op.vreg();
+        trace!("vreg {:?} is now in preg {:?}", op.vreg(), preg);
     }
 
     /// Allocates for the operand `op` with index `op_idx` into the
@@ -881,14 +884,13 @@ impl<'a, F: Function> Env<'a, F> {
                     let preg = prev_alloc.as_reg().unwrap();
                     self.vreg_in_preg[preg.index()] = VReg::invalid();
                     // If it's a fixed stack slot, then it's not allocatable.
-                    if !self.is_stack(prev_alloc) 
-                        // If it's a clobber, then only fixed register constraints
-                        // can make it get allocated.
-                        && !self.func.inst_clobbers(inst).contains(preg) 
-                    {
+                    if !self.is_stack(prev_alloc) {
                         trace!("{:?} is no longer using preg {:?}, so freeing it after instruction", op.vreg(), preg);
                         self.free_after_curr_inst.insert(preg);
-                        self.lrus[preg.class()].remove(preg.hw_enc());
+                        // Clobbers have already been removed from the LRU.
+                        if !self.func.inst_clobbers(inst).contains(preg) {
+                            self.lrus[preg.class()].remove(preg.hw_enc());
+                        }
                     }
                 }
             }
@@ -1120,6 +1122,7 @@ impl<'a, F: Function> Env<'a, F> {
     }
 
     fn save_and_restore_clobbered_registers(&mut self, inst: Inst) {
+        trace!("Adding save and restore edits for vregs in clobbered registers");
         for clobbered_preg in self.func.inst_clobbers(inst) {
             // If the instruction clobbers a register holding a live vreg,
             // insert edits to save the live reg and restore it
@@ -1164,6 +1167,7 @@ impl<'a, F: Function> Env<'a, F> {
                     || (!self.use_vregs_saved_and_restored_in_curr_inst.contains(&vreg)
                         && vreg_lives_past_curr_inst)
                 {
+                    trace!("Adding save and restore edits for {:?}", vreg);
                     let preg_alloc = Allocation::reg(clobbered_preg);
                     let slot = if self.vreg_spillslots[vreg.vreg()].is_valid() {
                         self.vreg_spillslots[vreg.vreg()]
@@ -1191,6 +1195,7 @@ impl<'a, F: Function> Env<'a, F> {
                 }
             }
         }
+        trace!("Done adding edits for clobbered registers");
     }
 
     /// If instruction `inst` is a branch in `block`,
@@ -1300,6 +1305,7 @@ impl<'a, F: Function> Env<'a, F> {
     }
 
     fn alloc_inst(&mut self, block: Block, inst: Inst) {
+        trace!("Allocating instruction {:?}", inst);
         if self.func.is_branch(inst) {
             self.process_branch(block, inst);
         }
@@ -1307,6 +1313,7 @@ impl<'a, F: Function> Env<'a, F> {
         let clobbers = self.func.inst_clobbers(inst);
         for preg in clobbers {
             if self.freepregs[preg.class()].remove(&preg) {
+                trace!("Removing {:?} from the freelist because it's a clobber", preg);
                 self.lrus[preg.class()].remove(preg.hw_enc());
                 self.clobbered_reg_is_allocatable.insert(preg);
             }
@@ -1414,10 +1421,21 @@ impl<'a, F: Function> Env<'a, F> {
         }
         for preg in self.func.inst_clobbers(inst) {
             if self.clobbered_reg_is_allocatable.contains(&preg) {
+                if self.vreg_in_preg[preg.index()] == VReg::invalid() {
+                    // In the case where the clobbered register is allocated to
+                    // something, don't add the register to the freelist, cause
+                    // it isn't free.
+                    trace!("Adding clobbered {:?} back to free list", preg);
+                    self.freepregs[preg.class()].insert(preg);
+                }
+                // TODO: Append and poke instead.
                 self.lrus[preg.class()].append(preg.hw_enc());
-                self.freepregs[preg.class()].insert(preg);
             }
         }
+        trace!("After the allocation:");
+        trace!("freed_def_pregs: {:?}", self.freed_def_pregs);
+        trace!("free after curr inst: {:?}", self.free_after_curr_inst);
+        trace!("");
         self.clobbered_reg_is_allocatable.clear();
         let scratch_regs = self.get_scratch_regs(inst);
         self.process_edits(scratch_regs);
@@ -1455,6 +1473,9 @@ impl<'a, F: Function> Env<'a, F> {
         trace!("Int LRU: {:?}", self.lrus[RegClass::Int]);
         trace!("Float LRU: {:?}", self.lrus[RegClass::Float]);
         trace!("Vector LRU: {:?}", self.lrus[RegClass::Vector]);
+        trace!("Free int pregs: {:?}", self.freepregs[RegClass::Int]);
+        trace!("Free float pregs: {:?}", self.freepregs[RegClass::Float]);
+        trace!("Free vector pregs: {:?}", self.freepregs[RegClass::Vector]);
     }
 
     /// At the beginning of every block, all virtual registers that are
@@ -1471,6 +1492,7 @@ impl<'a, F: Function> Env<'a, F> {
         // These registers are livein and they should be stack-allocated.
         let live_vregs = self.live_vregs.clone();
         for vreg in live_vregs.iter().cloned() {
+            trace!("Processing {:?}", vreg);
             if self.vreg_spillslots[vreg.vreg()].is_invalid() {
                 self.vreg_spillslots[vreg.vreg()] = self.allocstack(&vreg);
             }
@@ -1479,28 +1501,35 @@ impl<'a, F: Function> Env<'a, F> {
             let prev_alloc = self.vreg_allocs[vreg.vreg()];
             let slot = Allocation::stack(self.vreg_spillslots[vreg.vreg()]);
             if self.func.block_params(block).contains(&vreg) {
+                trace!("{:?} is a block param. Freeing it", vreg);
                 // A block's block param is not live before the block.
                 // And `vreg_allocs[i]` of a virtual register i is none for
                 // dead vregs.
                 self.freealloc(vreg, PRegSet::empty(), true);
                 if self.func.reftype_vregs().contains(&vreg) {
+                    trace!("{:?} is a reftype. Recording it's definition instruction", vreg);
                     // This marks the definition of the block param.
                     // Record this information which will be used while building
                     // the stackmap later.
                     self.liveout_vreg_def_inst[vreg.vreg()] = (block, self.func.block_insns(block).first());
                 }
             } else {
+                trace!("{:?} is not a block param. It's a liveout vreg from some predecessor", vreg);
+                trace!("Setting {:?}'s current allocation to its spillslot", vreg);
                 // It is a liveout vreg from a predecessor.
                 self.vreg_allocs[vreg.vreg()] = slot;
+                trace!("Recording that {:?} is a liveout", vreg);
                 // Need to remember that this is a liveout vreg so that its
                 // spillslot, if it's a reftype, can be recorded in the stackmap
                 // later.
                 self.liveout_vregs.insert(vreg);
                 if let Some(preg) = prev_alloc.as_reg() {
+                    trace!("{:?} was in {:?}. Removing it", preg, vreg);
                     // Nothing is in that preg anymore. Return it to
                     // the free preg list.
                     self.vreg_in_preg[preg.index()] = VReg::invalid();
                     if !self.is_stack(prev_alloc) {
+                        trace!("{:?} is not a fixed stack slot. Recording it in the freed def pregs list", prev_alloc);
                         // Using this instead of directly adding it to
                         // freepregs to prevent allocated registers from being
                         // used as scratch registers.
@@ -1525,6 +1554,7 @@ impl<'a, F: Function> Env<'a, F> {
             );
         }
         for block_param_vreg in self.func.block_params(block) {
+            trace!("Removing block param {:?} from the live regs set", block_param_vreg);
             self.live_vregs.remove(block_param_vreg);
         }
         self.process_edits(self.get_scratch_regs_for_reloading());
@@ -1638,11 +1668,16 @@ pub fn run<F: Function>(
     trace!("Processing a new function");
     for block in 0..func.num_blocks() {
         let block = Block::new(block);
-        /*trace!("Block {:?}. preds: {:?}. succs: {:?}",
+        trace!("Block {:?}. preds: {:?}. succs: {:?}",
             block, func.block_preds(block), func.block_succs(block)
-        );*/
+        );
         for inst in func.block_insns(block).iter() {
-            trace!("inst{:?}: {:?}", inst.index(), func.inst_operands(inst));
+            let clobbers = func.inst_clobbers(inst);
+            let mut cls = Vec::new();
+            for c in clobbers {
+                cls.push(c);
+            }
+            trace!("inst{:?}: {:?}. Clobbers: {:?}", inst.index(), func.inst_operands(inst), cls);
         }
         trace!("");
     }
@@ -1652,6 +1687,7 @@ pub fn run<F: Function>(
 
 trace!("Final edits: {:?}", env.edits);
 trace!("safepoint_slots: {:?}", env.safepoint_slots);
+trace!("\n\n\n\n\n\n\n");
     Ok(Output {
         edits: env.edits.make_contiguous().to_vec(),
         allocs: env.allocs.allocs,
