@@ -1490,6 +1490,12 @@ impl<'a, F: Function> Env<'a, F> {
                     // `free_after_curr_inst` instead, to ensure that it isn't used as
                     // a scratch register.
                     self.free_after_curr_inst.insert(preg);
+                } else {
+                    // Something is still in the clobber.
+                    // After this instruction, it's no longer a clobber.
+                    // Add it back to the LRU.
+                    trace!("Something is still in the clobber {:?}. Adding it back to the LRU directly.", preg);
+                    self.lrus[preg.class()].append_and_poke(preg);
                 }
             }
         }
