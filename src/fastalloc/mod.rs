@@ -1456,11 +1456,46 @@ impl<'a, F: Function> Env<'a, F> {
                     // In the case where the clobbered register is allocated to
                     // something, don't add the register to the freelist, cause
                     // it isn't free.
-                    trace!("Adding clobbered {:?} back to free list", preg);
-                    self.freepregs[preg.class()].insert(preg);
+                    trace!("Adding clobbered {:?} to free after inst list", preg);
+                    // Consider a scenario:
+                    //
+                    // 1. use v0 (fixed: p1). Clobbers: [p0]
+                    // 2. use v0 (fixed: p0)
+                    //
+                    // In the above, v0 is first allocated to p0 at inst 2.
+                    // At inst 1, v0's allocation is changed to p1 and edits are inserted
+                    // to save and restore v0:
+                    //
+                    // move from p1 to stack_v0
+                    // 1. use v0 (fixed: p1). Clobbers: [p0]
+                    // move from stack_v0 to p0
+                    // 2. use v0 (fixed: p0)
+                    //
+                    // Suppose some other edits need to be inserted before/after inst 1
+                    // and scratch registers are needed.
+                    // If the clobber p0 is added back to the free list directly,
+                    // p0 may end up be being used as a scratch register and get overwritten
+                    // before inst 2 is reached. This could happen if inst 1 is a safepoint and
+                    // edits to save and restore reftypes are prepended before the inst
+                    // and after resulting in the following scenario:
+                    //
+                    // --- p0 is overwritten ---
+                    // move from p1 to stack_v0
+                    // 1. use v0 (fixed: p1). Clobbers: [p0]
+                    // move from stack_v0 to p0
+                    // --- p0 is overwritten ---
+                    // 2. use v0 (fixed: p0)
+                    //
+                    // To avoid this scenario, the registers are added to the
+                    // `free_after_curr_inst` instead, to ensure that it isn't used as
+                    // a scratch register.
+                    self.free_after_curr_inst.insert(preg);
+                } else {
+                    // Something is still in the clobber.
+                    // After this instruction, it's no longer a clobber.
+                    // Add it back to the LRU.
+                    self.lrus[preg.class()].append_and_poke(preg);
                 }
-                // TODO: Append and poke instead.
-                self.lrus[preg.class()].append(preg.hw_enc());
             }
         }
         trace!("After the allocation:");
@@ -1530,7 +1565,7 @@ impl<'a, F: Function> Env<'a, F> {
                 // dead vregs.
                 self.freealloc(vreg, PRegSet::empty());
                 if self.func.reftype_vregs().contains(&vreg) {
-                    trace!("{:?} is a reftype. Recording it's definition instruction", vreg);
+                    trace!("{:?} is a reftype. Recording its definition instruction", vreg);
                     // This marks the definition of the block param.
                     // Record this information which will be used while building
                     // the stackmap later.
