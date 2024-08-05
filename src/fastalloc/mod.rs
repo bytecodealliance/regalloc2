@@ -132,10 +132,6 @@ pub struct Env<'a, F: Function> {
     /// Used to keep track of which vregs have been allocated in the current instruction.
     /// This is used to determine which edits to insert when allocating a use operand.
     vregs_allocd_in_curr_inst: HashSet<VReg>,
-    /// Used to check if a clobbered register in the current instruction is an
-    /// allocatable register, to make decisions on whether or not is should be returned to
-    /// the free register list after allocation of the instruction's operands.
-    clobbered_reg_is_allocatable: HashSet<PReg>,
     /// All the safepoint instructions encountered during allocation and their blocks.
     /// When allocation is completed, this contains all the safepoint instructions
     /// in the function.
@@ -192,6 +188,7 @@ impl<'a, F: Function> Env<'a, F> {
         trace!("{:?}", env);
         Self {
             func,
+            // Just using this for debugging
             preg_index_to_class_and_hw_enc: {
                 let mut map = HashMap::new();
                 for class in [RegClass::Int, RegClass::Float, RegClass::Vector] {
@@ -237,7 +234,6 @@ impl<'a, F: Function> Env<'a, F> {
             use_vregs_saved_and_restored_in_curr_inst: HashSet::new(),
             freed_def_pregs: PartedByRegClass { items: [BTreeSet::new(), BTreeSet::new(), BTreeSet::new()] },
             vregs_first_seen_in_curr_inst: HashSet::new(),
-            clobbered_reg_is_allocatable: HashSet::new(),
             safepoint_insts: Vec::new(),
             liveout_vregs: HashSet::new(),
             liveout_vreg_def_inst: vec![(Block::invalid(), Inst::invalid()); func.num_vregs()],
@@ -390,13 +386,6 @@ impl<'a, F: Function> Env<'a, F> {
     }
 
     fn add_move_later(&mut self, inst: Inst, from: Allocation, to: Allocation, class: RegClass, pos: InstPosition, prepend: bool) {
-        if self.is_stack(from) && self.is_stack(to) {
-            self.inst_needs_scratch_reg[class] = true;
-        }
-        let target_edits = match pos {
-            InstPosition::After => &mut self.inst_post_edits,
-            InstPosition::Before => &mut self.inst_pre_edits
-        };
         trace!("Recording edit to add later: {:?}", (ProgPoint::new(inst, pos), Edit::Move {
             from,
             to
@@ -405,6 +394,13 @@ impl<'a, F: Function> Env<'a, F> {
             trace!("Deciding not to record the edit, since the source and dest are the same");
             return;
         }
+        if self.is_stack(from) && self.is_stack(to) {
+            self.inst_needs_scratch_reg[class] = true;
+        }
+        let target_edits = match pos {
+            InstPosition::After => &mut self.inst_post_edits,
+            InstPosition::Before => &mut self.inst_pre_edits
+        };
         if prepend {
             target_edits.push_front((ProgPoint::new(inst, pos), Edit::Move {
                 from,
@@ -564,7 +560,7 @@ impl<'a, F: Function> Env<'a, F> {
         // The only way a freed def preg can be reused for an operand is if
         // the operand uses or defines a vreg in the early phase and the vreg doesn't
         // live past the instruction. If the vreg lives past the instruction, then the
-        // possible defined value will overwrite it.
+        // defined value will overwrite it.
         if op.pos() == OperandPos::Early && self.vregs_first_seen_in_curr_inst.contains(&op.vreg())
             // A reused input should not have the same allocation as a non-reused def operand.
             // For example:
@@ -1340,11 +1336,17 @@ impl<'a, F: Function> Env<'a, F> {
         let operands = self.func.inst_operands(inst);
         let clobbers = self.func.inst_clobbers(inst);
         for preg in clobbers {
+            // To avoid allocating clobbers, they are removed from the
+            // free register list. To also avoid a clobber being evicted,
+            // it's also removed from the LRU.
+            // The only way a clobber can be marked as the allocation of
+            // an operand is through a fixed register constraint to the clobber
+            // or a reused input constraint of an operand with a fixed register
+            // constraint to use a clobber.
             if !self.is_stack(Allocation::reg(preg)) {
                 trace!("Removing {:?} from the freelist because it's a clobber", preg);
                 self.freepregs[preg.class()].remove(&preg);
                 self.lrus[preg.class()].remove(preg.hw_enc());
-                self.clobbered_reg_is_allocatable.insert(preg);
             }
         }
         for (_, op) in ReuseOperands::new(operands) {
@@ -1449,7 +1451,7 @@ impl<'a, F: Function> Env<'a, F> {
             }
         }
         for preg in self.func.inst_clobbers(inst) {
-            if self.clobbered_reg_is_allocatable.contains(&preg) {
+            if !self.is_stack(Allocation::reg(preg)) {
                 if self.vreg_in_preg[preg.index()] == VReg::invalid() {
                     // In the case where the clobbered register is allocated to
                     // something, don't add the register to the freelist, cause
@@ -1465,7 +1467,6 @@ impl<'a, F: Function> Env<'a, F> {
         trace!("freed_def_pregs: {:?}", self.freed_def_pregs);
         trace!("free after curr inst: {:?}", self.free_after_curr_inst);
         trace!("");
-        self.clobbered_reg_is_allocatable.clear();
         let scratch_regs = self.get_scratch_regs(inst);
         self.process_edits(scratch_regs);
         self.add_freed_regs_to_freelist();
@@ -1748,6 +1749,7 @@ trace!("\n\n\n\n\n\n\n");
         allocs: env.allocs.allocs,
         inst_alloc_offsets: env.allocs.inst_alloc_offsets,
         num_spillslots: env.num_spillslots as usize,
+        // TODO: Handle debug locations.
         debug_locations: Vec::new(),
         safepoint_slots: env.safepoint_slots,
         stats: env.stats,
