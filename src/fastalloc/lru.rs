@@ -144,6 +144,7 @@ impl Lru {
         self.head == usize::MAX
     }
 
+    // Using this to debug.
     fn check_for_cycle(&self) {
         trace!("{:?} LRU. head: {:?}, Actual data: {:?}", self.regclass, self.head, self.data);
         if self.head != usize::MAX {
