@@ -160,6 +160,7 @@ pub struct Env<'a, F: Function> {
     reused_inputs_in_curr_inst: Vec<usize>,
     /// The vregs defined or used in the current instruction.
     vregs_in_curr_inst: HashSet<VReg>,
+    allocatable_regs: PRegSet,
     dedicated_scratch_regs: PartedByRegClass<Option<PReg>>,
     preg_index_to_class_and_hw_enc: HashMap<usize, PReg>,
 
@@ -188,6 +189,7 @@ impl<'a, F: Function> Env<'a, F> {
         trace!("{:?}", env);
         Self {
             func,
+            allocatable_regs: PRegSet::from(env),
             // Just using this for debugging
             preg_index_to_class_and_hw_enc: {
                 let mut map = HashMap::new();
@@ -1343,7 +1345,7 @@ impl<'a, F: Function> Env<'a, F> {
             // an operand is through a fixed register constraint to the clobber
             // or a reused input constraint of an operand with a fixed register
             // constraint to use a clobber.
-            if !self.is_stack(Allocation::reg(preg)) {
+            if self.allocatable_regs.contains(preg) {
                 trace!("Removing {:?} from the freelist because it's a clobber", preg);
                 self.freepregs[preg.class()].remove(&preg);
                 self.lrus[preg.class()].remove(preg.hw_enc());
@@ -1451,7 +1453,7 @@ impl<'a, F: Function> Env<'a, F> {
             }
         }
         for preg in self.func.inst_clobbers(inst) {
-            if !self.is_stack(Allocation::reg(preg)) {
+            if self.allocatable_regs.contains(preg) {
                 if self.vreg_in_preg[preg.index()] == VReg::invalid() {
                     // In the case where the clobbered register is allocated to
                     // something, don't add the register to the freelist, cause
