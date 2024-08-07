@@ -34,7 +34,7 @@ macro_rules! trace_enabled {
     };
 }
 
-use core::hash::BuildHasherDefault;
+use core::{default, hash::BuildHasherDefault};
 use std::iter::FromIterator;
 use rustc_hash::FxHasher;
 type FxHashMap<K, V> = hashbrown::HashMap<K, V, BuildHasherDefault<FxHasher>>;
@@ -1559,11 +1559,17 @@ pub fn run<F: Function>(
     env: &MachineEnv,
     options: &RegallocOptions,
 ) -> Result<Output, RegAllocError> {
-    if options.use_fastalloc {
-        fastalloc::run(func, env, options.verbose_log, options.validate_ssa)
-    } else {
-        ion::run(func, env, options.verbose_log, options.validate_ssa)
+    match options.algorithm {
+        Algorithm::Ion => ion::run(func, env, options.verbose_log, options.validate_ssa),
+        Algorithm::Fastalloc => fastalloc::run(func, env, options.verbose_log, options.validate_ssa)
     }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub enum Algorithm {
+    #[default]
+    Ion,
+    Fastalloc,
 }
 
 /// Options for allocation.
@@ -1575,6 +1581,6 @@ pub struct RegallocOptions {
     /// Run the SSA validator before allocating registers.
     pub validate_ssa: bool,
 
-    /// Run the SSRA algorithm
-    pub use_fastalloc: bool,
+    /// The register allocation algorithm to be used.
+    pub algorithm: Algorithm,
 }
