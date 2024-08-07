@@ -4,7 +4,7 @@ use core::ops::{Index, IndexMut};
 use crate::{AllocationKind, Block, Inst, InstPosition, Operand, OperandConstraint, OperandKind, OperandPos, PReg, PRegSet, RegClass, SpillSlot, VReg};
 use crate::{Function, MachineEnv, ssa::validate_ssa, ProgPoint, Edit, Output};
 use crate::{cfg::CFGInfo, RegAllocError, Allocation, ion::Stats};
-use alloc::collections::{BTreeSet, VecDeque};
+use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 use hashbrown::{HashSet, HashMap};
 
@@ -1623,9 +1623,9 @@ pub fn run<F: Function>(
     enable_annotations: bool,
     enable_ssa_checker: bool,
 ) -> Result<Output, RegAllocError> {
-    let cfginfo = CFGInfo::new(func)?;
 
     if enable_ssa_checker {
+        let cfginfo = CFGInfo::new(func)?;
         validate_ssa(func, &cfginfo)?;
     }
 
