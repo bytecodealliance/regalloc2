@@ -1308,7 +1308,7 @@ impl<'a, F: Function> Env<'a, F> {
         if self.func.is_branch(inst) {
             self.process_branch(block, inst);
         }
-        let operands = self.func.inst_operands(inst);
+        let operands = Operands::new(self.func.inst_operands(inst));
         let clobbers = self.func.inst_clobbers(inst);
         for preg in clobbers {
             // To avoid allocating clobbers, they are removed from the
@@ -1324,38 +1324,38 @@ impl<'a, F: Function> Env<'a, F> {
                 self.lrus[preg.class()].remove(preg.hw_enc());
             }
         }
-        for (_, op) in ReuseOperands::new(operands) {
+        for (_, op) in operands.reuse() {
             let OperandConstraint::Reuse(reused_idx) = op.constraint() else {
                 unreachable!()
             };
             self.reused_inputs_in_curr_inst.push(reused_idx);
         }
-        for (op_idx, op) in FixedLateOperands::new(operands) {
+        for (op_idx, op) in operands.fixed_late() {
             self.process_operand_allocation(inst, op, op_idx);
         }
-        for (op_idx, op) in NonFixedNonReuseLateDefOperands::new(operands) {
+        for (op_idx, op) in operands.non_fixed_non_reuse_late_def() {
             self.process_operand_allocation(inst, op, op_idx);
         }
-        for (_, op) in NonReuseLateDefOperands::new(operands) {
+        for (_, op) in operands.non_reuse_late_def() {
             self.freealloc(op.vreg(), clobbers);
         }
-        for (op_idx, op) in FixedEarlyOperands::new(operands) {
+        for (op_idx, op) in operands.fixed_early() {
             self.process_operand_allocation(inst, op, op_idx);
         }
-        for (op_idx, op) in NonFixedNonReuseLateUseOperands::new(operands) {
+        for (op_idx, op) in operands.non_fixed_non_reuse_late_use() {
             self.process_operand_allocation(inst, op, op_idx);
         }
-        for (op_idx, op) in NonFixedNonReuseEarlyOperands::new(operands) {
+        for (op_idx, op) in operands.non_fixed_non_reuse_early() {
             self.process_operand_allocation(inst, op, op_idx);
         }
-        for (_, op) in NonReuseEarlyDefOperands::new(operands) {
+        for (_, op) in operands.non_reuse_early_def() {
             self.freealloc(op.vreg(), clobbers);
         }
-        for (op_idx, op) in ReuseOperands::new(operands) {
+        for (op_idx, op) in operands.reuse() {
             let OperandConstraint::Reuse(reused_idx) = op.constraint() else {
                 unreachable!()
             };
-            self.process_reuse_operand_allocation(inst, op, op_idx, operands[reused_idx], clobbers);
+            self.process_reuse_operand_allocation(inst, op, op_idx, operands.0[reused_idx], clobbers);
         }
         self.save_and_restore_clobbered_registers(inst);
         for preg in self.func.inst_clobbers(inst) {
@@ -1611,10 +1611,9 @@ fn log_output<'a, F: Function>(env: &Env<'a, F>) {
         }
     }
     trace!("VReg spillslots: {:?}", v);
-    trace!("\nTemp spillslots: {:?}", env.temp_spillslots);
+    trace!("Temp spillslots: {:?}", env.temp_spillslots);
     trace!("Final edits: {:?}", env.edits);
-    trace!("safepoint_slots: {:?}", env.safepoint_slots);
-    trace!("\n\n\n\n\n\n\n");
+    trace!("safepoint_slots: {:?}\n", env.safepoint_slots);
 }
 
 pub fn run<F: Function>(
