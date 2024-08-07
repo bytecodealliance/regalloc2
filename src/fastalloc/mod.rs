@@ -25,8 +25,8 @@ struct Allocs {
 }
 
 impl Allocs {
-    fn new<F: Function>(func: &F, env: &MachineEnv) -> Self {
-        let operand_no_guess = func.num_vregs() * 3;
+    fn new<F: Function>(func: &F) -> Self {
+        let operand_no_guess = func.num_insts() * 3;
         let mut allocs = Vec::with_capacity(operand_no_guess);
         let mut inst_alloc_offsets = Vec::with_capacity(operand_no_guess);
         for inst in 0..func.num_insts() {
@@ -218,7 +218,7 @@ impl<'a, F: Function> Env<'a, F> {
                 env.scratch_by_class[1],
                 env.scratch_by_class[2],
             ] },
-            allocs: Allocs::new(func, env),
+            allocs: Allocs::new(func),
             edits: VecDeque::new(),
             safepoint_slots: Vec::new(),
             num_spillslots: 0,
