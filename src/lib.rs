@@ -34,8 +34,7 @@ macro_rules! trace_enabled {
     };
 }
 
-use core::{default, hash::BuildHasherDefault};
-use std::iter::FromIterator;
+use core::{hash::BuildHasherDefault, iter::FromIterator};
 use rustc_hash::FxHasher;
 type FxHashMap<K, V> = hashbrown::HashMap<K, V, BuildHasherDefault<FxHasher>>;
 type FxHashSet<V> = hashbrown::HashSet<V, BuildHasherDefault<FxHasher>>;

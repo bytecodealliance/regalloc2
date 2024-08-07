@@ -8,9 +8,6 @@ use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 use hashbrown::{HashSet, HashMap};
 
-use std::println;
-use std::format;
-
 mod lru;
 mod iter;
 use lru::*;
@@ -1421,8 +1418,9 @@ impl<'a, F: Function> Env<'a, F> {
         self.reused_inputs_in_curr_inst.clear();
         self.vregs_in_curr_inst.clear();
 
-        #[cfg(feature = "trace-log")]
-        self.log_post_inst_processing_state(inst);
+        if trace_enabled!() {
+            self.log_post_inst_processing_state(inst);
+        }
     }
 
     /// At the beginning of every block, all virtual registers that are
@@ -1500,11 +1498,13 @@ impl<'a, F: Function> Env<'a, F> {
         self.process_edits(self.get_scratch_regs_for_reloading());
         self.add_freed_regs_to_freelist();
 
-        #[cfg(feature = "trace-log")]
-        self.log_post_reload_at_begin_state(block);
+        if trace_enabled!() {
+            self.log_post_reload_at_begin_state(block);
+        }
     }
 
     fn log_post_reload_at_begin_state(&self, block: Block) {
+        use alloc::format;
         trace!("");
         trace!("State after instruction reload_at_begin of {:?}", block);
         let mut map = HashMap::new();
@@ -1530,6 +1530,7 @@ impl<'a, F: Function> Env<'a, F> {
     }
 
     fn log_post_inst_processing_state(&self, inst: Inst) {
+        use alloc::format;
         trace!("");
         trace!("State after instruction {:?}", inst);
         let mut map = HashMap::new();
@@ -1629,14 +1630,16 @@ pub fn run<F: Function>(
         validate_ssa(func, &cfginfo)?;
     }
 
-    #[cfg(feature = "trace-log")]
-    log_function(func);
+    if trace_enabled!() {
+        log_function(func);
+    }
 
     let mut env = Env::new(func, mach_env);
     env.run()?;
 
-    #[cfg(feature = "trace-log")]
-    log_output(&env);
+    if trace_enabled!() {
+        log_output(&env);
+    }
 
     Ok(Output {
         edits: env.edits.make_contiguous().to_vec(),

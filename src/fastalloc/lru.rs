@@ -1,11 +1,8 @@
 use alloc::vec::Vec;
 use alloc::vec;
 use hashbrown::HashSet;
-use core::{fmt, ops::IndexMut};
-use std::{ops::Index, print};
-use crate::{PReg, PRegSet, RegClass};
-
-use std::{println, format};
+use core::{fmt, ops::{IndexMut, Index}};
+use crate::{PReg, RegClass};
 
 /// A least-recently-used cache organized as a linked list based on a vector.
 pub struct Lru {
@@ -188,7 +185,7 @@ impl Lru {
 
 impl fmt::Debug for Lru {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        use std::format;
+        use alloc::format;
         let data_str = if self.head == u8::MAX {
             format!("<empty>")
         } else {
@@ -215,11 +212,11 @@ impl fmt::Debug for Lru {
 }
 
 #[derive(Debug)]
-pub struct PartedByRegClass<T: std::fmt::Debug> {
+pub struct PartedByRegClass<T: core::fmt::Debug> {
     pub items: [T; 3],
 }
 
-impl<T: std::fmt::Debug> Index<RegClass> for PartedByRegClass<T> {
+impl<T: core::fmt::Debug> Index<RegClass> for PartedByRegClass<T> {
     type Output = T;
 
     fn index(&self, index: RegClass) -> &Self::Output {
@@ -227,7 +224,7 @@ impl<T: std::fmt::Debug> Index<RegClass> for PartedByRegClass<T> {
     }
 }
 
-impl<T: std::fmt::Debug> IndexMut<RegClass> for PartedByRegClass<T> {
+impl<T: core::fmt::Debug> IndexMut<RegClass> for PartedByRegClass<T> {
     fn index_mut(&mut self, index: RegClass) -> &mut Self::Output {
         &mut self.items[index as usize]
     }
