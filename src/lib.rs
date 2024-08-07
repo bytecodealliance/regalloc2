@@ -35,6 +35,7 @@ macro_rules! trace_enabled {
 }
 
 use core::hash::BuildHasherDefault;
+use std::iter::FromIterator;
 use rustc_hash::FxHasher;
 type FxHashMap<K, V> = hashbrown::HashMap<K, V, BuildHasherDefault<FxHasher>>;
 type FxHashSet<V> = hashbrown::HashSet<V, BuildHasherDefault<FxHasher>>;
@@ -302,6 +303,16 @@ impl From<&MachineEnv> for PRegSet {
         }
 
         res
+    }
+}
+
+impl FromIterator<PReg> for PRegSet {
+    fn from_iter<T: IntoIterator<Item = PReg>>(iter: T) -> Self {
+        let mut set = Self::default();
+        for preg in iter {
+            set.add(preg);
+        }
+        set
     }
 }
 
