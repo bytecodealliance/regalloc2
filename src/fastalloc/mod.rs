@@ -97,7 +97,7 @@ pub struct Env<'a, F: Function> {
     /// 
     /// This is used to keep track of them so that they can be marked as free for reallocation
     /// after the instruction has completed processing.
-    free_after_curr_inst: PRegSet,
+    free_after_curr_inst: PartedByRegClass<PRegSet>,
     /// The virtual registers of use operands that have been allocated in the current instruction
     /// and for which edits had to be inserted to save and restore them because their constraint
     /// doesn't allow the allocation they are expected to be in after the instruction.
@@ -204,7 +204,7 @@ impl<'a, F: Function> Env<'a, F> {
             ] },
             inst_pre_edits: VecDeque::new(),
             inst_post_edits: VecDeque::new(),
-            free_after_curr_inst: PRegSet::empty(),
+            free_after_curr_inst: PartedByRegClass { items: [PRegSet::empty(), PRegSet::empty(), PRegSet::empty()] },
             vregs_allocd_in_curr_inst: HashSet::new(),
             use_vregs_saved_and_restored_in_curr_inst: HashSet::new(),
             freed_def_pregs: PartedByRegClass { items: [PRegSet::empty(), PRegSet::empty(), PRegSet::empty()] },
@@ -239,16 +239,17 @@ impl<'a, F: Function> Env<'a, F> {
     fn add_freed_regs_to_freelist(&mut self) {
         for class in [RegClass::Int, RegClass::Float, RegClass::Vector] {
             for preg in self.freed_def_pregs[class] {
-                self.freepregs[class].add(preg);
                 self.lrus[class].append(preg.hw_enc());
             }
+            self.freepregs[class].union_from(self.freed_def_pregs[class]);
             self.freed_def_pregs[class] = PRegSet::empty();
+            
+            for preg in self.free_after_curr_inst[class] {
+                self.lrus[preg.class()].append(preg.hw_enc());
+            }
+            self.freepregs[class].union_from(self.free_after_curr_inst[class]);
+            self.free_after_curr_inst[class] = PRegSet::empty();
         }
-        for preg in self.free_after_curr_inst {
-            self.freepregs[preg.class()].add(preg);
-            self.lrus[preg.class()].append(preg.hw_enc());
-        }
-        self.free_after_curr_inst = PRegSet::empty();
     }
 
     /// The scratch registers needed for processing the edits generated
@@ -482,7 +483,7 @@ impl<'a, F: Function> Env<'a, F> {
                         // By adding it to this list, instead of freed_def_pregs, the only way
                         // a clobber can be newly allocated to a vreg in the instruction is to
                         // use a fixed register constraint.
-                        self.free_after_curr_inst.add(preg);
+                        self.free_after_curr_inst[preg.class()].add(preg);
                         // No need to remove the preg from the LRU because clobbers
                         // have already been removed from the LRU.
                     } else {
@@ -602,7 +603,7 @@ impl<'a, F: Function> Env<'a, F> {
             // from `freed_def_pregs` here.
             self.freed_def_pregs[preg.class()].remove(preg);
             self.lrus[preg.class()].append(preg.hw_enc());
-        } else if self.free_after_curr_inst.contains(preg) {
+        } else if self.free_after_curr_inst[preg.class()].contains(preg) {
             // If the new allocation was once a freed prev_alloc, remove it
             // from the free after current inst list.
             // For example:
@@ -618,7 +619,7 @@ impl<'a, F: Function> Env<'a, F> {
             // To prevent reallocating a register while a live one is still in it,
             // this register has to be removed from the list.
             trace!("{:?} is now using preg {:?}. Removing it from the free after instruction list", op.vreg(), preg);
-            self.free_after_curr_inst.remove(preg);
+            self.free_after_curr_inst[preg.class()].remove(preg);
             if is_allocatable {
                 self.lrus[preg.class()].append(preg.hw_enc());
             }
@@ -850,7 +851,7 @@ impl<'a, F: Function> Env<'a, F> {
                         // and will be freed after the instruction has completed processing
                         // if no vreg is still present in it.
                         if !self.func.inst_clobbers(inst).contains(preg) {
-                            self.free_after_curr_inst.add(preg);
+                            self.free_after_curr_inst[preg.class()].add(preg);
                             self.lrus[preg.class()].remove(preg.hw_enc());
                         } else {
                             trace!("{:?} is a clobber, so not bothering with the state update", preg);
@@ -1397,7 +1398,7 @@ impl<'a, F: Function> Env<'a, F> {
                     // To avoid this scenario, the registers are added to the
                     // `free_after_curr_inst` instead, to ensure that it isn't used as
                     // a scratch register.
-                    self.free_after_curr_inst.add(preg);
+                    self.free_after_curr_inst[preg.class()].add(preg);
                 } else {
                     // Something is still in the clobber.
                     // After this instruction, it's no longer a clobber.
