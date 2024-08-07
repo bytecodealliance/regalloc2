@@ -27,11 +27,9 @@ struct Allocs {
 
 impl Allocs {
     fn new<F: Function>(func: &F, env: &MachineEnv) -> Self {
-        // The number of operands is <= number of virtual registers
-        // It can be lesser in the case where virtual registers are used multiple
-        // times in a single instruction.
-        let mut allocs = Vec::with_capacity(func.num_vregs());
-        let mut inst_alloc_offsets = Vec::with_capacity(func.num_vregs());
+        let operand_no_guess = func.num_vregs() * 3;
+        let mut allocs = Vec::with_capacity(operand_no_guess);
+        let mut inst_alloc_offsets = Vec::with_capacity(operand_no_guess);
         for inst in 0..func.num_insts() {
             let operands_len = func.inst_operands(Inst::new(inst)).len() as u32;
             inst_alloc_offsets.push(allocs.len() as u32);
@@ -162,7 +160,6 @@ pub struct Env<'a, F: Function> {
     vregs_in_curr_inst: HashSet<VReg>,
     allocatable_regs: PRegSet,
     dedicated_scratch_regs: PartedByRegClass<Option<PReg>>,
-    preg_index_to_class_and_hw_enc: HashMap<usize, PReg>,
 
     fixed_stack_slots: Vec<PReg>,
 
@@ -190,23 +187,6 @@ impl<'a, F: Function> Env<'a, F> {
         Self {
             func,
             allocatable_regs: PRegSet::from(env),
-            // Just using this for debugging
-            preg_index_to_class_and_hw_enc: {
-                let mut map = HashMap::new();
-                for class in [RegClass::Int, RegClass::Float, RegClass::Vector] {
-                    let class = class as usize;
-                    for reg in env.preferred_regs_by_class[class].iter().cloned() {
-                        map.insert(reg.index(), reg);
-                    }
-                    for reg in env.non_preferred_regs_by_class[class].iter().cloned() {
-                        map.insert(reg.index(), reg);
-                    }
-                    for reg in env.fixed_stack_slots.iter().cloned() {
-                        map.insert(reg.index(), reg);
-                    }
-                }
-                map
-            },
             vreg_allocs: vec![Allocation::none(); func.num_vregs()],
             vreg_spillslots: vec![SpillSlot::invalid(); func.num_vregs()],
             live_vregs: HashSet::with_capacity(func.num_vregs()),
@@ -1514,29 +1494,8 @@ impl<'a, F: Function> Env<'a, F> {
         self.reused_inputs_in_curr_inst.clear();
         self.vregs_in_curr_inst.clear();
 
-        // After instruction
-        trace!("");
-        trace!("State after instruction {:?}", inst);
-        let mut map = HashMap::new();
-        for (vreg_idx, alloc) in self.vreg_allocs.iter().enumerate() {
-            if *alloc != Allocation::none() {
-                map.insert(format!("vreg{vreg_idx}"), alloc);
-            }
-        }
-        trace!("vreg_allocs: {:?}", map);
-        let mut map = HashMap::new();
-        for i in 0..self.vreg_in_preg.len() {
-            if self.vreg_in_preg[i] != VReg::invalid() {
-                map.insert(self.preg_index_to_class_and_hw_enc[&i], self.vreg_in_preg[i]);
-            }
-        }
-        trace!("vreg_in_preg: {:?}", map);
-        trace!("Int LRU: {:?}", self.lrus[RegClass::Int]);
-        trace!("Float LRU: {:?}", self.lrus[RegClass::Float]);
-        trace!("Vector LRU: {:?}", self.lrus[RegClass::Vector]);
-        trace!("Free int pregs: {:?}", self.freepregs[RegClass::Int]);
-        trace!("Free float pregs: {:?}", self.freepregs[RegClass::Float]);
-        trace!("Free vector pregs: {:?}", self.freepregs[RegClass::Vector]);
+        #[cfg(feature = "trace-log")]
+        self.log_post_inst_processing_state(block, inst);
     }
 
     /// At the beginning of every block, all virtual registers that are
@@ -1621,7 +1580,11 @@ impl<'a, F: Function> Env<'a, F> {
         self.process_edits(self.get_scratch_regs_for_reloading());
         self.add_freed_regs_to_freelist();
 
-        // After reload_at_begin
+        #[cfg(feature = "trace-log")]
+        self.log_post_reload_at_begin_state(block);
+    }
+
+    fn log_post_reload_at_begin_state(&self, block: Block) {
         trace!("");
         trace!("State after instruction reload_at_begin of {:?}", block);
         let mut map = HashMap::new();
@@ -1634,7 +1597,32 @@ impl<'a, F: Function> Env<'a, F> {
         let mut map = HashMap::new();
         for i in 0..self.vreg_in_preg.len() {
             if self.vreg_in_preg[i] != VReg::invalid() {
-                map.insert(self.preg_index_to_class_and_hw_enc[&i], self.vreg_in_preg[i]);
+                map.insert(PReg::from_index(i), self.vreg_in_preg[i]);
+            }
+        }
+        trace!("vreg_in_preg: {:?}", map);
+        trace!("Int LRU: {:?}", self.lrus[RegClass::Int]);
+        trace!("Float LRU: {:?}", self.lrus[RegClass::Float]);
+        trace!("Vector LRU: {:?}", self.lrus[RegClass::Vector]);
+        trace!("Free int pregs: {:?}", self.freepregs[RegClass::Int]);
+        trace!("Free float pregs: {:?}", self.freepregs[RegClass::Float]);
+        trace!("Free vector pregs: {:?}", self.freepregs[RegClass::Vector]);
+    }
+
+    fn log_post_inst_processing_state(&self, block: Block, inst: Inst) {
+        trace!("");
+        trace!("State after instruction {:?}", inst);
+        let mut map = HashMap::new();
+        for (vreg_idx, alloc) in self.vreg_allocs.iter().enumerate() {
+            if *alloc != Allocation::none() {
+                map.insert(format!("vreg{vreg_idx}"), alloc);
+            }
+        }
+        trace!("vreg_allocs: {:?}", map);
+        let mut map = HashMap::new();
+        for i in 0..self.vreg_in_preg.len() {
+            if self.vreg_in_preg[i] != VReg::invalid() {
+                map.insert(PReg::from_index(i), self.vreg_in_preg[i]);
             }
         }
         trace!("vreg_in_preg: {:?}", map);
@@ -1716,26 +1704,53 @@ impl<'a, F: Function> Env<'a, F> {
         }
         self.build_safepoint_stackmap();
 
-        /////////////////////////////////////////////////////////////////////////////////////
-        trace!("Done!");
-        struct Z(usize);
-        impl std::fmt::Debug for Z {
-            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-                write!(f, "v{}", self.0)
-            }
-        }
-        let mut v = Vec::new();
-        for i in 0..self.func.num_vregs() {
-            if self.vreg_spillslots[i].is_valid() {
-                v.push((Z(i), Allocation::stack(self.vreg_spillslots[i])));
-            }
-        }
-        trace!("{:?}", v);
-        trace!("\nTemp spillslots: {:?}", self.temp_spillslots);
-        /////////////////////////////////////////////////////////////////////////////////////
-
         Ok(())
     }
+}
+
+fn log_function<F: Function>(func: &F) {
+    trace!("Processing a new function");
+    for block in 0..func.num_blocks() {
+        let block = Block::new(block);
+        trace!("Block {:?}. preds: {:?}. succs: {:?}, params: {:?}",
+            block, func.block_preds(block), func.block_succs(block),
+            func.block_params(block)
+        );
+        for inst in func.block_insns(block).iter() {
+            let clobbers = func.inst_clobbers(inst);
+            let mut cls = Vec::new();
+            for c in clobbers {
+                cls.push(c);
+            }
+            trace!("inst{:?}: {:?}. Clobbers: {:?}", inst.index(), func.inst_operands(inst), cls);
+            if func.is_branch(inst) {
+                trace!("Block args: ");
+                for (succ_idx, _succ) in func.block_succs(block).iter().enumerate() {
+                    trace!(" {:?}", func.branch_blockparams(block, inst, succ_idx));
+                }
+            }
+            trace!("");
+        }
+        trace!("");
+    }
+}
+
+fn log_output<'a, F: Function>(env: &Env<'a, F>) {
+    trace!("Done!");
+    let mut v = Vec::new();
+    for i in 0..env.func.num_vregs() {
+        if env.vreg_spillslots[i].is_valid() {
+            v.push((
+                VReg::new(i, RegClass::Int),
+                Allocation::stack(env.vreg_spillslots[i])
+            ));
+        }
+    }
+    trace!("VReg spillslots: {:?}", v);
+    trace!("\nTemp spillslots: {:?}", env.temp_spillslots);
+    trace!("Final edits: {:?}", env.edits);
+    trace!("safepoint_slots: {:?}", env.safepoint_slots);
+    trace!("\n\n\n\n\n\n\n");
 }
 
 pub fn run<F: Function>(
@@ -1750,38 +1765,15 @@ pub fn run<F: Function>(
         validate_ssa(func, &cfginfo)?;
     }
 
-    trace!("Processing a new function");
-    for block in 0..func.num_blocks() {
-        let block = Block::new(block);
-        trace!("Block {:?}. preds: {:?}. succs: {:?}, params: {:?}",
-            block, func.block_preds(block), func.block_succs(block),
-            func.block_params(block)
-        );
-        for inst in func.block_insns(block).iter() {
-            let clobbers = func.inst_clobbers(inst);
-            let mut cls = Vec::new();
-            for c in clobbers {
-                cls.push(c);
-            }
-            use std::print;
-            trace!("inst{:?}: {:?}. Clobbers: {:?}", inst.index(), func.inst_operands(inst), cls);
-            if func.is_branch(inst) {
-                trace!("Block args: ");
-                for (succ_idx, _succ) in func.block_succs(block).iter().enumerate() {
-                    trace!(" {:?}", func.branch_blockparams(block, inst, succ_idx));
-                }
-            }
-            trace!("");
-        }
-        trace!("");
-    }
+    #[cfg(feature = "trace-log")]
+    log_function(func);
 
     let mut env = Env::new(func, mach_env);
     env.run()?;
 
-trace!("Final edits: {:?}", env.edits);
-trace!("safepoint_slots: {:?}", env.safepoint_slots);
-trace!("\n\n\n\n\n\n\n");
+    #[cfg(feature = "trace-log")]
+    log_output(&env);
+
     Ok(Output {
         edits: env.edits.make_contiguous().to_vec(),
         allocs: env.allocs.allocs,

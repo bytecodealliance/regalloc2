@@ -64,7 +64,8 @@ impl Lru {
         }
         self.head = i;
         trace!("Poked {:?} in {:?} LRU", preg, self.regclass);
-        self.check_for_cycle();
+        #[cfg(debug_assertions)]
+        self.validate_lru();
     }
 
     /// Gets the least recently used physical register.
@@ -76,7 +77,8 @@ impl Lru {
         }
         let oldest = self.data[self.head].prev;
         trace!("Popped p{oldest} in {:?} LRU", self.regclass);
-        self.check_for_cycle();
+        #[cfg(debug_assertions)]
+        self.validate_lru();
         PReg::new(oldest, self.regclass)
     }
 
@@ -98,7 +100,8 @@ impl Lru {
             }
         }
         trace!("Removed p{i} from {:?} LRU", self.regclass);
-        self.check_for_cycle();
+        #[cfg(debug_assertions)]
+        self.validate_lru();
     }
 
     /// Sets the node `i` to the last in the list.
@@ -117,7 +120,8 @@ impl Lru {
             self.data[i].next = i;
         }
         trace!("Appended p{i} to the {:?} LRU", self.regclass);
-        self.check_for_cycle();
+        #[cfg(debug_assertions)]
+        self.validate_lru();
     }
 
     pub fn append_and_poke(&mut self, preg: PReg) {
@@ -137,7 +141,8 @@ impl Lru {
             prev,
         };
         trace!("Done inserting p{i} before {j} in {:?} LRU", self.regclass);
-        self.check_for_cycle();
+        #[cfg(debug_assertions)]
+        self.validate_lru();
     }
 
     pub fn is_empty(&self) -> bool {
@@ -145,7 +150,7 @@ impl Lru {
     }
 
     // Using this to debug.
-    fn check_for_cycle(&self) {
+    fn validate_lru(&self) {
         trace!("{:?} LRU. head: {:?}, Actual data: {:?}", self.regclass, self.head, self.data);
         if self.head != usize::MAX {
             let mut node = self.data[self.head].next;
