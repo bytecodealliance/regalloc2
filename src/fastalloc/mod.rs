@@ -875,7 +875,9 @@ impl<'a, F: Function> Env<'a, F> {
         } else {
             self.allocs[(inst.index(), op_idx)] = self.vreg_allocs[op.vreg().vreg()];
             if let Some(preg) = self.allocs[(inst.index(), op_idx)].as_reg() {
-                if !self.func.inst_clobbers(inst).contains(preg) {
+                if self.allocatable_regs.contains(preg) 
+                    && !self.func.inst_clobbers(inst).contains(preg) 
+                {
                     self.lrus[preg.class()].poke(preg);
                 }
             }
