@@ -8,10 +8,12 @@ use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 use hashbrown::HashSet;
 
+mod bitset;
 mod lru;
 mod iter;
 use lru::*;
 use iter::*;
+use bitset::BitSet;
 
 #[derive(Debug)]
 struct Allocs {
