@@ -1487,13 +1487,7 @@ impl<'a, F: Function> Env<'a, F> {
                 trace!(" --- Placing branch arg {:?} in {:?}", vreg, temp);
                 trace!("{:?} which is now in {:?} inserting move to {:?}", vreg, temp, param_alloc);
                 self.add_move_later(inst, temp, param_alloc, vreg.class(), InstPosition::Before, false);
-            }
-        }
 
-        reset_temp_idx(&mut next_temp_idx);
-
-        for (succ_idx, _) in self.func.block_succs(block).iter().enumerate() {
-            for vreg in self.func.branch_blockparams(block, inst, succ_idx).iter() {
                 // All branch arguments should be in their spillslots at the end of the function.
                 self.vreg_allocs[vreg.vreg()] = Allocation::stack(self.vreg_spillslots[vreg.vreg()]);
                 self.live_vregs.insert(*vreg);
