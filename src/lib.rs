@@ -315,6 +315,16 @@ impl FromIterator<PReg> for PRegSet {
     }
 }
 
+impl core::fmt::Display for PRegSet {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{{")?;
+        for preg in self.into_iter() {
+            write!(f, "{preg}, ")?;
+        }
+        write!(f, "}}")
+    }
+}
+
 /// A virtual register. Contains a virtual register number and a
 /// class.
 ///
