@@ -244,3 +244,15 @@ impl Lrus {
         }
     }
 }
+
+use core::fmt::{Debug, Display};
+
+impl<T: Display + Debug> Display for PartedByRegClass<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{{ int: {}, float: {}, vector: {} }}",
+            self.items[0], self.items[1], self.items[2]
+        )
+    }
+}
