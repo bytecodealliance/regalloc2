@@ -6,7 +6,7 @@ use crate::{Function, MachineEnv, ssa::validate_ssa, ProgPoint, Edit, Output};
 use crate::{cfg::CFGInfo, RegAllocError, Allocation, ion::Stats};
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
-use hashbrown::{HashSet, HashMap};
+use hashbrown::HashSet;
 
 mod lru;
 mod iter;
@@ -135,11 +135,6 @@ pub struct Env<'a, F: Function> {
     /// Used to keep track of which vregs have been allocated in the current instruction.
     /// This is used to determine which edits to insert when allocating a use operand.
     vregs_allocd_in_curr_inst: HashSet<VReg>,
-    /// All the liveout vregs encountered during allocation.
-    /// When allocation is completed, this contains all the liveout vregs in
-    /// the function.
-    /// This is used to build the stackmap after allocation is complete.
-    liveout_vregs: HashSet<VReg>,
     /// Used to determine if a scratch register is needed for an
     /// instruction's moves during the `process_edit` calls.
     inst_needs_scratch_reg: PartedByRegClass<bool>,
@@ -210,7 +205,6 @@ impl<'a, F: Function> Env<'a, F> {
             use_vregs_saved_and_restored_in_curr_inst: HashSet::new(),
             freed_def_pregs: PartedByRegClass { items: [PRegSet::empty(), PRegSet::empty(), PRegSet::empty()] },
             vregs_first_seen_in_curr_inst: HashSet::new(),
-            liveout_vregs: HashSet::new(),
             inst_needs_scratch_reg: PartedByRegClass { items: [false, false, false] },
             reused_inputs_in_curr_inst: Vec::new(),
             vregs_in_curr_inst: HashSet::new(),
@@ -583,13 +577,8 @@ impl<'a, F: Function> Env<'a, F> {
 
         // It is an error for a fixed register clobber to be used for a defined vreg
         // that outlives the instruction, because it will be impossible to restore it.
-        if self.func.inst_clobbers(inst).contains(preg) && op.kind() == OperandKind::Def
-            && (!self.vregs_first_seen_in_curr_inst.contains(&op.vreg())
-                || self.liveout_vregs.contains(&op.vreg()))
-        {
-            // Invalid input.
-            return Err(RegAllocError::TooManyLiveRegs);
-        }
+        // But checking for that will be expensive?
+
         let is_allocatable = !self.is_stack(Allocation::reg(preg))
             && !self.func.inst_clobbers(inst).contains(preg);
         if self.vreg_in_preg[preg.index()] != VReg::invalid() {
@@ -1654,13 +1643,7 @@ impl<'a, F: Function> Env<'a, F> {
             } else {
                 trace!("{:?} is not a block param. It's a liveout vreg from some predecessor", vreg);
                 trace!("Setting {:?}'s current allocation to its spillslot", vreg);
-                // It is a liveout vreg from a predecessor.
                 self.vreg_allocs[vreg.vreg()] = slot;
-                trace!("Recording that {:?} is a liveout", vreg);
-                // Need to remember that this is a liveout vreg so that its
-                // spillslot, if it's a reftype, can be recorded in the stackmap
-                // later.
-                self.liveout_vregs.insert(vreg);
                 if let Some(preg) = prev_alloc.as_reg() {
                     trace!("{:?} was in {:?}. Removing it", preg, vreg);
                     // Nothing is in that preg anymore. Return it to
@@ -1704,6 +1687,7 @@ impl<'a, F: Function> Env<'a, F> {
     }
 
     fn log_post_reload_at_begin_state(&self, block: Block) {
+        use hashbrown::HashMap;
         use alloc::format;
         trace!("");
         trace!("State after instruction reload_at_begin of {:?}", block);
@@ -1730,6 +1714,7 @@ impl<'a, F: Function> Env<'a, F> {
     }
 
     fn log_post_inst_processing_state(&self, inst: Inst) {
+        use hashbrown::HashMap;
         use alloc::format;
         trace!("");
         trace!("State after instruction {:?}", inst);
