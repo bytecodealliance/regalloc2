@@ -1629,10 +1629,15 @@ impl<'a, F: Function> Env<'a, F> {
         trace!("Live registers at the beginning of block {:?}: {:?}", block, self.live_vregs);
         trace!("Block params at block {:?} beginning: {:?}", block, self.func.block_params(block));
         // We need to check for the registers that are still live.
-        // These registers are livein and they should be stack-allocated.
-        let live_vregs = self.live_vregs.clone();
-        for vreg in live_vregs.iter().cloned() {
+        // These registers are either livein or block params
+        // Liveins should be stack-allocated and block params should be freed.
+        for vreg in self.func.block_params(block).iter().cloned() {
             trace!("Processing {:?}", vreg);
+            if self.vreg_allocs[vreg.vreg()] == Allocation::none() {
+                // If this block param was never used, its allocation will
+                // be none at this point.
+                continue;
+            }
             if self.vreg_spillslots[vreg.vreg()].is_invalid() {
                 self.vreg_spillslots[vreg.vreg()] = self.allocstack(&vreg);
             }
@@ -1640,29 +1645,51 @@ impl<'a, F: Function> Env<'a, F> {
             // the first instruction.
             let prev_alloc = self.vreg_allocs[vreg.vreg()];
             let slot = Allocation::stack(self.vreg_spillslots[vreg.vreg()]);
-            if self.func.block_params(block).contains(&vreg) {
-                trace!("{:?} is a block param. Freeing it", vreg);
-                // A block's block param is not live before the block.
-                // And `vreg_allocs[i]` of a virtual register i is none for
-                // dead vregs.
-                self.freealloc(vreg, PRegSet::empty());
-            } else {
-                trace!("{:?} is not a block param. It's a liveout vreg from some predecessor", vreg);
-                trace!("Setting {:?}'s current allocation to its spillslot", vreg);
-                self.vreg_allocs[vreg.vreg()] = slot;
-                if let Some(preg) = prev_alloc.as_reg() {
-                    trace!("{:?} was in {:?}. Removing it", preg, vreg);
-                    // Nothing is in that preg anymore. Return it to
-                    // the free preg list.
-                    self.vreg_in_preg[preg.index()] = VReg::invalid();
-                    if !self.is_stack(prev_alloc) {
-                        trace!("{:?} is not a fixed stack slot. Recording it in the freed def pregs list", prev_alloc);
-                        // Using this instead of directly adding it to
-                        // freepregs to prevent allocated registers from being
-                        // used as scratch registers.
-                        self.freed_def_pregs[preg.class()].add(preg);
-                        self.lrus[preg.class()].remove(preg.hw_enc());
-                    }
+            trace!("{:?} is a block param. Freeing it", vreg);
+            // A block's block param is not live before the block.
+            // And `vreg_allocs[i]` of a virtual register i is none for
+            // dead vregs.
+            self.freealloc(vreg, PRegSet::empty());
+            if slot == prev_alloc {
+                // No need to do any movements if the spillslot is where the vreg is expected to be.
+                trace!("No need to reload {:?} because it's already in its expected allocation", vreg);
+                continue;
+            }
+            trace!("Move reason: reload {:?} at begin - move from its spillslot", vreg);
+            self.add_move_later(
+                self.func.block_insns(block).first(),
+                slot,
+                prev_alloc,
+                vreg.class(),
+                InstPosition::Before,
+                true
+            );
+        }
+        let live_vregs = self.live_vregs.clone();
+        for vreg in live_vregs.iter().cloned() {
+            trace!("Processing {:?}", vreg);
+            trace!("{:?} is not a block param. It's a liveout vreg from some predecessor", vreg);
+            if self.vreg_spillslots[vreg.vreg()].is_invalid() {
+                self.vreg_spillslots[vreg.vreg()] = self.allocstack(&vreg);
+            }
+            // The allocation where the vreg is expected to be before
+            // the first instruction.
+            let prev_alloc = self.vreg_allocs[vreg.vreg()];
+            let slot = Allocation::stack(self.vreg_spillslots[vreg.vreg()]);
+            trace!("Setting {:?}'s current allocation to its spillslot", vreg);
+            self.vreg_allocs[vreg.vreg()] = slot;
+            if let Some(preg) = prev_alloc.as_reg() {
+                trace!("{:?} was in {:?}. Removing it", preg, vreg);
+                // Nothing is in that preg anymore. Return it to
+                // the free preg list.
+                self.vreg_in_preg[preg.index()] = VReg::invalid();
+                if !self.is_stack(prev_alloc) {
+                    trace!("{:?} is not a fixed stack slot. Recording it in the freed def pregs list", prev_alloc);
+                    // Using this instead of directly adding it to
+                    // freepregs to prevent allocated registers from being
+                    // used as scratch registers.
+                    self.freed_def_pregs[preg.class()].add(preg);
+                    self.lrus[preg.class()].remove(preg.hw_enc());
                 }
             }
             if slot == prev_alloc {
@@ -1680,13 +1707,8 @@ impl<'a, F: Function> Env<'a, F> {
                 true
             );
         }
-        for block_param_vreg in self.func.block_params(block) {
-            trace!("Removing block param {:?} from the live regs set", block_param_vreg);
-            self.live_vregs.remove(block_param_vreg);
-        }
         self.process_edits(self.get_scratch_regs_for_reloading());
         self.add_freed_regs_to_freelist();
-
         if trace_enabled!() {
             self.log_post_reload_at_begin_state(block);
         }
