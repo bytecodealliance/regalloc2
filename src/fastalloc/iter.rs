@@ -1,26 +1,5 @@
 use crate::{Operand, OperandKind, OperandPos, OperandConstraint};
 
-#[derive(Clone, Copy, PartialEq)]
-enum OperandConstraintKind {
-    Any,
-    Reg,
-    Stack,
-    FixedReg,
-    Reuse,
-}
-
-impl From<OperandConstraint> for OperandConstraintKind {
-    fn from(constraint: OperandConstraint) -> Self {
-        match constraint {
-            OperandConstraint::Any => Self::Any,
-            OperandConstraint::Reg => Self::Reg,
-            OperandConstraint::Stack => Self::Stack,
-            OperandConstraint::FixedReg(_) => Self::FixedReg,
-            OperandConstraint::Reuse(_) => Self::Reuse,
-        }
-    }
-}
-
 pub struct Operands<'a>(pub &'a [Operand]);
 
 impl<'a> Operands<'a> {
@@ -37,15 +16,14 @@ impl<'a> Operands<'a> {
 
     pub fn non_fixed_non_reuse_late(&self) -> impl Iterator<Item = (usize, Operand)> + 'a {
         self.matches(|op|
-            OperandConstraintKind::FixedReg != op.constraint().into()
-            && OperandConstraintKind::Reuse != op.constraint().into()
+            !matches!(op.constraint(), OperandConstraint::FixedReg(_) | OperandConstraint::Reuse(_))
             && op.pos() == OperandPos::Late
         )
     }
 
     pub fn non_reuse_late_def(&self) -> impl Iterator<Item = (usize, Operand)> + 'a {
         self.matches(|op|
-            OperandConstraintKind::Reuse != op.constraint().into()
+            !matches!(op.constraint(), OperandConstraint::Reuse(_))
             && op.pos() == OperandPos::Late
             && op.kind() == OperandKind::Def
         )
@@ -53,19 +31,19 @@ impl<'a> Operands<'a> {
 
     pub fn non_fixed_non_reuse_early(&self) -> impl Iterator<Item = (usize, Operand)> + 'a {
         self.matches(|op|
-            OperandConstraintKind::FixedReg != op.constraint().into()
-            && OperandConstraintKind::Reuse != op.constraint().into()
+            !matches!(op.constraint(), OperandConstraint::FixedReg(_))
+            && !matches!(op.constraint(), OperandConstraint::Reuse(_))
             && op.pos() == OperandPos::Early
         )
     }
 
     pub fn reuse(&self) -> impl Iterator<Item = (usize, Operand)> + 'a {
-        self.matches(|op| OperandConstraintKind::Reuse == op.constraint().into())
+        self.matches(|op| matches!(op.constraint(), OperandConstraint::Reuse(_)))
     }
 
     pub fn non_reuse_early_def(&self) -> impl Iterator<Item = (usize, Operand)> + 'a {
         self.matches(|op|
-            OperandConstraintKind::Reuse != op.constraint().into()
+            !matches!(op.constraint(), OperandConstraint::Reuse(_))
             && op.pos() == OperandPos::Early
             && op.kind() == OperandKind::Def
         )
@@ -73,29 +51,31 @@ impl<'a> Operands<'a> {
 
     pub fn fixed_early(&self) -> impl Iterator<Item = (usize, Operand)> + 'a {
         self.matches(|op|
-            OperandConstraintKind::FixedReg == op.constraint().into()
+            matches!(op.constraint(), OperandConstraint::FixedReg(_))
             && op.pos() == OperandPos::Early
         )
     }
 
     pub fn fixed_late(&self) -> impl Iterator<Item = (usize, Operand)> + 'a {
         self.matches(|op|
-            OperandConstraintKind::FixedReg == op.constraint().into()
+            matches!(op.constraint(), OperandConstraint::FixedReg(_))
             && op.pos() == OperandPos::Late
         )
     }
 
     pub fn non_reuse_def(&self) -> impl Iterator<Item = (usize, Operand)> + 'a {
         self.matches(|op|
-            OperandConstraintKind::Reuse != op.constraint().into()
+            !matches!(op.constraint(), OperandConstraint::Reuse(_))
             && op.kind() == OperandKind::Def
         )
     }
 
     pub fn non_fixed_non_reuse_late_use(&self) -> impl Iterator<Item = (usize, Operand)> + 'a {
         self.matches(|op|
-            OperandConstraintKind::FixedReg != op.constraint().into()
-            && OperandConstraintKind::Reuse != op.constraint().into()
+            !matches!(op.constraint(), 
+                OperandConstraint::FixedReg(_)
+                | OperandConstraint::Reuse(_)
+            )
             && op.pos() == OperandPos::Late
             && op.kind() == OperandKind::Use
         )
@@ -103,8 +83,10 @@ impl<'a> Operands<'a> {
 
     pub fn non_fixed_non_reuse_late_def(&self) -> impl Iterator<Item = (usize, Operand)> + 'a {
         self.matches(|op|
-            OperandConstraintKind::FixedReg != op.constraint().into()
-            && OperandConstraintKind::Reuse != op.constraint().into()
+            !matches!(
+                op.constraint(),
+                OperandConstraint::FixedReg(_) | OperandConstraint::Reuse(_)
+            )
             && op.pos() == OperandPos::Late
             && op.kind() == OperandKind::Def
         )
