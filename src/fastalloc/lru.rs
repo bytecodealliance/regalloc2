@@ -45,8 +45,7 @@ impl Lru {
         }
     }
 
-    /// Marks the physical register `i` as the most recently used
-    /// and sets `vreg` as the virtual register it contains.
+    /// Marks the physical register `preg` as the most recently used
     pub fn poke(&mut self, preg: PReg) {
         trace!("Before poking: {:?} LRU. head: {:?}, Actual data: {:?}", self.regclass, self.head, self.data);
         trace!("About to poke {:?} in {:?} LRU", preg, self.regclass);
@@ -61,8 +60,9 @@ impl Lru {
         }
         self.head = hw_enc;
         trace!("Poked {:?} in {:?} LRU", preg, self.regclass);
-        #[cfg(debug_assertions)]
-        self.validate_lru();
+        if cfg!(debug_assertions) {
+            self.validate_lru();
+        }
     }
 
     /// Gets the least recently used physical register.
@@ -74,8 +74,9 @@ impl Lru {
         }
         let oldest = self.data[self.head as usize].prev;
         trace!("Popped p{oldest} in {:?} LRU", self.regclass);
-        #[cfg(debug_assertions)]
-        self.validate_lru();
+        if cfg!(debug_assertions) {
+            self.validate_lru();
+        }
         PReg::new(oldest as usize, self.regclass)
     }
 
@@ -100,11 +101,12 @@ impl Lru {
             }
         }
         trace!("Removed p{hw_enc} from {:?} LRU", self.regclass);
-        #[cfg(debug_assertions)]
-        self.validate_lru();
+        if cfg!(debug_assertions) {
+            self.validate_lru();
+        }
     }
 
-    /// Sets the node `i` to the last in the list.
+    /// Sets the physical register with hw_enc `hw_enc` to the last in the list.
     pub fn append(&mut self, hw_enc: usize) {
         trace!("Before appending: {:?} LRU. head: {:?}, Actual data: {:?}", self.regclass, self.head, self.data);
         trace!("Appending p{hw_enc} to the {:?} LRU", self.regclass);
@@ -121,8 +123,9 @@ impl Lru {
             self.data[hw_enc].next = hw_enc as u8;
         }
         trace!("Appended p{hw_enc} to the {:?} LRU", self.regclass);
-        #[cfg(debug_assertions)]
-        self.validate_lru();
+        if cfg!(debug_assertions) {
+            self.validate_lru();
+        }
     }
 
     pub fn append_and_poke(&mut self, preg: PReg) {
@@ -131,7 +134,7 @@ impl Lru {
     }
 
     /// Insert node `i` before node `j` in the list.
-    pub fn insert_before(&mut self, i: u8, j: u8) {
+    fn insert_before(&mut self, i: u8, j: u8) {
         trace!("Before inserting: {:?} LRU. head: {:?}, Actual data: {:?}", self.regclass, self.head, self.data);
         trace!("Inserting p{i} before {j} in {:?} LRU", self.regclass);
         let prev = self.data[j as usize].prev;
@@ -142,8 +145,9 @@ impl Lru {
             prev,
         };
         trace!("Done inserting p{i} before {j} in {:?} LRU", self.regclass);
-        #[cfg(debug_assertions)]
-        self.validate_lru();
+        if cfg!(debug_assertions) {
+            self.validate_lru();
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -212,7 +216,7 @@ impl fmt::Debug for Lru {
 }
 
 #[derive(Debug)]
-pub struct PartedByRegClass<T: core::fmt::Debug> {
+pub struct PartedByRegClass<T> {
     pub items: [T; 3],
 }
 

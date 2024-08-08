@@ -1419,7 +1419,19 @@ impl<'a, F: Function> Env<'a, F> {
         for (succ_idx, _) in self.func.block_succs(block).iter().enumerate() {
             // Move from branch args spillslots to temporaries.
             //
-            // Consider a scenario: block X branches to block Y and block Y branches to block X.
+            // Consider a scenario: 
+            // 
+            // block entry:
+            //      goto Y(...)
+            //
+            // block Y(vp)
+            //      goto X
+            //
+            // block X
+            //      use vp
+            //      goto Y(va)
+            //
+            // block X branches to block Y and block Y branches to block X.
             // Block Y has block param vp and block X uses virtual register va as the branch arg for vp.
             // Block X has an instruction that uses vp.
             // In the case where branch arg va is defined in a predecessor, there is a possibility
