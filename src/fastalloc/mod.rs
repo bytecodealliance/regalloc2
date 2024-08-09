@@ -6,7 +6,7 @@ use crate::{Function, MachineEnv, ssa::validate_ssa, ProgPoint, Edit, Output};
 use crate::{cfg::CFGInfo, RegAllocError, Allocation, ion::Stats};
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
-use hashbrown::HashSet;
+use hashbrown::{HashMap, HashSet};
 
 mod bitset;
 mod lru;
@@ -24,21 +24,23 @@ struct Allocs {
 }
 
 impl Allocs {
-    fn new<F: Function>(func: &F) -> Self {
+    fn new<F: Function>(func: &F) -> (Self, u32) {
         let operand_no_guess = func.num_insts() * 3;
         let mut allocs = Vec::with_capacity(operand_no_guess);
         let mut inst_alloc_offsets = Vec::with_capacity(operand_no_guess);
+        let mut max_operand_len = 0;
         for inst in 0..func.num_insts() {
             let operands_len = func.inst_operands(Inst::new(inst)).len() as u32;
+            max_operand_len = max_operand_len.max(operands_len);
             inst_alloc_offsets.push(allocs.len() as u32);
             for _ in 0..operands_len {
                 allocs.push(Allocation::none());
             }
         }
-        Self {
+        (Self {
             allocs,
             inst_alloc_offsets,
-        }
+        }, max_operand_len)
     }
 }
 
@@ -140,9 +142,10 @@ pub struct Env<'a, F: Function> {
     /// Used to determine if a scratch register is needed for an
     /// instruction's moves during the `process_edit` calls.
     inst_needs_scratch_reg: PartedByRegClass<bool>,
-    /// The operand indexes of the inputs reused for reuse operands.
-    /// This is used to avoid assigning a freed def preg to a reused input.
-    reused_inputs_in_curr_inst: Vec<usize>,
+    /// `reused_input_to_reuse_op[i]` is the operand index of the reuse operand
+    /// that uses the `i`th operand in the current instruction as its input.
+    /// This is used to 
+    reused_input_to_reuse_op: Vec<usize>,
     /// The vregs defined or used in the current instruction.
     vregs_in_curr_inst: HashSet<VReg>,
     /// The physical registers allocated to the operands in the current instruction.
@@ -175,6 +178,7 @@ impl<'a, F: Function> Env<'a, F> {
         regs[2].extend(env.non_preferred_regs_by_class[RegClass::Vector as usize].iter().cloned());
         use alloc::vec;
         trace!("{:?}", env);
+        let (allocs, max_operand_len) = Allocs::new(func);
         Self {
             func,
             allocatable_regs: PRegSet::from(env),
@@ -208,7 +212,7 @@ impl<'a, F: Function> Env<'a, F> {
             freed_def_pregs: PartedByRegClass { items: [PRegSet::empty(), PRegSet::empty(), PRegSet::empty()] },
             vregs_first_seen_in_curr_inst: HashSet::new(),
             inst_needs_scratch_reg: PartedByRegClass { items: [false, false, false] },
-            reused_inputs_in_curr_inst: Vec::new(),
+            reused_input_to_reuse_op: vec![usize::MAX; max_operand_len as usize],
             vregs_in_curr_inst: HashSet::new(),
             pregs_allocd_in_curr_inst: PRegSet::empty(),
             dedicated_scratch_regs: PartedByRegClass { items: [
@@ -216,7 +220,7 @@ impl<'a, F: Function> Env<'a, F> {
                 env.scratch_by_class[1],
                 env.scratch_by_class[2],
             ] },
-            allocs: Allocs::new(func),
+            allocs,
             edits: VecDeque::new(),
             safepoint_slots: Vec::new(),
             num_spillslots: 0,
@@ -464,7 +468,7 @@ impl<'a, F: Function> Env<'a, F> {
         Ok(preg)
     }
 
-    fn freealloc(&mut self, vreg: VReg, clobbers: PRegSet) {
+    fn freealloc(&mut self, vreg: VReg, clobbers: PRegSet, is_fixed_def: bool) {
         trace!("Freeing vreg {:?}", vreg);
         let alloc = self.vreg_allocs[vreg.vreg()];
         match alloc.kind() {
@@ -473,7 +477,7 @@ impl<'a, F: Function> Env<'a, F> {
                 self.vreg_in_preg[preg.index()] = VReg::invalid();
                 // If it's a fixed stack slot, then it's not allocatable.
                 if !self.is_stack(alloc) {
-                    if clobbers.contains(preg) {
+                    if clobbers.contains(preg) || is_fixed_def {
                         // For a defined vreg to be restored to the location it's expected to
                         // be in after the instruction, it cannot be allocated to a clobber because that
                         // will make the restoration impossible.
@@ -486,8 +490,11 @@ impl<'a, F: Function> Env<'a, F> {
                         // a clobber can be newly allocated to a vreg in the instruction is to
                         // use a fixed register constraint.
                         self.free_after_curr_inst[preg.class()].add(preg);
-                        // No need to remove the preg from the LRU because clobbers
-                        // have already been removed from the LRU.
+                        if is_fixed_def {
+                            self.lrus[vreg.class()].remove(preg.hw_enc());
+                        }
+                        // No need to remove the preg from the LRU if it's a clobber
+                        // because clobbers have already been removed from the LRU.
                     } else {
                         // Added to the freed def pregs list, not the free pregs
                         // list to avoid a def's allocated register being used
@@ -497,6 +504,7 @@ impl<'a, F: Function> Env<'a, F> {
                         self.lrus[vreg.class()].remove(preg.hw_enc());
                     }
                 }
+                self.pregs_allocd_in_curr_inst.remove(preg);
             }
             AllocationKind::Stack => (),
             AllocationKind::None => unreachable!("Attempting to free an unallocated operand!")
@@ -504,6 +512,7 @@ impl<'a, F: Function> Env<'a, F> {
         self.vreg_allocs[vreg.vreg()] = Allocation::none();
         self.live_vregs.remove(&vreg);
         trace!("{:?} curr alloc is now {:?}", vreg, self.vreg_allocs[vreg.vreg()]);
+        trace!("Pregs currently allocated: {}", self.pregs_allocd_in_curr_inst);
     }
     
     /// Allocates a spill slot on the stack for `vreg`
@@ -526,7 +535,7 @@ impl<'a, F: Function> Env<'a, F> {
     }
 
     /// Allocates a physical register for the operand `op`.
-    fn alloc_reg_for_operand(&mut self, inst: Inst, op: Operand, op_idx: usize) -> Result<(), RegAllocError> {
+    fn alloc_reg_for_operand(&mut self, inst: Inst, op: Operand) -> Result<(), RegAllocError> {
         trace!("freepregs int: {}", self.freepregs[RegClass::Int]);
         trace!("freepregs vector: {}", self.freepregs[RegClass::Vector]);
         trace!("freepregs float: {}", self.freepregs[RegClass::Float]);
@@ -538,19 +547,9 @@ impl<'a, F: Function> Env<'a, F> {
         // the operand uses or defines a vreg in the early phase and the vreg doesn't
         // live past the instruction. If the vreg lives past the instruction, then the
         // defined value will overwrite it.
-        if op.pos() == OperandPos::Early && self.vregs_first_seen_in_curr_inst.contains(&op.vreg())
-            // A reused input should not have the same allocation as a non-reused def operand.
-            // For example:
-            // 1. dev v0 (fixed: p0), def v1 (reuse: 2), use v2
-            // 2. use v0, use v1
-            // In the above, p0 is assigned to v0 in inst 1. Say, after v0 is freed,
-            // p0 is re-assigned to v2. Then, when reuse operands are processed, p0
-            // will also end up being v1's allocation in inst 1.
-            // The end result will be allocating two defined vregs, v0 and v1, to the
-            // same allocation p0.
-            // To avoid this, don't allow a reused input to have the same allocation as
-            // a freed def operand.
-            && !self.reused_inputs_in_curr_inst.contains(&op_idx) 
+        if op.pos() == OperandPos::Early 
+            && op.kind() == OperandKind::Use
+            && self.vregs_first_seen_in_curr_inst.contains(&op.vreg())
         {
             if let Some(freed_def_preg) = remove_any_from_pregset(&mut self.freed_def_pregs[op.class()]) {
                 trace!("Reusing the freed def preg: {}", freed_def_preg);
@@ -571,6 +570,7 @@ impl<'a, F: Function> Env<'a, F> {
         self.lrus[op.class()].poke(preg);
         self.vreg_allocs[op.vreg().vreg()] = Allocation::reg(preg);
         self.vreg_in_preg[preg.index()] = op.vreg();
+        self.pregs_allocd_in_curr_inst.add(preg);
         Ok(())
     }
 
@@ -636,32 +636,37 @@ impl<'a, F: Function> Env<'a, F> {
         }
         self.vreg_allocs[op.vreg().vreg()] = Allocation::reg(preg);
         self.vreg_in_preg[preg.index()] = op.vreg();
+        self.pregs_allocd_in_curr_inst.add(preg);
         trace!("vreg {:?} is now in preg {:?}", op.vreg(), preg);
         Ok(())
     }
 
     /// Allocates for the operand `op` with index `op_idx` into the
     /// vector of instruction `inst`'s operands.
-    /// Only non reuse-input operands.
-    fn alloc_operand(&mut self, inst: Inst, op: Operand, op_idx: usize) -> Result<(), RegAllocError> {
+    fn alloc_operand(&mut self, inst: Inst, op: Operand, op_idx: usize, fixed_spillslot: Option<SpillSlot>) -> Result<(), RegAllocError> {
         match op.constraint() {
             OperandConstraint::Any => {
-                self.alloc_reg_for_operand(inst, op, op_idx)?;
+                self.alloc_reg_for_operand(inst, op)?;
             }
             OperandConstraint::Reg => {
-                self.alloc_reg_for_operand(inst, op, op_idx)?;
+                self.alloc_reg_for_operand(inst, op)?;
             }
             OperandConstraint::Stack => {
-                if self.vreg_spillslots[op.vreg().vreg()].is_invalid() {
-                    self.vreg_spillslots[op.vreg().vreg()] = self.allocstack(&op.vreg());
-                }
-                self.vreg_allocs[op.vreg().vreg()] = Allocation::stack(self.vreg_spillslots[op.vreg().vreg()]);
+                let slot = if let Some(spillslot) = fixed_spillslot {
+                    spillslot
+                } else {
+                    if self.vreg_spillslots[op.vreg().vreg()].is_invalid() {
+                        self.vreg_spillslots[op.vreg().vreg()] = self.allocstack(&op.vreg());
+                    }
+                    self.vreg_spillslots[op.vreg().vreg()]
+                };
+                self.vreg_allocs[op.vreg().vreg()] = Allocation::stack(slot);
             }
             OperandConstraint::FixedReg(preg) => {
                 self.alloc_fixed_reg_for_operand(inst, op, preg)?;
             }
             OperandConstraint::Reuse(_) => {
-                // This is handled elsewhere
+                // This is handled elsewhere.
                 unreachable!();
             }
         }
@@ -669,9 +674,11 @@ impl<'a, F: Function> Env<'a, F> {
         Ok(())
     }
 
-    /// Only processes non reuse-input operands
-    fn process_operand_allocation(&mut self, inst: Inst, op: Operand, op_idx: usize) -> Result<(), RegAllocError> {
-        debug_assert!(!matches!(op.constraint(), OperandConstraint::Reuse(_)));
+    /// Allocate operand the `op_idx`th operand `op` in instruction `inst` within its constraint.
+    /// Since only fixed register constraints are allowed, `fixed_spillslot` is used when a
+    /// fixed stack allocation is needed, like when transferring a stack allocation from a
+    /// reuse operand allocation to the reused input.
+    fn process_operand_allocation(&mut self, inst: Inst, op: Operand, op_idx: usize, fixed_spillslot: Option<SpillSlot>) -> Result<(), RegAllocError> {
         if let Some(preg) = op.as_fixed_nonallocatable() {
             self.allocs[(inst.index(), op_idx)] = Allocation::reg(preg);
             trace!("Allocation for instruction {:?} and operand {:?}: {:?}", inst, op, self.allocs[(inst.index(), op_idx)]);
@@ -684,7 +691,7 @@ impl<'a, F: Function> Env<'a, F> {
             if prev_alloc.is_none() {
                 self.vregs_first_seen_in_curr_inst.insert(op.vreg());
             }
-            self.alloc_operand(inst, op, op_idx)?;
+            self.alloc_operand(inst, op, op_idx, fixed_spillslot)?;
             // Need to insert a move to propagate flow from the current
             // allocation to the subsequent places where the value was
             // used (in `prev_alloc`, that is).
@@ -875,429 +882,6 @@ impl<'a, F: Function> Env<'a, F> {
             trace!("Allocation for instruction {:?} and operand {:?}: {:?}", inst, op, self.allocs[(inst.index(), op_idx)]);
         }
         self.vregs_allocd_in_curr_inst.insert(op.vreg());
-        if let Some(preg) = self.allocs[(inst.index(), op_idx)].as_reg() {
-            self.pregs_allocd_in_curr_inst.add(preg);
-        }
-        Ok(())
-    }
-
-    fn process_reuse_operand_allocation(
-        &mut self,
-        inst: Inst,
-        op: Operand,
-        op_idx: usize,
-        reused_op: Operand,
-        reused_op_idx: usize,
-        clobbers: PRegSet,
-    ) -> Result<(), RegAllocError> {
-        debug_assert!(matches!(op.constraint(), OperandConstraint::Reuse(_)));
-        self.vregs_in_curr_inst.insert(op.vreg());
-        // To handle reuse operands, the reused input's allocation is always used for
-        // both operands. This is to avoid having to think about how to handle fixed
-        // register constraints. For example:
-        // 1. def v0 (reuse: 1), use v1 (fixed: p0)
-        // p0 is simply used for both operands, regardless of where v0 is expected to be
-        // after the instruction.
-        //
-        //
-        // A check has to be made to see if the reuse operand has already been allocated,
-        // in a previous alloc_inst call. There are 2 cases that need to be considered here:
-        //
-        // Case 1: The reuse operand has already been allocated.
-        // Case 2: The reuse operand has no allocation.
-        //
-        // For case 1:
-        // An example:
-        //
-        // inst 1: def v0 (reuse: 1), use v1
-        // inst 2: use v0
-        // In the above example, v0 will have already been allocated by the time inst 1
-        // is about to be processed.
-        // After this inst 1, v0 is expected to be in some location l0.
-        // Depending on whether v1 lives past this instruction, there are also two subcases:
-        // Case 1.1: The reused input, v1, lives past the instruction and is expected to be in some
-        //          location l1 afterwards.
-        // Case 1.2: The reused input v1, doesn't live past the instruction.
-        //
-        // In case 1.1, both v0 and v1 live past the instruction, so edits have to be inserted to
-        // ensure that both end up in their expected after instruction locations.
-        // Again, depending on whether or not l0 is used by another operand in the current instruction,
-        // there are two subcases here:
-        // Case 1.1.1: l0 is used by another operand in the instruction.
-        // Case 1.1.2: l0 isn't use by another operand in the instruction.
-        //
-        // In case 1.1.1:
-        //
-        // Again, depending on whether or not v1 is used multiple times in the same instruction:
-        // Case 1.1.1.1: v1 is not used multiple times
-        // Case 1.1.1.2: v1 is used multiple times
-        //
-        // Case 1.1.1.1:
-        //
-        // 1. def v0 (reuse: 1), use v1, use v2
-        // 2. use v0, use v1
-        //
-        // At inst 2, v0 is expected to be at l0 and v1 is expected to be at l1.
-        // During the processing of inst 1, the v1 and v2 operands are processed before the reuse operand
-        // v0. If by some fixed register constraint either v1 or v2 get l0 as an allocation, then v0
-        // will be evicted and an edit will be added after inst 1 to move from v0's spillslot to l0
-        // by the eviction procedure. Then we'll have:
-        //
-        // 1. def v0 (reuse: 1), use v1, use v2
-        // move from stack_v0 to l0   // Added during eviction.
-        // 2. use v0, use v1
-        //
-        // And v0's current allocation, at the point of invoking this reuse operand allocation
-        // procedure will be stack_v0 (vreg_allocs[v0] == stack_v0).
-        // Suppose v1 is allocated to p0.
-        // For the flow to be correct, two things have to occur:
-        // 1. The reused input v1 has to be saved and restored, because the definition of v0
-        // overwrites it in inst 1.
-        // 2. v0 has to be moved into its current allocation (stack_v0) before the eviction edit.
-        //
-        // The edits added by this procedure will be like so:
-        //
-        // move from p0 to stack_v1     // Saving v1.
-        // 1. def v0 (reuse: 1), use v1, use v2  // p0 is used for both v1 and v0.
-        // move from p0 to vreg_allocs[v0] (== stack_v0)   // Move into v0's current allocation.
-        // move from stack_v0 to l0   // Added during eviction.
-        // move from stack_v1 to l1   // Restoring v1.
-        // 2. use v0, use v1
-        //
-        // Hence, the edits have to be inserted in the following order:
-        // 1. The edit to save the reused input is preprended to the other edits before the instruction.
-        // 2. The edit to move v0 from its reused input into its current allocation (spillslot)
-        // will be prepended to the edits after the instruction.
-        // 3. The edit to restore v1 will be appended to the edits after the instruction.
-        //
-        // In case 1.1.1.2, v1 is used multiple times. For example:
-        //
-        // 1. def v0 (reuse: 1), use v1, use v1
-        // 2. use v0, use v1
-        //
-        // Depending on the constraints, there are two sub cases:
-        //
-        // Case 1.1.1.2.1: All the v1 uses have the same constraints.
-        // Case 1.1.1.2.2: Some of the v1 uses constraints differ.
-        //
-        // In case 1.1.1.2.1, no edits will have been inserted by the `process_operand_allocation`
-        // procedure because they all have the same constraint. It is equivalent to a single use.
-        // So, it can be handled just like case 1.1.1.1.
-        //
-        // In case 1.1.1.2.2, they have different constraints, so edits will have already been inserted
-        // to effect the flow from the current allocation to the previous ones.
-        // For example:
-        //
-        // 1. def v0 (reuse: 1), use v1 (fixed: p5), use v1 (fixed: p8), use v2
-        // 2. use v0, use v1
-        //
-        // In the above, v1 is used multiple times with different constraints. 
-        // Now, there are two subcases:
-        // Case 1.1.1.2.2.1: l1 == p5 (or whatever allocation is used for the first v1 operand)
-        // Case 1.1.1.2.2.2: l1 != p5
-        //
-        // In case 1.1.1.2.2.1:
-        //
-        // No edit will be inserted when the first v1 use is encountered. But when the second is
-        // encountered, an edit will be prepended by `process_operand_allocation` to the edits
-        // before inst 1 to move from p8 to p5, and p8 will be marked as v1's current allocation,
-        // that is, vreg_allocs[v1] == p8:
-        //
-        // move from p8 to p5       // Current alloc to prev alloc in the same instruction.
-        // 1. def v0 (reuse: 1), use v1 (fixed: p5), use v1 (fixed: p8), use v2
-        // 2. use v0, use v1
-        //
-        // Also, depending on whether or not p8 was already used by another operand, an eviction may
-        // occur and an edit will be inserted to move from a spillslot to p8 after the instruction:
-        //
-        // move from p8 to p5       // Current alloc to prev alloc in the same instruction.
-        // 1. def v0 (reuse: 1), use v1 (fixed: p5), use v1 (fixed: p8), use v2
-        // /* move from stack_? to p8 (possible eviction) */
-        // 2. use v0, use v1
-        //
-        // In fact, because of the possibility of using multiple v1s and other fixed register
-        // constraints, there are a variable number of eviction edits after the instruction:
-        //
-        // move from p8 to p5       // Current alloc to prev alloc in the same instruction.
-        // 1. def v0 (reuse: 1), use v1 (fixed: p5), use v1 (fixed: p8), use v2
-        // 0 or more edits, possibly writing to vreg_allocs[v1]
-        // 2. use v0, use v1
-        //
-        // By the preconditions of this case, one of the use operands uses l0.
-        // Either it's one of the v1 uses or a non-v1 use, like the v2 use in the above example,
-        // but I don't think that matters in this case.
-        // Because of this, the edits inserted between insts 1 and 2 will contain an eviction
-        // edit to move from stack_v0 to l0 and vreg_allocs[v0] == stack_v0:
-        //
-        // move from p8 to p5       // Current alloc to prev alloc in the same instruction.
-        // 1. def v0 (reuse: 1), use v1 (fixed: p5), use v1 (fixed: p8), use v2
-        // 1 or more edits, with one from stack_v0 to l0
-        // 2. use v0, use v1
-        //
-        // Now, this can be handled just like in case 1.1.1.1. An edit is prepended to the before-inst-1
-        // edits to save v1 to the stack. An edit is prepended to the after-inst-1 edits to move
-        // v0 from its reused input to its current allocation, vreg_allocs[v0]. And one more edit
-        // to move from v1's spillslot to l1 is appended to the after-inst-1 edits.
-        //
-        // move from p8 to stack_v1 // Saving v1
-        // move from p8 to p5       // Current alloc to prev alloc in the same instruction.
-        // 1. def v0 (reuse: 1), use v1 (fixed: p5), use v1 (fixed: p8), use v2
-        // move from p5 to stack_v0 (== vreg_allocs[v0]) // Move into v0's current allocation.
-        // 0 or more edits, with one from stack_v0 to l0
-        // move from stack_v1 to l1 // Restoring v1
-        // 2. use v0, use v1
-        //
-        // Case 1.1.1.2.2.2:
-        //
-        // Now, if l1 != p5, then `process_operand_allocation` will insert two edits: a save
-        // and restore for v1, with the save being appended and the restore being prepended:
-        //
-        // move from p5 to stack_v1     // Save inserted by `process_operand_allocation`
-        // 1. def v0 (reuse: 1), use v1 (fixed: p5), use v1 (fixed: p8), use v2
-        // move from stack_v1 to l1     // Restore inserted by `process_operand_allocation`
-        // 2. use v0, use v1
-        //
-        // And when the second allocation is encountered, an edit is also inserted to move from
-        // the new current allocation (p8) to the previous p5.
-        //
-        // move from p8 to p5   // Current alloc to prev alloc in the same instruction.
-        // move from p5 to stack_v1     // Save inserted by `process_operand_allocation`.
-        // 1. def v0 (reuse: 1), use v1 (fixed: p5), use v1 (fixed: p8), use v2
-        // move from stack_v1 to l1     // Restore inserted by `process_operand_allocation`.
-        // 2. use v0, use v1
-        //
-        // By the preconditions, one of the operand uses l0, so an eviction edit has already
-        // been inserted to move from stack_v0 to l0:
-        //
-        // move from p8 to p5   // Current alloc to prev alloc in the same instruction.
-        // move from p5 to stack_v1     // Save inserted by `process_operand_allocation`.
-        // 1. def v0 (reuse: 1), use v1 (fixed: p5), use v1 (fixed: p8), use v2
-        // move from stack_v1 to l1     // Restore inserted by `process_operand_allocation`.
-        // 1 or more edits, with one from stack_v0 to l0 // 
-        // 2. use v0, use v1
-        //
-        // The restore inserted by the `process_operand_allocation` can come before or after any
-        // of the other edits, depending on the order of the operands. But that isn't a problem
-        // because the move is from its spillslot and every vreg has its own unique spillslot,
-        // so we can be sure that only v1 is in stack_v1.
-        //
-        // This can be handled like case 1.1.1.1, but the only edit inserted is the one prepended
-        // to the after-inst-1 edits to move from the reused input to vreg_allocs[v0].
-        // This will work because v1 already has save-and-reload edits inserted by
-        // `process_operand_allocation`, so those edits don't need to be inserted anymore.
-        // And because of how `process_operand_allocation` and the eviction procedures insert edits,
-        // no matter how edits are inserted, the edit from stack_v1 to l1 will always
-        // be the last write to v1 before the next instruction.
-        //
-        // In the case 1.1.2, depending on whether v1 is used multiple times:
-        // Case 1.1.2.1: v1 is not used multiple times.
-        // Case 1.1.2.2: v1 is used multiple times.
-        //
-        // In case 1.1.2.1:
-        //
-        // l0 isn't used by any other operand in the instruction, so no eviction
-        // occurs and vreg_allocs[v0] at this point == l0.
-        // Here, the only edits that needs to be added is the move from the reused input allocation
-        // into vreg_allocs[v0] (which is l0) and the save and restore of v1.
-        // For example:
-        //
-        // 1. def v0 (reuse: 1), use v1, use v2 // Both v0 and v1 use p0
-        // 2. use v0, use v1
-        //
-        // Becomes:
-        //
-        // move from p0 to stack_v1     // Save v1.
-        // 1. def v0 (reuse: 1), use v1, use v2
-        // move from p0 to vreg_allocs[v0] (== l0) // Move to v0's current allocation.
-        // move from stack_v1 to l1     // Restore v1.
-        // 2. use v0, use v1
-        //
-        // So, the procedure for case 1.1.1.1 is the same for case 1.1.2.1.
-        //
-        // In case 1.1.2.2, v1 is used multiple times. If they all have the same constraint,
-        // then it can be handled just like case 1.1.1.1.
-        // If they have different constraints, then the only difference between this case and
-        // case 1.1.1.2.2 is that vreg_allocs[v0] at this point is already == l0.
-        // This can be handled just like case 1.1.1.2.2, with the save and restore of v1 and
-        // move from the reused input to vreg_allocs[p1] being inserted when 
-        // `process_operand_allocation` has not inserted any save and restores of v1.
-        // And only the move from the reused input to vreg_allocs[p1] is added when `proces_operand_allocation`
-        // has already inserted a save and restore for v1.
-        //
-        // In case 1.2, the reused input doesn't live past the instruction. Only v0
-        // does. In this case, the only edit added is the one to move v0 from the reused
-        // input allocation p0 to l0. The edits to save and restore v1 are omitted.
-        // For example:
-        //
-        // 1. def v0 (reuse: 1), use v1, use v2 // Both v0 and v1 use p0
-        // 2. use v0        // Only v0 lives past inst 1
-        //
-        // The only edit inserted is the one to move from p0 to vreg_allocs[v0] (l0):
-        //
-        // 1. def v0 (reuse: 1), use v1, use v2 // Both v0 and v1 use p0
-        // move from p0 to vreg_allocs[v0]  // Move to v0's current allocation
-        // 2. use v0, use v1
-        //
-        // In case 2, v0 has no allocation, meaning it doesn't live past the instruction.
-        // There are two subcases here:
-        // Case 2.1: The reused input v1 lives past the instruction.
-        // Case 2.2: The reused input v1 doesn't live past the instruction.
-        //
-        // And their sub subcases:
-        //
-        // Case 2.1.1: The reused input is not used multiple times.
-        // Case 2.1.2: The reused input is used multiple times.
-        // We don't need to consider multiple uses in case 2.2 because v1 doesn't live past
-        // the instruction.
-        //
-        // In case 2.1.1, the only edits that need to be added are the ones to save and restore v1.
-        // For example:
-        //
-        // 1. def v0 (reuse: 1), use v1, use v2 // Both v0 and v1 use p0
-        // 2. use v1
-        //
-        // Becomes:
-        //
-        // move from p0 to stack_v1     // Save v1.
-        // 1. def v0 (reuse: 1), use v1, use v2 // Both v0 and v1 use p0.
-        // move from stack_v1 to p0     // Restore v1.
-        // 2. use v1
-        //
-        // Case 2.1.2, like in case 1.1.1.2, edits to save and restore v1 only need to be added
-        // if `process_operand_allocation` didn't add them already. The edit to move from
-        // the reused input to vreg_allocs[v0] can be omitted, since v0 hasn't been allocated.
-        //
-        // In case 2.2, no edits should be inserted at all since none of them live past the
-        // instruction.
-        //
-        // From these cases, it can be concluded that edits to save and restore the reused input
-        // should be inserted whenever the reused input lives past the current instruction
-        // and `process_operand_allocation` hasn't inserted any save and restores of the
-        // reused input (a vreg will be present in `use_vregs_saved_and_restored_in_curr_inst`
-        // at this point if `process_operand_allocation` has inserted a save and reload for the vreg).
-        // And the edit to move the reuse operand into its after-instruction-allocation should
-        // only be inserted if it lives past the current instruction.
-        // And because of interactions with other edits, the edits,
-        // when inserted, should be in the following order:
-        //
-        // 1. The edit to save the reused input is preprended to the other edits before the instruction.
-        // 2. The edit to move v0 from its reused input into its current allocation
-        // will be prepended to the edits after the instruction.
-        // 3. The edit to restore v1 will be appended to the edits after the instruction.
-        //
-        trace!("Move Reason: Reuse constraints");
-        
-        if reused_op.kind() != OperandKind::Use || op.kind() != OperandKind::Def
-            || reused_op.pos() != OperandPos::Early || op.pos() != OperandPos::Late
-            || reused_op.class() != op.class()
-        {
-            // Invalid input.
-            return Err(RegAllocError::TooManyLiveRegs);
-        }
-        let reused_input_lives_past_curr_inst = !self.vregs_first_seen_in_curr_inst.contains(&reused_op.vreg());
-        let reused_op_alloc = self.allocs[(inst.index(), reused_op_idx)];
-        if self.vreg_allocs[op.vreg().vreg()].is_some() {
-            let reused_op_vreg = reused_op.vreg();
-            // The only way that a vreg can be assigned a clobber is if a fixed register
-            // constraint demands it.
-            // Reusing an input assigned to a clobber will result in a clobber being assigned
-            // to the vreg being defined. Since the vreg is live after this instruction, this
-            // must be an error, because it will be impossible to restore the defined vreg
-            // afterwards.
-            if let Some(preg) = reused_op_alloc.as_reg() {
-                if clobbers.contains(preg) {
-                    // Invalid input.
-                    return Err(RegAllocError::TooManyLiveRegs);
-                }
-            }
-            let op_prev_alloc = self.vreg_allocs[op.vreg().vreg()];
-            if self.vreg_spillslots[reused_op_vreg.vreg()].is_invalid() {
-                self.vreg_spillslots[reused_op_vreg.vreg()] = self.allocstack(&reused_op_vreg);
-            }
-            let reused_op_spillslot = self.vreg_spillslots[reused_op_vreg.vreg()];
-
-            // Save the reused input only if it lives past the current instruction
-            // and `process_operand_allocation` hasn't inserted save and reload edits
-            // for it.
-            if reused_input_lives_past_curr_inst 
-                && !self.use_vregs_saved_and_restored_in_curr_inst.contains(&reused_op_vreg) 
-            {
-                self.add_move_later(
-                    inst,
-                    self.vreg_allocs[reused_op_vreg.vreg()],
-                    Allocation::stack(reused_op_spillslot),
-                    op.class(),
-                    InstPosition::Before,
-                    true,
-                );
-            }
-
-            // Move the reuse operand from the reused input's allocation into the location it's
-            // expected to be in after the current instruction.
-            self.add_move_later(
-                inst,
-                reused_op_alloc,
-                // It is possible for reused_op_alloc != vreg_allocs[reused_op]
-                // in the case where multiple operands use the reused vreg with different
-                // constraints.
-                op_prev_alloc,
-                op.class(),
-                InstPosition::After,
-                true,
-            );
-
-            // Save the reused input only if it lives past the current instruction
-            // and `process_operand_allocation` hasn't inserted save and reload edits
-            // for it.
-            if reused_input_lives_past_curr_inst 
-                && !self.use_vregs_saved_and_restored_in_curr_inst.contains(&reused_op_vreg)
-            {
-                self.add_move_later(
-                    inst,
-                    Allocation::stack(reused_op_spillslot),
-                    reused_op_alloc,
-                    op.class(),
-                    InstPosition::After,
-                    false,
-                );
-                self.use_vregs_saved_and_restored_in_curr_inst.insert(reused_op.vreg());
-            }
-
-            self.allocs[(inst.index(), op_idx)] = self.vreg_allocs[reused_op_vreg.vreg()];
-            self.freealloc(op.vreg(), clobbers);
-            trace!("Allocation for instruction {:?} and operand {:?}: {:?}", inst, op, self.allocs[(inst.index(), op_idx)]);
-        } else {
-            let reused_op_vreg = reused_op.vreg();
-            if reused_input_lives_past_curr_inst
-                && !self.use_vregs_saved_and_restored_in_curr_inst.contains(&reused_op_vreg)
-            {
-                if self.vreg_spillslots[reused_op_vreg.vreg()].is_invalid() {
-                    self.vreg_spillslots[reused_op_vreg.vreg()] = self.allocstack(&reused_op_vreg);
-                }
-                let reused_op_spillslot = self.vreg_spillslots[reused_op_vreg.vreg()];
-                // Save the reused input to its spillslot before the instruction.
-                self.add_move_later(
-                    inst,
-                    self.vreg_allocs[reused_op_vreg.vreg()],
-                    Allocation::stack(reused_op_spillslot),
-                    op.class(),
-                    InstPosition::Before,
-                    true,
-                );
-                // Restore the reused input.
-                self.add_move_later(
-                    inst,
-                    Allocation::stack(reused_op_spillslot),
-                    reused_op_alloc,
-                    op.class(),
-                    InstPosition::After,
-                    false,
-                );
-                self.use_vregs_saved_and_restored_in_curr_inst.insert(reused_op.vreg());
-            }
-            self.allocs[(inst.index(), op_idx)] = self.vreg_allocs[reused_op_vreg.vreg()];
-            trace!("Allocation for instruction {:?} and operand {:?}: {:?}", inst, op, self.allocs[(inst.index(), op_idx)]);
-        }
         Ok(())
     }
 
@@ -1421,7 +1005,19 @@ impl<'a, F: Function> Env<'a, F> {
         for (succ_idx, _) in self.func.block_succs(block).iter().enumerate() {
             // Move from branch args spillslots to temporaries.
             //
-            // Consider a scenario: block X branches to block Y and block Y branches to block X.
+            // Consider a scenario: 
+            // 
+            // block entry:
+            //      goto Y(...)
+            //
+            // block Y(vp)
+            //      goto X
+            //
+            // block X
+            //      use vp
+            //      goto Y(va)
+            //
+            // block X branches to block Y and block Y branches to block X.
             // Block Y has block param vp and block X uses virtual register va as the branch arg for vp.
             // Block X has an instruction that uses vp.
             // In the case where branch arg va is defined in a predecessor, there is a possibility
@@ -1477,13 +1073,7 @@ impl<'a, F: Function> Env<'a, F> {
                 trace!(" --- Placing branch arg {:?} in {:?}", vreg, temp);
                 trace!("{:?} which is now in {:?} inserting move to {:?}", vreg, temp, param_alloc);
                 self.add_move_later(inst, temp, param_alloc, vreg.class(), InstPosition::Before, false);
-            }
-        }
 
-        reset_temp_idx(&mut next_temp_idx);
-
-        for (succ_idx, _) in self.func.block_succs(block).iter().enumerate() {
-            for vreg in self.func.branch_blockparams(block, inst, succ_idx).iter() {
                 // All branch arguments should be in their spillslots at the end of the function.
                 self.vreg_allocs[vreg.vreg()] = Allocation::stack(self.vreg_spillslots[vreg.vreg()]);
                 self.live_vregs.insert(*vreg);
@@ -1512,38 +1102,90 @@ impl<'a, F: Function> Env<'a, F> {
                 self.lrus[preg.class()].remove(preg.hw_enc());
             }
         }
-        for (_, op) in operands.reuse() {
-            let OperandConstraint::Reuse(reused_idx) = op.constraint() else {
-                unreachable!()
-            };
-            self.reused_inputs_in_curr_inst.push(reused_idx);
-        }
-        for (op_idx, op) in operands.fixed_late() {
-            self.process_operand_allocation(inst, op, op_idx)?;
-        }
-        for (op_idx, op) in operands.non_fixed_non_reuse_late_def() {
-            self.process_operand_allocation(inst, op, op_idx)?;
-        }
-        for (_, op) in operands.non_reuse_late_def() {
-            self.freealloc(op.vreg(), clobbers);
-        }
-        for (op_idx, op) in operands.fixed_early() {
-            self.process_operand_allocation(inst, op, op_idx)?;
-        }
-        for (op_idx, op) in operands.non_fixed_non_reuse_late_use() {
-            self.process_operand_allocation(inst, op, op_idx)?;
-        }
-        for (op_idx, op) in operands.non_fixed_non_reuse_early() {
-            self.process_operand_allocation(inst, op, op_idx)?;
-        }
-        for (_, op) in operands.non_reuse_early_def() {
-            self.freealloc(op.vreg(), clobbers);
-        }
         for (op_idx, op) in operands.reuse() {
             let OperandConstraint::Reuse(reused_idx) = op.constraint() else {
                 unreachable!()
             };
-            self.process_reuse_operand_allocation(inst, op, op_idx, operands.0[reused_idx], reused_idx, clobbers)?;
+            self.reused_input_to_reuse_op[reused_idx] = op_idx;
+        }
+        for (op_idx, op) in operands.fixed() {
+            let reuse_op_idx = self.reused_input_to_reuse_op[op_idx];
+            if reuse_op_idx != usize::MAX {
+                let reuse_op = operands[reuse_op_idx];
+                let new_reuse_op = Operand::new(reuse_op.vreg(), op.constraint(), reuse_op.kind(), reuse_op.pos());
+                self.process_operand_allocation(inst, new_reuse_op, reuse_op_idx, None)?;
+            } 
+            // It's possible for a fixed early use to have the same fixed constraint
+            // as a fixed late def. Because of this, handle the fixed early use without
+            // explicit reuse operand constraints later.
+            else if op.pos() != OperandPos::Early || op.kind() != OperandKind::Use {
+                self.process_operand_allocation(inst, op, op_idx, None)?;
+            }
+        }
+        for (_, op) in operands.fixed_late_def() {
+            // It is possible for a fixed early use to
+            // use a register allocated to a fixed late def.
+            // This deallocates fixed late defs, making it possible
+            // for those early fixed uses to be allocated successfully,
+            // without making the fixed registers available for reuse by other
+            // operands in the instruction.
+            self.freealloc(op.vreg(), clobbers, true);
+        }
+        for (op_idx, op) in operands.fixed_early_use() {
+            // The reuse operands inputs already have their allocations with 
+            // the reuse operands. Those allocations will be moved over to the
+            // reused input records when the reuse operands are deallocated.
+            if self.reused_input_to_reuse_op[op_idx] == usize::MAX {
+                self.process_operand_allocation(inst, op, op_idx, None)?;
+            } else {
+                trace!("Not allocating {} now because it's a reused input", op);
+            }
+        }
+        for (op_idx, op) in operands.non_fixed_def() {
+            if let OperandConstraint::Reuse(reused_idx) = op.constraint() {
+                let reused_op = operands[reused_idx];
+                if matches!(reused_op.constraint(), OperandConstraint::FixedReg(_)) {
+                    // The reuse operands that reuse early fixed uses have already been
+                    // allocated.
+                    continue;
+                }
+                let new_reuse_op = Operand::new(op.vreg(), reused_op.constraint(), op.kind(), op.pos());
+                self.process_operand_allocation(inst, new_reuse_op, op_idx, None)?;
+            } else {
+                self.process_operand_allocation(inst, op, op_idx, None)?;
+            }
+        }
+        for (op_idx, op) in operands.non_fixed_late_use() {
+            self.process_operand_allocation(inst, op, op_idx, None)?;
+        }
+        for (op_idx, op) in operands.non_fixed_late_def() {
+            if let OperandConstraint::Reuse(reused_idx) = op.constraint() {
+                let alloc = self.allocs[(inst.index(), op_idx)];
+                self.freealloc(op.vreg(), clobbers, false);
+                // Transfer the allocation for the reuse operand to
+                // the reused input.
+                let reused_op = operands[reused_idx];
+                let new_reused_op: Operand;
+                let mut fixed_stack_alloc = None;
+                if let Some(preg) = alloc.as_reg() {
+                    new_reused_op = Operand::new(reused_op.vreg(), OperandConstraint::FixedReg(preg), reused_op.kind(), reused_op.pos());
+                } else {
+                    fixed_stack_alloc = alloc.as_stack();
+                    new_reused_op = Operand::new(reused_op.vreg(), OperandConstraint::Stack, reused_op.kind(), reused_op.pos());
+                }
+                self.process_operand_allocation(inst, new_reused_op, reused_idx, fixed_stack_alloc)?;
+            } else {
+                self.freealloc(op.vreg(), clobbers, false);
+            }
+        }
+        for (op_idx, op) in operands.non_fixed_early_use() {
+            // Reused inputs already have their allocations.
+            if self.reused_input_to_reuse_op[op_idx] == usize::MAX {
+                self.process_operand_allocation(inst, op, op_idx, None)?;
+            }
+        }
+        for (_, op) in operands.early_def() {
+            self.freealloc(op.vreg(), clobbers, false);
         }
         self.save_and_restore_clobbered_registers(inst);
         for preg in self.func.inst_clobbers(inst) {
@@ -1605,7 +1247,9 @@ impl<'a, F: Function> Env<'a, F> {
         self.use_vregs_saved_and_restored_in_curr_inst.clear();
         self.vregs_first_seen_in_curr_inst.clear();
         self.vregs_allocd_in_curr_inst.clear();
-        self.reused_inputs_in_curr_inst.clear();
+        for entry in self.reused_input_to_reuse_op.iter_mut() {
+            *entry = usize::MAX;
+        }
         self.vregs_in_curr_inst.clear();
         self.pregs_allocd_in_curr_inst = PRegSet::empty();
         if trace_enabled!() {
@@ -1625,10 +1269,15 @@ impl<'a, F: Function> Env<'a, F> {
         trace!("Live registers at the beginning of block {:?}: {:?}", block, self.live_vregs);
         trace!("Block params at block {:?} beginning: {:?}", block, self.func.block_params(block));
         // We need to check for the registers that are still live.
-        // These registers are livein and they should be stack-allocated.
-        let live_vregs = self.live_vregs.clone();
-        for vreg in live_vregs.iter().cloned() {
+        // These registers are either livein or block params
+        // Liveins should be stack-allocated and block params should be freed.
+        for vreg in self.func.block_params(block).iter().cloned() {
             trace!("Processing {:?}", vreg);
+            if self.vreg_allocs[vreg.vreg()] == Allocation::none() {
+                // If this block param was never used, its allocation will
+                // be none at this point.
+                continue;
+            }
             if self.vreg_spillslots[vreg.vreg()].is_invalid() {
                 self.vreg_spillslots[vreg.vreg()] = self.allocstack(&vreg);
             }
@@ -1636,29 +1285,51 @@ impl<'a, F: Function> Env<'a, F> {
             // the first instruction.
             let prev_alloc = self.vreg_allocs[vreg.vreg()];
             let slot = Allocation::stack(self.vreg_spillslots[vreg.vreg()]);
-            if self.func.block_params(block).contains(&vreg) {
-                trace!("{:?} is a block param. Freeing it", vreg);
-                // A block's block param is not live before the block.
-                // And `vreg_allocs[i]` of a virtual register i is none for
-                // dead vregs.
-                self.freealloc(vreg, PRegSet::empty());
-            } else {
-                trace!("{:?} is not a block param. It's a liveout vreg from some predecessor", vreg);
-                trace!("Setting {:?}'s current allocation to its spillslot", vreg);
-                self.vreg_allocs[vreg.vreg()] = slot;
-                if let Some(preg) = prev_alloc.as_reg() {
-                    trace!("{:?} was in {:?}. Removing it", preg, vreg);
-                    // Nothing is in that preg anymore. Return it to
-                    // the free preg list.
-                    self.vreg_in_preg[preg.index()] = VReg::invalid();
-                    if !self.is_stack(prev_alloc) {
-                        trace!("{:?} is not a fixed stack slot. Recording it in the freed def pregs list", prev_alloc);
-                        // Using this instead of directly adding it to
-                        // freepregs to prevent allocated registers from being
-                        // used as scratch registers.
-                        self.freed_def_pregs[preg.class()].add(preg);
-                        self.lrus[preg.class()].remove(preg.hw_enc());
-                    }
+            trace!("{:?} is a block param. Freeing it", vreg);
+            // A block's block param is not live before the block.
+            // And `vreg_allocs[i]` of a virtual register i is none for
+            // dead vregs.
+            self.freealloc(vreg, PRegSet::empty(), false);
+            if slot == prev_alloc {
+                // No need to do any movements if the spillslot is where the vreg is expected to be.
+                trace!("No need to reload {:?} because it's already in its expected allocation", vreg);
+                continue;
+            }
+            trace!("Move reason: reload {:?} at begin - move from its spillslot", vreg);
+            self.add_move_later(
+                self.func.block_insns(block).first(),
+                slot,
+                prev_alloc,
+                vreg.class(),
+                InstPosition::Before,
+                true
+            );
+        }
+        let live_vregs = self.live_vregs.clone();
+        for vreg in live_vregs.iter().cloned() {
+            trace!("Processing {:?}", vreg);
+            trace!("{:?} is not a block param. It's a liveout vreg from some predecessor", vreg);
+            if self.vreg_spillslots[vreg.vreg()].is_invalid() {
+                self.vreg_spillslots[vreg.vreg()] = self.allocstack(&vreg);
+            }
+            // The allocation where the vreg is expected to be before
+            // the first instruction.
+            let prev_alloc = self.vreg_allocs[vreg.vreg()];
+            let slot = Allocation::stack(self.vreg_spillslots[vreg.vreg()]);
+            trace!("Setting {:?}'s current allocation to its spillslot", vreg);
+            self.vreg_allocs[vreg.vreg()] = slot;
+            if let Some(preg) = prev_alloc.as_reg() {
+                trace!("{:?} was in {:?}. Removing it", preg, vreg);
+                // Nothing is in that preg anymore. Return it to
+                // the free preg list.
+                self.vreg_in_preg[preg.index()] = VReg::invalid();
+                if !self.is_stack(prev_alloc) {
+                    trace!("{:?} is not a fixed stack slot. Recording it in the freed def pregs list", prev_alloc);
+                    // Using this instead of directly adding it to
+                    // freepregs to prevent allocated registers from being
+                    // used as scratch registers.
+                    self.freed_def_pregs[preg.class()].add(preg);
+                    self.lrus[preg.class()].remove(preg.hw_enc());
                 }
             }
             if slot == prev_alloc {
@@ -1676,13 +1347,8 @@ impl<'a, F: Function> Env<'a, F> {
                 true
             );
         }
-        for block_param_vreg in self.func.block_params(block) {
-            trace!("Removing block param {:?} from the live regs set", block_param_vreg);
-            self.live_vregs.remove(block_param_vreg);
-        }
         self.process_edits(self.get_scratch_regs_for_reloading());
         self.add_freed_regs_to_freelist();
-
         if trace_enabled!() {
             self.log_post_reload_at_begin_state(block);
         }
