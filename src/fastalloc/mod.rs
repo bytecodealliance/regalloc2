@@ -6,7 +6,7 @@ use crate::{Function, MachineEnv, ssa::validate_ssa, ProgPoint, Edit, Output};
 use crate::{cfg::CFGInfo, RegAllocError, Allocation, ion::Stats};
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
-use hashbrown::{HashMap, HashSet};
+use hashbrown::HashSet;
 
 mod bitset;
 mod lru;
@@ -69,246 +69,74 @@ fn remove_any_from_pregset(set: &mut PRegSet) -> Option<PReg> {
 }
 
 #[derive(Debug)]
-pub struct Env<'a, F: Function> {
-    func: &'a F,
+struct Stack<'a, F: Function> {
+    num_spillslots: u32,
+    func: &'a F
+}
 
-    /// The current allocations for all virtual registers.
-    vreg_allocs: Vec<Allocation>,
-    /// Spillslots for all virtual registers.
-    /// `vreg_spillslots[i]` is the spillslot for virtual register `i`.
-    vreg_spillslots: Vec<SpillSlot>,
-    /// The virtual registers that are currently live.
-    live_vregs: HashSet<VReg>,
-    /// Allocatable free physical registers for classes Int, Float, and Vector, respectively.
-    freepregs: PartedByRegClass<PRegSet>,
-    /// Least-recently-used caches for register classes Int, Float, and Vector, respectively.
-    lrus: Lrus,
-    /// `vreg_in_preg[i]` is the virtual register currently in the physical register
-    /// with index `i`.
-    vreg_in_preg: Vec<VReg>,
-    /// For parallel moves from branch args to block param spillslots.
-    temp_spillslots: PartedByRegClass<Vec<SpillSlot>>,
+impl<'a, F: Function> Stack<'a, F> {
+    fn new(func: &'a F) -> Self {
+        Self {
+            num_spillslots: 0,
+            func,
+        }
+    }
+
+    /// Allocates a spill slot on the stack for `vreg`
+    fn allocstack(&mut self, vreg: &VReg) -> SpillSlot {
+        let size: u32 = self.func.spillslot_size(vreg.class()).try_into().unwrap();
+        // Rest of this function was copied verbatim 
+        // from `Env::allocate_spillslot` in src/ion/spill.rs.
+        let mut offset = self.num_spillslots;
+        // Align up to `size`.
+        debug_assert!(size.is_power_of_two());
+        offset = (offset + size - 1) & !(size - 1);
+        let slot = if self.func.multi_spillslot_named_by_last_slot() {
+            offset + size - 1
+        } else {
+            offset
+        };
+        offset += size;
+        self.num_spillslots = offset;
+        SpillSlot::new(slot as usize)
+    }
+}
+
+#[derive(Debug)]
+struct Edits {
     /// The edits to be inserted before the currently processed instruction.
     inst_pre_edits: VecDeque<(ProgPoint, Edit, RegClass)>,
     /// The edits to be inserted after the currently processed instruction.
     inst_post_edits: VecDeque<(ProgPoint, Edit, RegClass)>,
-    /// All the allocatables registers that were used for one thing or the other
-    /// but need to be freed after the current instruction has completed processing,
-    /// not immediately, like allocatable registers used as scratch registers.
-    /// 
-    /// This is used to keep track of them so that they can be marked as free for reallocation
-    /// after the instruction has completed processing.
-    free_after_curr_inst: PartedByRegClass<PRegSet>,
-    /// The virtual registers of use operands that have been allocated in the current instruction
-    /// and for which edits had to be inserted to save and restore them because their constraint
-    /// doesn't allow the allocation they are expected to be in after the instruction.
-    /// 
-    /// This needs to be kept track of to generate the correct moves in the case where a
-    /// single virtual register is used multiple times in a single instruction with
-    /// different constraints.
-    use_vregs_saved_and_restored_in_curr_inst: BitSet,
-    /// Physical registers that were used for late def operands and now free to be
-    /// reused for early operands in the current instruction.
-    ///
-    /// After late defs have been allocated, rather than returning their registers to
-    /// the free register list, it is added here to avoid the registers being used as
-    /// scratch registers.
-    /// 
-    /// For example, consider the following:
-    /// def v0, use v1
-    /// If the processing of v1 requires a stack-to-stack move, then a scratch register is
-    /// used and the instruction becomes:
-    /// def v0, use v1
-    /// move from stack0 to p0
-    /// move from p0 to stack1
-    /// 
-    /// Since scratch registers may be drawn from the free register list and v0 will be allocated and
-    /// deallocated before v1, then it's possible for the scratch register p0 to be v0's allocation,
-    /// which is incorrect because p0 will end up holding whatever is in stack0, not v0.
-    /// `freed_def_regs` avoids this by allowing the late def registers to be reused without making it
-    /// possible for this scratch register scenario to happen.
-    freed_def_pregs: PartedByRegClass<PRegSet>,
-    /// Used to keep track of which used vregs are seen for the first time
-    /// in the instruction, that is, if the vregs live past the current instruction.
-    /// This is used to determine whether or not reused operands
-    /// for reuse-input constraints should be restored after an instruction.
-    /// It's also used to determine if the an early operand can reuse a freed def operand's
-    /// allocation. And it's also used to determine the edits to be inserted when
-    /// allocating a use operand.
-    vregs_first_seen_in_curr_inst: BitSet,
-    /// Used to keep track of which vregs have been allocated in the current instruction.
-    /// This is used to determine which edits to insert when allocating a use operand.
-    vregs_allocd_in_curr_inst: BitSet,
+    /// The final output edits.
+    edits: VecDeque<(ProgPoint, Edit)>,
     /// Used to determine if a scratch register is needed for an
     /// instruction's moves during the `process_edit` calls.
     inst_needs_scratch_reg: PartedByRegClass<bool>,
-    /// `reused_input_to_reuse_op[i]` is the operand index of the reuse operand
-    /// that uses the `i`th operand in the current instruction as its input.
-    /// This is used to 
-    reused_input_to_reuse_op: Vec<usize>,
-    /// The vregs defined or used in the current instruction.
-    vregs_in_curr_inst: BitSet,
-    /// The physical registers allocated to the operands in the current instruction.
-    /// Used during eviction to detect eviction of a register that is already in use in the
-    /// instruction being processed, implying that there aren't enough registers for allocation.
-    pregs_allocd_in_curr_inst: PRegSet,
-    allocatable_regs: PRegSet,
-    dedicated_scratch_regs: PartedByRegClass<Option<PReg>>,
-
-    fixed_stack_slots: Vec<PReg>,
-
-    // Output.
-    allocs: Allocs,
-    edits: VecDeque<(ProgPoint, Edit)>,
-    safepoint_slots: Vec<(ProgPoint, Allocation)>,
-    num_spillslots: u32,
-    stats: Stats,
+    fixed_stack_slots: PRegSet,
 }
 
-impl<'a, F: Function> Env<'a, F> {
-    fn new(func: &'a F, env: &'a MachineEnv) -> Self {
-        trace!("multispillslots_named_by_last_slot: {:?}", func.multi_spillslot_named_by_last_slot());
-        let mut regs = [
-            env.preferred_regs_by_class[RegClass::Int as usize].clone(),
-            env.preferred_regs_by_class[RegClass::Float as usize].clone(),
-            env.preferred_regs_by_class[RegClass::Vector as usize].clone(),
-        ];
-        regs[0].extend(env.non_preferred_regs_by_class[RegClass::Int as usize].iter().cloned());
-        regs[1].extend(env.non_preferred_regs_by_class[RegClass::Float as usize].iter().cloned());
-        regs[2].extend(env.non_preferred_regs_by_class[RegClass::Vector as usize].iter().cloned());
-        use alloc::vec;
-        trace!("{:?}", env);
-        let (allocs, max_operand_len) = Allocs::new(func);
+impl Edits {
+    fn new(fixed_stack_slots: PRegSet) -> Self {
         Self {
-            func,
-            allocatable_regs: PRegSet::from(env),
-            vreg_allocs: vec![Allocation::none(); func.num_vregs()],
-            vreg_spillslots: vec![SpillSlot::invalid(); func.num_vregs()],
-            live_vregs: HashSet::with_capacity(func.num_vregs()),
-            freepregs: PartedByRegClass {
-                items: [
-                    PRegSet::from_iter(regs[0].iter().cloned()),
-                    PRegSet::from_iter(regs[1].iter().cloned()),
-                    PRegSet::from_iter(regs[2].iter().cloned()),
-                ]
-            },
-            lrus: Lrus::new(
-                &regs[0],
-                &regs[1],
-                &regs[2]
-            ),
-            vreg_in_preg: vec![VReg::invalid(); PReg::NUM_INDEX],
-            fixed_stack_slots: env.fixed_stack_slots.clone(),
-            temp_spillslots: PartedByRegClass { items: [
-                Vec::with_capacity(func.num_vregs()),
-                Vec::with_capacity(func.num_vregs()),
-                Vec::with_capacity(func.num_vregs()),
-            ] },
             inst_pre_edits: VecDeque::new(),
             inst_post_edits: VecDeque::new(),
-            free_after_curr_inst: PartedByRegClass { items: [PRegSet::empty(), PRegSet::empty(), PRegSet::empty()] },
-            vregs_allocd_in_curr_inst: BitSet::with_capacity(func.num_vregs()),
-            use_vregs_saved_and_restored_in_curr_inst: BitSet::with_capacity(func.num_vregs()),
-            freed_def_pregs: PartedByRegClass { items: [PRegSet::empty(), PRegSet::empty(), PRegSet::empty()] },
-            vregs_first_seen_in_curr_inst: BitSet::with_capacity(func.num_vregs()),
-            inst_needs_scratch_reg: PartedByRegClass { items: [false, false, false] },
-            reused_input_to_reuse_op: vec![usize::MAX; max_operand_len as usize],
-            vregs_in_curr_inst: BitSet::with_capacity(func.num_vregs()),
-            pregs_allocd_in_curr_inst: PRegSet::empty(),
-            dedicated_scratch_regs: PartedByRegClass { items: [
-                env.scratch_by_class[0],
-                env.scratch_by_class[1],
-                env.scratch_by_class[2],
-            ] },
-            allocs,
             edits: VecDeque::new(),
-            safepoint_slots: Vec::new(),
-            num_spillslots: 0,
-            stats: Stats::default(),
+            fixed_stack_slots,
+            inst_needs_scratch_reg: PartedByRegClass { items: [false, false, false] }
         }
     }
+}
 
+impl Edits {
     fn is_stack(&self, alloc: Allocation) -> bool {
         if alloc.is_stack() {
             return true;
         }
         if alloc.is_reg() {
-            return self.fixed_stack_slots.contains(&alloc.as_reg().unwrap());
+            return self.fixed_stack_slots.contains(alloc.as_reg().unwrap());
         }
         false
-    }
-
-    fn add_freed_regs_to_freelist(&mut self) {
-        for class in [RegClass::Int, RegClass::Float, RegClass::Vector] {
-            for preg in self.freed_def_pregs[class] {
-                self.lrus[class].append(preg.hw_enc());
-            }
-            self.freepregs[class].union_from(self.freed_def_pregs[class]);
-            self.freed_def_pregs[class] = PRegSet::empty();
-            
-            for preg in self.free_after_curr_inst[class] {
-                self.lrus[preg.class()].append(preg.hw_enc());
-            }
-            self.freepregs[class].union_from(self.free_after_curr_inst[class]);
-            self.free_after_curr_inst[class] = PRegSet::empty();
-        }
-    }
-
-    /// The scratch registers needed for processing the edits generated
-    /// during a `reload_at_begin` call.
-    ///
-    /// This function is only called when all instructions in a block have
-    /// already been processed. The only edits being processed will be for the
-    /// ones to move a liveout vreg or block param from its spillslot to its
-    /// expected allocation.
-    fn get_scratch_regs_for_reloading(&self) -> PartedByRegClass<Option<PReg>> {
-        trace!("Getting scratch registers for reload_at_begin");
-        let mut scratch_regs = PartedByRegClass{ items: [None, None, None] };
-        for class in [RegClass::Int, RegClass::Float, RegClass::Vector] {
-            if self.inst_needs_scratch_reg[class] {
-                trace!("{:?} class needs a scratch register", class);
-                if self.dedicated_scratch_regs[class].is_some() {
-                    trace!("Using the dedicated scratch register for class {:?}", class);
-                    scratch_regs[class] = self.dedicated_scratch_regs[class];
-                } else {
-                    trace!("No dedicated scratch register for class {:?}. Using the last free register", class);
-                    scratch_regs[class] = Some(self.freepregs[class]
-                        .into_iter()
-                        .next()
-                        .expect("Allocation impossible?"));
-                }
-            }
-        }
-        scratch_regs
-    }
-
-    /// The scratch registers needed for processing edits generated while
-    /// processing instructions.
-    fn get_scratch_regs(&mut self, inst: Inst) -> Result<PartedByRegClass<Option<PReg>>, RegAllocError> {
-        trace!("Getting scratch registers for instruction {:?}", inst);
-        let mut scratch_regs = PartedByRegClass { items: [None, None, None] };
-        for class in [RegClass::Int, RegClass::Float, RegClass::Vector] {
-            if self.inst_needs_scratch_reg[class] {
-                trace!("{:?} class needs a scratch register", class);
-                if let Some(reg) = self.dedicated_scratch_regs[class] {
-                    trace!("Using the dedicated scratch register for class {:?}", class);
-                    scratch_regs[class] = Some(reg);
-                } else {
-                    trace!("class {:?} has no dedicated scratch register", class);
-                    let reg = if let Some(preg) = self.freepregs[class].into_iter().next() {
-                        trace!("Using the last free {:?} register for scratch", class);
-                        preg
-                    } else {
-                        trace!("No free {:?} registers. Evicting a register", class);
-                        self.evict_any_reg(inst, class)?
-                    };
-                    scratch_regs[class] = Some(reg);
-                }
-            } else {
-                trace!("{:?} class does not need a scratch register", class);
-            }
-        }
-        Ok(scratch_regs)
     }
 
     fn process_edits(&mut self, scratch_regs: PartedByRegClass<Option<PReg>>) {
@@ -391,13 +219,248 @@ impl<'a, F: Function> Env<'a, F> {
             }, class));
         }
     }
+}
 
+#[derive(Debug)]
+pub struct Env<'a, F: Function> {
+    func: &'a F,
+
+    /// The current allocations for all virtual registers.
+    vreg_allocs: Vec<Allocation>,
+    /// Spillslots for all virtual registers.
+    /// `vreg_spillslots[i]` is the spillslot for virtual register `i`.
+    vreg_spillslots: Vec<SpillSlot>,
+    /// The virtual registers that are currently live.
+    live_vregs: HashSet<VReg>,
+    /// Allocatable free physical registers for classes Int, Float, and Vector, respectively.
+    freepregs: PartedByRegClass<PRegSet>,
+    /// Least-recently-used caches for register classes Int, Float, and Vector, respectively.
+    lrus: Lrus,
+    /// `vreg_in_preg[i]` is the virtual register currently in the physical register
+    /// with index `i`.
+    vreg_in_preg: Vec<VReg>,
+    /// For parallel moves from branch args to block param spillslots.
+    temp_spillslots: PartedByRegClass<Vec<SpillSlot>>,
+    /// All the allocatables registers that were used for one thing or the other
+    /// but need to be freed after the current instruction has completed processing,
+    /// not immediately, like allocatable registers used as scratch registers.
+    /// 
+    /// This is used to keep track of them so that they can be marked as free for reallocation
+    /// after the instruction has completed processing.
+    free_after_curr_inst: PartedByRegClass<PRegSet>,
+    /// The virtual registers of use operands that have been allocated in the current instruction
+    /// and for which edits had to be inserted to save and restore them because their constraint
+    /// doesn't allow the allocation they are expected to be in after the instruction.
+    /// 
+    /// This needs to be kept track of to generate the correct moves in the case where a
+    /// single virtual register is used multiple times in a single instruction with
+    /// different constraints.
+    use_vregs_saved_and_restored_in_curr_inst: BitSet,
+    /// Physical registers that were used for late def operands and now free to be
+    /// reused for early operands in the current instruction.
+    ///
+    /// After late defs have been allocated, rather than returning their registers to
+    /// the free register list, it is added here to avoid the registers being used as
+    /// scratch registers.
+    /// 
+    /// For example, consider the following:
+    /// def v0, use v1
+    /// If the processing of v1 requires a stack-to-stack move, then a scratch register is
+    /// used and the instruction becomes:
+    /// def v0, use v1
+    /// move from stack0 to p0
+    /// move from p0 to stack1
+    /// 
+    /// Since scratch registers may be drawn from the free register list and v0 will be allocated and
+    /// deallocated before v1, then it's possible for the scratch register p0 to be v0's allocation,
+    /// which is incorrect because p0 will end up holding whatever is in stack0, not v0.
+    /// `freed_def_regs` avoids this by allowing the late def registers to be reused without making it
+    /// possible for this scratch register scenario to happen.
+    freed_def_pregs: PartedByRegClass<PRegSet>,
+    /// Used to keep track of which used vregs are seen for the first time
+    /// in the instruction, that is, if the vregs live past the current instruction.
+    /// This is used to determine whether or not reused operands
+    /// for reuse-input constraints should be restored after an instruction.
+    /// It's also used to determine if the an early operand can reuse a freed def operand's
+    /// allocation. And it's also used to determine the edits to be inserted when
+    /// allocating a use operand.
+    vregs_first_seen_in_curr_inst: BitSet,
+    /// Used to keep track of which vregs have been allocated in the current instruction.
+    /// This is used to determine which edits to insert when allocating a use operand.
+    vregs_allocd_in_curr_inst: BitSet,
+    /// `reused_input_to_reuse_op[i]` is the operand index of the reuse operand
+    /// that uses the `i`th operand in the current instruction as its input.
+    /// This is used to 
+    reused_input_to_reuse_op: Vec<usize>,
+    /// The vregs defined or used in the current instruction.
+    vregs_in_curr_inst: BitSet,
+    /// The physical registers allocated to the operands in the current instruction.
+    /// Used during eviction to detect eviction of a register that is already in use in the
+    /// instruction being processed, implying that there aren't enough registers for allocation.
+    pregs_allocd_in_curr_inst: PRegSet,
+    allocatable_regs: PRegSet,
+    dedicated_scratch_regs: PartedByRegClass<Option<PReg>>,
+    stack: Stack<'a, F>,
+
+    fixed_stack_slots: PRegSet,
+
+    // Output.
+    allocs: Allocs,
+    edits: Edits,
+    num_spillslots: u32,
+    stats: Stats,
+}
+
+impl<'a, F: Function> Env<'a, F> {
+    fn new(func: &'a F, env: &'a MachineEnv) -> Self {
+        trace!("multispillslots_named_by_last_slot: {:?}", func.multi_spillslot_named_by_last_slot());
+        let mut regs = [
+            env.preferred_regs_by_class[RegClass::Int as usize].clone(),
+            env.preferred_regs_by_class[RegClass::Float as usize].clone(),
+            env.preferred_regs_by_class[RegClass::Vector as usize].clone(),
+        ];
+        regs[0].extend(env.non_preferred_regs_by_class[RegClass::Int as usize].iter().cloned());
+        regs[1].extend(env.non_preferred_regs_by_class[RegClass::Float as usize].iter().cloned());
+        regs[2].extend(env.non_preferred_regs_by_class[RegClass::Vector as usize].iter().cloned());
+        use alloc::vec;
+        trace!("{:?}", env);
+        let (allocs, max_operand_len) = Allocs::new(func);
+        let fixed_stack_slots = PRegSet::from_iter(env.fixed_stack_slots.iter().cloned());
+        Self {
+            func,
+            allocatable_regs: PRegSet::from(env),
+            vreg_allocs: vec![Allocation::none(); func.num_vregs()],
+            vreg_spillslots: vec![SpillSlot::invalid(); func.num_vregs()],
+            live_vregs: HashSet::with_capacity(func.num_vregs()),
+            freepregs: PartedByRegClass {
+                items: [
+                    PRegSet::from_iter(regs[0].iter().cloned()),
+                    PRegSet::from_iter(regs[1].iter().cloned()),
+                    PRegSet::from_iter(regs[2].iter().cloned()),
+                ]
+            },
+            lrus: Lrus::new(
+                &regs[0],
+                &regs[1],
+                &regs[2]
+            ),
+            vreg_in_preg: vec![VReg::invalid(); PReg::NUM_INDEX],
+            stack: Stack::new(func),
+            fixed_stack_slots,
+            temp_spillslots: PartedByRegClass { items: [
+                Vec::with_capacity(func.num_vregs()),
+                Vec::with_capacity(func.num_vregs()),
+                Vec::with_capacity(func.num_vregs()),
+            ] },
+            free_after_curr_inst: PartedByRegClass { items: [PRegSet::empty(), PRegSet::empty(), PRegSet::empty()] },
+            vregs_allocd_in_curr_inst: BitSet::with_capacity(func.num_vregs()),
+            use_vregs_saved_and_restored_in_curr_inst: BitSet::with_capacity(func.num_vregs()),
+            freed_def_pregs: PartedByRegClass { items: [PRegSet::empty(), PRegSet::empty(), PRegSet::empty()] },
+            vregs_first_seen_in_curr_inst: BitSet::with_capacity(func.num_vregs()),
+            reused_input_to_reuse_op: vec![usize::MAX; max_operand_len as usize],
+            vregs_in_curr_inst: BitSet::with_capacity(func.num_vregs()),
+            pregs_allocd_in_curr_inst: PRegSet::empty(),
+            dedicated_scratch_regs: PartedByRegClass { items: [
+                env.scratch_by_class[0],
+                env.scratch_by_class[1],
+                env.scratch_by_class[2],
+            ] },
+            allocs,
+            edits: Edits::new(fixed_stack_slots),
+            num_spillslots: 0,
+            stats: Stats::default(),
+        }
+    }
+
+    fn is_stack(&self, alloc: Allocation) -> bool {
+        if alloc.is_stack() {
+            return true;
+        }
+        if alloc.is_reg() {
+            return self.fixed_stack_slots.contains(alloc.as_reg().unwrap());
+        }
+        false
+    }
+
+    fn add_freed_regs_to_freelist(&mut self) {
+        for class in [RegClass::Int, RegClass::Float, RegClass::Vector] {
+            for preg in self.freed_def_pregs[class] {
+                self.lrus[class].append(preg.hw_enc());
+            }
+            self.freepregs[class].union_from(self.freed_def_pregs[class]);
+            self.freed_def_pregs[class] = PRegSet::empty();
+            
+            for preg in self.free_after_curr_inst[class] {
+                self.lrus[preg.class()].append(preg.hw_enc());
+            }
+            self.freepregs[class].union_from(self.free_after_curr_inst[class]);
+            self.free_after_curr_inst[class] = PRegSet::empty();
+        }
+    }
+
+    /// The scratch registers needed for processing the edits generated
+    /// during a `reload_at_begin` call.
+    ///
+    /// This function is only called when all instructions in a block have
+    /// already been processed. The only edits being processed will be for the
+    /// ones to move a liveout vreg or block param from its spillslot to its
+    /// expected allocation.
+    fn get_scratch_regs_for_reloading(&self, inst_needs_scratch_reg: PartedByRegClass<bool>) -> PartedByRegClass<Option<PReg>> {
+        trace!("Getting scratch registers for reload_at_begin");
+        let mut scratch_regs = PartedByRegClass{ items: [None, None, None] };
+        for class in [RegClass::Int, RegClass::Float, RegClass::Vector] {
+            if inst_needs_scratch_reg[class] {
+                trace!("{:?} class needs a scratch register", class);
+                if self.dedicated_scratch_regs[class].is_some() {
+                    trace!("Using the dedicated scratch register for class {:?}", class);
+                    scratch_regs[class] = self.dedicated_scratch_regs[class];
+                } else {
+                    trace!("No dedicated scratch register for class {:?}. Using the last free register", class);
+                    scratch_regs[class] = Some(self.freepregs[class]
+                        .into_iter()
+                        .next()
+                        .expect("Allocation impossible?"));
+                }
+            }
+        }
+        scratch_regs
+    }
+
+    /// The scratch registers needed for processing edits generated while
+    /// processing instructions.
+    fn get_scratch_regs(&mut self, inst: Inst, inst_needs_scratch_reg: PartedByRegClass<bool>) -> Result<PartedByRegClass<Option<PReg>>, RegAllocError> {
+        trace!("Getting scratch registers for instruction {:?}", inst);
+        let mut scratch_regs = PartedByRegClass { items: [None, None, None] };
+        for class in [RegClass::Int, RegClass::Float, RegClass::Vector] {
+            if inst_needs_scratch_reg[class] {
+                trace!("{:?} class needs a scratch register", class);
+                if let Some(reg) = self.dedicated_scratch_regs[class] {
+                    trace!("Using the dedicated scratch register for class {:?}", class);
+                    scratch_regs[class] = Some(reg);
+                } else {
+                    trace!("class {:?} has no dedicated scratch register", class);
+                    let reg = if let Some(preg) = self.freepregs[class].into_iter().next() {
+                        trace!("Using the last free {:?} register for scratch", class);
+                        preg
+                    } else {
+                        trace!("No free {:?} registers. Evicting a register", class);
+                        self.evict_any_reg(inst, class)?
+                    };
+                    scratch_regs[class] = Some(reg);
+                }
+            } else {
+                trace!("{:?} class does not need a scratch register", class);
+            }
+        }
+        Ok(scratch_regs)
+    }
+    
     fn move_after_inst(&mut self, inst: Inst, vreg: VReg, to: Allocation) {
-        self.add_move_later(inst, self.vreg_allocs[vreg.vreg()], to, vreg.class(), InstPosition::After, false);
+        self.edits.add_move_later(inst, self.vreg_allocs[vreg.vreg()], to, vreg.class(), InstPosition::After, false);
     }
 
     fn move_before_inst(&mut self, inst: Inst, vreg: VReg, to: Allocation) {
-        self.add_move_later(inst, self.vreg_allocs[vreg.vreg()], to, vreg.class(), InstPosition::Before, false);
+        self.edits.add_move_later(inst, self.vreg_allocs[vreg.vreg()], to, vreg.class(), InstPosition::Before, false);
     }
 
     fn allocd_within_constraint(&self, inst: Inst, op: Operand) -> bool {
@@ -441,7 +504,7 @@ impl<'a, F: Function> Env<'a, F> {
         trace!("The removed vreg: {:?}", evicted_vreg);
         debug_assert_ne!(evicted_vreg, VReg::invalid());
         if self.vreg_spillslots[evicted_vreg.vreg()].is_invalid() {
-            self.vreg_spillslots[evicted_vreg.vreg()] = self.allocstack(&evicted_vreg);
+            self.vreg_spillslots[evicted_vreg.vreg()] = self.stack.allocstack(&evicted_vreg);
         }
         let slot = self.vreg_spillslots[evicted_vreg.vreg()];
         self.vreg_allocs[evicted_vreg.vreg()] = Allocation::stack(slot);
@@ -513,25 +576,6 @@ impl<'a, F: Function> Env<'a, F> {
         self.live_vregs.remove(&vreg);
         trace!("{:?} curr alloc is now {:?}", vreg, self.vreg_allocs[vreg.vreg()]);
         trace!("Pregs currently allocated: {}", self.pregs_allocd_in_curr_inst);
-    }
-    
-    /// Allocates a spill slot on the stack for `vreg`
-    fn allocstack(&mut self, vreg: &VReg) -> SpillSlot {
-        let size: u32 = self.func.spillslot_size(vreg.class()).try_into().unwrap();
-        // Rest of this function was copied verbatim 
-        // from `Env::allocate_spillslot` in src/ion/spill.rs.
-        let mut offset = self.num_spillslots;
-        // Align up to `size`.
-        debug_assert!(size.is_power_of_two());
-        offset = (offset + size - 1) & !(size - 1);
-        let slot = if self.func.multi_spillslot_named_by_last_slot() {
-            offset + size - 1
-        } else {
-            offset
-        };
-        offset += size;
-        self.num_spillslots = offset;
-        SpillSlot::new(slot as usize)
     }
 
     /// Allocates a physical register for the operand `op`.
@@ -656,7 +700,7 @@ impl<'a, F: Function> Env<'a, F> {
                     spillslot
                 } else {
                     if self.vreg_spillslots[op.vreg().vreg()].is_invalid() {
-                        self.vreg_spillslots[op.vreg().vreg()] = self.allocstack(&op.vreg());
+                        self.vreg_spillslots[op.vreg().vreg()] = self.stack.allocstack(&op.vreg());
                     }
                     self.vreg_spillslots[op.vreg().vreg()]
                 };
@@ -733,7 +777,7 @@ impl<'a, F: Function> Env<'a, F> {
                     // the location v0 is expected to be in after inst 1.
                     // This messes up the dataflow.
                     // To avoid this, the moves are prepended.
-                    self.add_move_later(
+                    self.edits.add_move_later(
                         inst,
                         self.vreg_allocs[op.vreg().vreg()],
                         prev_alloc,
@@ -819,10 +863,10 @@ impl<'a, F: Function> Env<'a, F> {
                         && !self.vregs_first_seen_in_curr_inst.contains(op.vreg().vreg())
                     {
                         if self.vreg_spillslots[op.vreg().vreg()].is_invalid() {
-                            self.vreg_spillslots[op.vreg().vreg()] = self.allocstack(&op.vreg());
+                            self.vreg_spillslots[op.vreg().vreg()] = self.stack.allocstack(&op.vreg());
                         }
                         let op_spillslot = Allocation::stack(self.vreg_spillslots[op.vreg().vreg()]);
-                        self.add_move_later(
+                        self.edits.add_move_later(
                             inst,
                             self.vreg_allocs[op.vreg().vreg()],
                             op_spillslot,
@@ -830,7 +874,7 @@ impl<'a, F: Function> Env<'a, F> {
                             InstPosition::Before,
                             false,
                         );
-                        self.add_move_later(
+                        self.edits.add_move_later(
                             inst,
                             op_spillslot,
                             prev_alloc,
@@ -840,7 +884,7 @@ impl<'a, F: Function> Env<'a, F> {
                         );
                         self.use_vregs_saved_and_restored_in_curr_inst.insert(op.vreg().vreg());
                     } else {
-                        self.add_move_later(
+                        self.edits.add_move_later(
                             inst,
                             self.vreg_allocs[op.vreg().vreg()],
                             prev_alloc,
@@ -888,7 +932,7 @@ impl<'a, F: Function> Env<'a, F> {
     fn alloc_slots_for_block_params(&mut self, succ: Block) {
         for vreg in self.func.block_params(succ) {
             if self.vreg_spillslots[vreg.vreg()].is_invalid() {
-                self.vreg_spillslots[vreg.vreg()] = self.allocstack(vreg);
+                self.vreg_spillslots[vreg.vreg()] = self.stack.allocstack(vreg);
                 trace!("Block param {:?} is in {:?}", vreg, Allocation::stack(self.vreg_spillslots[vreg.vreg()]));
             }
         }
@@ -945,11 +989,11 @@ impl<'a, F: Function> Env<'a, F> {
                     let slot = if self.vreg_spillslots[vreg.vreg()].is_valid() {
                         self.vreg_spillslots[vreg.vreg()]
                     } else {
-                        self.vreg_spillslots[vreg.vreg()] = self.allocstack(&vreg);
+                        self.vreg_spillslots[vreg.vreg()] = self.stack.allocstack(&vreg);
                         self.vreg_spillslots[vreg.vreg()]
                     };
                     let slot_alloc = Allocation::stack(slot);
-                    self.add_move_later(
+                    self.edits.add_move_later(
                         inst,
                         preg_alloc,
                         slot_alloc,
@@ -957,7 +1001,7 @@ impl<'a, F: Function> Env<'a, F> {
                         InstPosition::Before,
                         true
                     );
-                    self.add_move_later(
+                    self.edits.add_move_later(
                         inst,
                         slot_alloc,
                         preg_alloc,
@@ -1041,11 +1085,11 @@ impl<'a, F: Function> Env<'a, F> {
             // be in another vreg's spillslot at the block beginning.
             for vreg in self.func.branch_blockparams(block, inst, succ_idx).iter() {
                 if self.vreg_spillslots[vreg.vreg()].is_invalid() {
-                    self.vreg_spillslots[vreg.vreg()] = self.allocstack(vreg);
+                    self.vreg_spillslots[vreg.vreg()] = self.stack.allocstack(vreg);
                     trace!("Block arg {:?} is going to be in {:?}", vreg, Allocation::stack(self.vreg_spillslots[vreg.vreg()]));
                 }
                 if self.temp_spillslots[vreg.class()].len() == next_temp_idx[vreg.class()] {
-                    let newslot = self.allocstack(vreg);
+                    let newslot = self.stack.allocstack(vreg);
                     self.temp_spillslots[vreg.class()].push(newslot);
                 }
                 let temp_slot = self.temp_spillslots[vreg.class()][next_temp_idx[vreg.class()]];
@@ -1053,7 +1097,7 @@ impl<'a, F: Function> Env<'a, F> {
                 next_temp_idx[vreg.class()] += 1;
                 let vreg_spill = Allocation::stack(self.vreg_spillslots[vreg.vreg()]);
                 trace!("{:?} which is going to be in {:?} inserting move to {:?}", vreg, vreg_spill, temp);
-                self.add_move_later(inst, vreg_spill, temp, vreg.class(), InstPosition::Before, false);
+                self.edits.add_move_later(inst, vreg_spill, temp, vreg.class(), InstPosition::Before, false);
             }
         }
     
@@ -1072,7 +1116,7 @@ impl<'a, F: Function> Env<'a, F> {
                 next_temp_idx[vreg.class()] += 1;
                 trace!(" --- Placing branch arg {:?} in {:?}", vreg, temp);
                 trace!("{:?} which is now in {:?} inserting move to {:?}", vreg, temp, param_alloc);
-                self.add_move_later(inst, temp, param_alloc, vreg.class(), InstPosition::Before, false);
+                self.edits.add_move_later(inst, temp, param_alloc, vreg.class(), InstPosition::Before, false);
 
                 // All branch arguments should be in their spillslots at the end of the function.
                 self.vreg_allocs[vreg.vreg()] = Allocation::stack(self.vreg_spillslots[vreg.vreg()]);
@@ -1241,8 +1285,8 @@ impl<'a, F: Function> Env<'a, F> {
         trace!("freed_def_pregs: {}", self.freed_def_pregs);
         trace!("free after curr inst: {}", self.free_after_curr_inst);
         trace!("");
-        let scratch_regs = self.get_scratch_regs(inst)?;
-        self.process_edits(scratch_regs);
+        let scratch_regs = self.get_scratch_regs(inst, self.edits.inst_needs_scratch_reg.clone())?;
+        self.edits.process_edits(scratch_regs);
         self.add_freed_regs_to_freelist();
         self.use_vregs_saved_and_restored_in_curr_inst.clear();
         self.vregs_first_seen_in_curr_inst.clear();
@@ -1279,7 +1323,7 @@ impl<'a, F: Function> Env<'a, F> {
                 continue;
             }
             if self.vreg_spillslots[vreg.vreg()].is_invalid() {
-                self.vreg_spillslots[vreg.vreg()] = self.allocstack(&vreg);
+                self.vreg_spillslots[vreg.vreg()] = self.stack.allocstack(&vreg);
             }
             // The allocation where the vreg is expected to be before
             // the first instruction.
@@ -1296,7 +1340,7 @@ impl<'a, F: Function> Env<'a, F> {
                 continue;
             }
             trace!("Move reason: reload {:?} at begin - move from its spillslot", vreg);
-            self.add_move_later(
+            self.edits.add_move_later(
                 self.func.block_insns(block).first(),
                 slot,
                 prev_alloc,
@@ -1305,12 +1349,11 @@ impl<'a, F: Function> Env<'a, F> {
                 true
             );
         }
-        let live_vregs = self.live_vregs.clone();
-        for vreg in live_vregs.iter().cloned() {
+        for vreg in self.live_vregs.iter().cloned() {
             trace!("Processing {:?}", vreg);
             trace!("{:?} is not a block param. It's a liveout vreg from some predecessor", vreg);
             if self.vreg_spillslots[vreg.vreg()].is_invalid() {
-                self.vreg_spillslots[vreg.vreg()] = self.allocstack(&vreg);
+                self.vreg_spillslots[vreg.vreg()] = self.stack.allocstack(&vreg);
             }
             // The allocation where the vreg is expected to be before
             // the first instruction.
@@ -1338,7 +1381,7 @@ impl<'a, F: Function> Env<'a, F> {
                 continue;
             }
             trace!("Move reason: reload {:?} at begin - move from its spillslot", vreg);
-            self.add_move_later(
+            self.edits.add_move_later(
                 self.func.block_insns(block).first(),
                 slot,
                 prev_alloc,
@@ -1347,7 +1390,8 @@ impl<'a, F: Function> Env<'a, F> {
                 true
             );
         }
-        self.process_edits(self.get_scratch_regs_for_reloading());
+        let scratch_regs = self.get_scratch_regs_for_reloading(self.edits.inst_needs_scratch_reg.clone());
+        self.edits.process_edits(scratch_regs);
         self.add_freed_regs_to_freelist();
         if trace_enabled!() {
             self.log_post_reload_at_begin_state(block);
@@ -1467,8 +1511,7 @@ fn log_output<'a, F: Function>(env: &Env<'a, F>) {
     }
     trace!("VReg spillslots: {:?}", v);
     trace!("Temp spillslots: {:?}", env.temp_spillslots);
-    trace!("Final edits: {:?}", env.edits);
-    trace!("safepoint_slots: {:?}\n", env.safepoint_slots);
+    trace!("Final edits: {:?}", env.edits.edits);
 }
 
 pub fn run<F: Function>(
@@ -1495,13 +1538,13 @@ pub fn run<F: Function>(
     }
 
     Ok(Output {
-        edits: env.edits.make_contiguous().to_vec(),
+        edits: env.edits.edits.make_contiguous().to_vec(),
         allocs: env.allocs.allocs,
         inst_alloc_offsets: env.allocs.inst_alloc_offsets,
         num_spillslots: env.num_spillslots as usize,
         // TODO: Handle debug locations.
         debug_locations: Vec::new(),
-        safepoint_slots: env.safepoint_slots,
+        safepoint_slots: Vec::new(),
         stats: env.stats,
     })
 }

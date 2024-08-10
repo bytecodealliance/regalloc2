@@ -215,7 +215,7 @@ impl fmt::Debug for Lru {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PartedByRegClass<T> {
     pub items: [T; 3],
 }
