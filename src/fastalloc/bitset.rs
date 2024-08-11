@@ -12,7 +12,6 @@ impl BitSet {
 
     pub fn with_capacity(n: usize) -> Self {
         let quot = n / BITS_PER_FRAME;
-        // The number of frames needed cannot be > the quotient;
         let no_of_frames = quot + 1;
         Self {
             bits: vec![0; no_of_frames],
@@ -108,8 +107,6 @@ mod tests {
         set.insert(23);
         set.insert(45);
         let els = [10, 11, 23, 45, 199];
-        use std::println;
-        println!("{:b}", set.bits[0]);
         for (actual_el, expected_el) in set.iter().zip(els.iter()) {
             assert_eq!(actual_el, *expected_el as usize);
         }

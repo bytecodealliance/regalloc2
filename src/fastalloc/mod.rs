@@ -6,14 +6,15 @@ use crate::{Function, MachineEnv, ssa::validate_ssa, ProgPoint, Edit, Output};
 use crate::{cfg::CFGInfo, RegAllocError, Allocation, ion::Stats};
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
-use hashbrown::HashSet;
 
+mod vregset;
 mod bitset;
 mod lru;
 mod iter;
 use lru::*;
 use iter::*;
 use bitset::BitSet;
+use vregset::VRegSet;
 
 #[derive(Debug)]
 struct Allocs {
@@ -231,7 +232,7 @@ pub struct Env<'a, F: Function> {
     /// `vreg_spillslots[i]` is the spillslot for virtual register `i`.
     vreg_spillslots: Vec<SpillSlot>,
     /// The virtual registers that are currently live.
-    live_vregs: HashSet<VReg>,
+    live_vregs: VRegSet,
     /// Allocatable free physical registers for classes Int, Float, and Vector, respectively.
     freepregs: PartedByRegClass<PRegSet>,
     /// Least-recently-used caches for register classes Int, Float, and Vector, respectively.
@@ -331,7 +332,7 @@ impl<'a, F: Function> Env<'a, F> {
             allocatable_regs: PRegSet::from(env),
             vreg_allocs: vec![Allocation::none(); func.num_vregs()],
             vreg_spillslots: vec![SpillSlot::invalid(); func.num_vregs()],
-            live_vregs: HashSet::with_capacity(func.num_vregs()),
+            live_vregs: VRegSet::with_capacity(func.num_vregs()),
             freepregs: PartedByRegClass {
                 items: [
                     PRegSet::from_iter(regs[0].iter().cloned()),
@@ -573,7 +574,7 @@ impl<'a, F: Function> Env<'a, F> {
             AllocationKind::None => unreachable!("Attempting to free an unallocated operand!")
         }
         self.vreg_allocs[vreg.vreg()] = Allocation::none();
-        self.live_vregs.remove(&vreg);
+        self.live_vregs.remove(vreg.vreg());
         trace!("{:?} curr alloc is now {:?}", vreg, self.vreg_allocs[vreg.vreg()]);
         trace!("Pregs currently allocated: {}", self.pregs_allocd_in_curr_inst);
     }
@@ -1349,7 +1350,7 @@ impl<'a, F: Function> Env<'a, F> {
                 true
             );
         }
-        for vreg in self.live_vregs.iter().cloned() {
+        for vreg in self.live_vregs.iter() {
             trace!("Processing {:?}", vreg);
             trace!("{:?} is not a block param. It's a liveout vreg from some predecessor", vreg);
             if self.vreg_spillslots[vreg.vreg()].is_invalid() {
