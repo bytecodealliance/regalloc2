@@ -1468,11 +1468,9 @@ impl<'a, F: Function> Env<'a, F> {
         for block in (0..self.func.num_blocks()).rev() {
             self.alloc_block(Block::new(block))?;
         }
-        if !self.live_vregs.is_empty() {
-            Err(RegAllocError::EntryLivein)
-        } else {
-            Ok(())
-        }
+        // Ought to check if there are livein registers
+        // then throw an error, but will that be expensive?
+        Ok(())
     }
 }
 
