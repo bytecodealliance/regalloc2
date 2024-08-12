@@ -308,7 +308,6 @@ pub struct Env<'a, F: Function> {
     // Output.
     allocs: Allocs,
     edits: Edits,
-    num_spillslots: u32,
     stats: Stats,
 }
 
@@ -368,7 +367,6 @@ impl<'a, F: Function> Env<'a, F> {
             ] },
             allocs,
             edits: Edits::new(fixed_stack_slots),
-            num_spillslots: 0,
             stats: Stats::default(),
         }
     }
@@ -1540,7 +1538,7 @@ pub fn run<F: Function>(
         edits: env.edits.edits.make_contiguous().to_vec(),
         allocs: env.allocs.allocs,
         inst_alloc_offsets: env.allocs.inst_alloc_offsets,
-        num_spillslots: env.num_spillslots as usize,
+        num_spillslots: env.stack.num_spillslots as usize,
         // TODO: Handle debug locations.
         debug_locations: Vec::new(),
         safepoint_slots: Vec::new(),
