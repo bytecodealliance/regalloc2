@@ -249,14 +249,6 @@ pub struct Env<'a, F: Function> {
     /// This is used to keep track of them so that they can be marked as free for reallocation
     /// after the instruction has completed processing.
     free_after_curr_inst: PartedByRegClass<PRegSet>,
-    /// The virtual registers of use operands that have been allocated in the current instruction
-    /// and for which edits had to be inserted to save and restore them because their constraint
-    /// doesn't allow the allocation they are expected to be in after the instruction.
-    /// 
-    /// This needs to be kept track of to generate the correct moves in the case where a
-    /// single virtual register is used multiple times in a single instruction with
-    /// different constraints.
-    use_vregs_saved_and_restored_in_curr_inst: BitSet,
     /// Physical registers that were used for late def operands and now free to be
     /// reused for early operands in the current instruction.
     ///
@@ -354,7 +346,6 @@ impl<'a, F: Function> Env<'a, F> {
             ] },
             free_after_curr_inst: PartedByRegClass { items: [PRegSet::empty(), PRegSet::empty(), PRegSet::empty()] },
             vregs_allocd_in_curr_inst: BitSet::with_capacity(func.num_vregs()),
-            use_vregs_saved_and_restored_in_curr_inst: BitSet::with_capacity(func.num_vregs()),
             freed_def_pregs: PartedByRegClass { items: [PRegSet::empty(), PRegSet::empty(), PRegSet::empty()] },
             vregs_first_seen_in_curr_inst: BitSet::with_capacity(func.num_vregs()),
             reused_input_to_reuse_op: vec![usize::MAX; max_operand_len as usize],
@@ -853,10 +844,9 @@ impl<'a, F: Function> Env<'a, F> {
                     // move from stack0 to stack_v0
                     // 1. use v0 (fixed: stack0), use v0 (fixed: p0)
                     // move from stack_v0 to p1
-                    // 2. use v0 (fixed: p1)
+                    // 2. use v0 (fixed: p1) 
                     
-                    if !self.use_vregs_saved_and_restored_in_curr_inst.contains(op.vreg().vreg())
-                        && !self.vregs_allocd_in_curr_inst.contains(op.vreg().vreg())
+                    if !self.vregs_allocd_in_curr_inst.contains(op.vreg().vreg())
                         // Don't restore after the instruction if it doesn't live past
                         // this instruction.
                         && !self.vregs_first_seen_in_curr_inst.contains(op.vreg().vreg())
@@ -881,7 +871,6 @@ impl<'a, F: Function> Env<'a, F> {
                             InstPosition::After,
                             true,
                         );
-                        self.use_vregs_saved_and_restored_in_curr_inst.insert(op.vreg().vreg());
                     } else {
                         self.edits.add_move_later(
                             inst,
@@ -916,9 +905,48 @@ impl<'a, F: Function> Env<'a, F> {
         } else {
             self.allocs[(inst.index(), op_idx)] = self.vreg_allocs[op.vreg().vreg()];
             if let Some(preg) = self.allocs[(inst.index(), op_idx)].as_reg() {
-                if self.allocatable_regs.contains(preg) 
-                    && !self.func.inst_clobbers(inst).contains(preg) 
-                {
+                if self.func.inst_clobbers(inst).contains(preg) {
+                    // It is possible for the first use of a vreg in an instruction
+                    // to be some clobber p0 and the expected location of that vreg
+                    // after the instruction is also p0:
+                    //
+                    // 1. use v0 (fixed: p0), use v0 (fixed: p1). clobbers: [p0]
+                    // 2. use v0 (fixed: p0)
+                    //
+                    // When the second use of v0 is encountered in inst 1, a save and restore is
+                    // not inserted because it's not the first use of v0 in the instruction. Instead,
+                    // a single edit to move from p1 to p0 is inserted before the instruction:
+                    //
+                    // move from p1 to p0
+                    // 1. use v0 (fixed: p0), use v0 (fixed: p1). clobbers: [p0]
+                    // 2. use v0 (fixed: p0)
+                    //
+                    // To avoid this scenario, a save and restore is added here.
+                    if !self.vregs_allocd_in_curr_inst.contains(op.vreg().vreg())
+                        && !self.vregs_first_seen_in_curr_inst.contains(op.vreg().vreg()) 
+                    {
+                        if self.vreg_spillslots[op.vreg().vreg()].is_invalid() {
+                            self.vreg_spillslots[op.vreg().vreg()] = self.stack.allocstack(&op.vreg());
+                        }
+                        let op_spillslot = Allocation::stack(self.vreg_spillslots[op.vreg().vreg()]);
+                        self.edits.add_move_later(
+                            inst,
+                            self.vreg_allocs[op.vreg().vreg()],
+                            op_spillslot,
+                            op.class(),
+                            InstPosition::Before,
+                            false,
+                        );
+                        self.edits.add_move_later(
+                            inst,
+                            op_spillslot,
+                            self.vreg_allocs[op.vreg().vreg()],
+                            op.class(),
+                            InstPosition::After,
+                            true,
+                        );
+                    }
+                } else if self.allocatable_regs.contains(preg) {
                     self.lrus[preg.class()].poke(preg);
                 }
             }
@@ -956,32 +984,13 @@ impl<'a, F: Function> Env<'a, F> {
             //
             //
             // It is also possible for a clobbered register to be allocated to an operand
-            // in an instruction. In this case, edits only need to be inserted if the
-            // following conditions are met:
-            //
-            // 1. All the operands assigned the clobber are all uses of the same vreg 
-            // with the same constraint (no defs should be assigned the clobber).
-            // 2. No other operand in the instruction uses that vreg with a different constraint.
-            // 3. The used vreg lives past the instruction.
-            // 4. The expected allocation of the vreg after the instruction is the clobber.
-            //
-            // Because of the way operand allocation works, edits to save and restore a vreg
-            // will have already been inserted during operand allocation if any of the following
-            // conditions are met:
-            // 1. The expected allocation afterwards is not a clobber.
-            // 2. There are multiple operands using the vreg with different constraints.
-            // 3. A def operand has the same clobber allocation assigned to it and
-            // the vreg lives past the instruction.
-            // Therefore, the presence of the vreg in `use_vregs_saved_and_restored`
-            // implies that it violates one of the conditions for the edits to be inserted.
+            // in an instruction. No edits need to be inserted here because 
+            // `process_operand_allocation` has already done all the insertions.
 
             let vreg = self.vreg_in_preg[clobbered_preg.index()];
             if vreg != VReg::invalid() {
                 let vreg_isnt_mentioned_in_curr_inst = !self.vregs_in_curr_inst.contains(vreg.vreg());
-                let vreg_lives_past_curr_inst = !self.vregs_first_seen_in_curr_inst.contains(vreg.vreg());
                 if vreg_isnt_mentioned_in_curr_inst
-                    || (!self.use_vregs_saved_and_restored_in_curr_inst.contains(vreg.vreg())
-                        && vreg_lives_past_curr_inst)
                 {
                     trace!("Adding save and restore edits for {:?}", vreg);
                     let preg_alloc = Allocation::reg(clobbered_preg);
@@ -1287,7 +1296,6 @@ impl<'a, F: Function> Env<'a, F> {
         let scratch_regs = self.get_scratch_regs(inst, self.edits.inst_needs_scratch_reg.clone())?;
         self.edits.process_edits(scratch_regs);
         self.add_freed_regs_to_freelist();
-        self.use_vregs_saved_and_restored_in_curr_inst.clear();
         self.vregs_first_seen_in_curr_inst.clear();
         self.vregs_allocd_in_curr_inst.clear();
         for entry in self.reused_input_to_reuse_op.iter_mut() {
