@@ -1135,6 +1135,9 @@ impl<'a, F: Function> Env<'a, F> {
 
     fn alloc_inst(&mut self, block: Block, inst: Inst) -> Result<(), RegAllocError> {
         trace!("Allocating instruction {:?}", inst);
+        if self.func.requires_refs_on_stack(inst) {
+            panic!("Safepoint instructions aren't supported");
+        }
         if self.func.is_branch(inst) {
             self.process_branch(block, inst);
         }

@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 use alloc::vec;
 use core::fmt;
-use std::convert::{TryFrom, TryInto};
+use core::convert::{TryFrom, TryInto};
 use crate::{RegClass, VReg};
 
 struct RegClassNum;
