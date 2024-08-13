@@ -1105,6 +1105,10 @@ impl<'a, F: Function> Env<'a, F> {
                 next_temp_idx[vreg.class()] += 1;
                 let vreg_spill = Allocation::stack(self.vreg_spillslots[vreg.vreg()]);
                 trace!("{:?} which is going to be in {:?} inserting move to {:?}", vreg, vreg_spill, temp);
+                // Assuming that vregs defined in the current branch instruction can't be
+                // used as branch args for successors, else inserting the moves before, instead
+                // of after will be wrong. But the edits are inserted before because the fuzzer
+                // doesn't recognize moves inserted after branch instructions.
                 self.edits.add_move_later(inst, vreg_spill, temp, vreg.class(), InstPosition::Before, false);
             }
         }
@@ -1120,15 +1124,24 @@ impl<'a, F: Function> Env<'a, F> {
                 let param_alloc = Allocation::stack(self.vreg_spillslots[succ_param_vreg.vreg()]);
                 let temp_slot = self.temp_spillslots[vreg.class()][next_temp_idx[vreg.class()]];
                 let temp = Allocation::stack(temp_slot);
-                self.vreg_allocs[vreg.vreg()] = temp;
                 next_temp_idx[vreg.class()] += 1;
                 trace!(" --- Placing branch arg {:?} in {:?}", vreg, temp);
                 trace!("{:?} which is now in {:?} inserting move to {:?}", vreg, temp, param_alloc);
                 self.edits.add_move_later(inst, temp, param_alloc, vreg.class(), InstPosition::Before, false);
 
                 // All branch arguments should be in their spillslots at the end of the function.
+                //
+                // The invariants posed by `vregs_first_seen_in_curr_inst` and
+                // `vregs_allocd_in_curr_inst` must be maintained in order to
+                // insert edits in the correct order when vregs used as branch args
+                // are also used as operands.
+                if self.vreg_allocs[vreg.vreg()].is_none() {
+                    self.vregs_first_seen_in_curr_inst.insert(vreg.vreg());
+                }
                 self.vreg_allocs[vreg.vreg()] = Allocation::stack(self.vreg_spillslots[vreg.vreg()]);
                 self.live_vregs.insert(*vreg);
+                self.vregs_allocd_in_curr_inst.insert(vreg.vreg());
+                self.vregs_in_curr_inst.insert(vreg.vreg());
             }
         }
     }
