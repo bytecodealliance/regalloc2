@@ -1,8 +1,8 @@
-use alloc::vec::Vec;
-use alloc::vec;
-use core::fmt;
-use core::convert::{TryFrom, TryInto};
 use crate::{RegClass, VReg};
+use alloc::vec;
+use alloc::vec::Vec;
+use core::convert::{TryFrom, TryInto};
+use core::fmt;
 
 struct RegClassNum;
 
@@ -39,7 +39,7 @@ impl From<RegClass> for Frame {
         (match value {
             RegClass::Int => RegClassNum::INT,
             RegClass::Float => RegClassNum::FLOAT,
-            RegClass::Vector => RegClassNum::VECTOR
+            RegClass::Vector => RegClassNum::VECTOR,
         }) as Frame
     }
 }
@@ -50,11 +50,10 @@ const VREGS_PER_FRAME: usize = BITS_PER_FRAME / 2;
 const EMPTY_FRAME: Frame = RegClassNum::INVALID as Frame;
 
 pub struct VRegSet {
-    bits: Vec<Frame>
+    bits: Vec<Frame>,
 }
 
 impl VRegSet {
-
     pub fn with_capacity(n: usize) -> Self {
         let no_of_bits_needed = 2 * n;
         let quot = no_of_bits_needed / BITS_PER_FRAME;
@@ -91,15 +90,14 @@ impl VRegSet {
     }
 
     pub fn is_empty(&mut self) -> bool {
-        self.bits.iter()
-            .all(|frame| *frame == EMPTY_FRAME)
+        self.bits.iter().all(|frame| *frame == EMPTY_FRAME)
     }
 
     pub fn iter(&self) -> BitSetIter {
         BitSetIter {
             next_frame_idx: 0,
             curr_frame: EMPTY_FRAME,
-            bits: &self.bits
+            bits: &self.bits,
         }
     }
 }
@@ -107,7 +105,7 @@ impl VRegSet {
 pub struct BitSetIter<'a> {
     next_frame_idx: usize,
     curr_frame: Frame,
-    bits: &'a [Frame]
+    bits: &'a [Frame],
 }
 
 impl<'a> Iterator for BitSetIter<'a> {
@@ -134,7 +132,6 @@ impl<'a> Iterator for BitSetIter<'a> {
     }
 }
 
-
 impl fmt::Debug for VRegSet {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{{ ")?;
@@ -160,11 +157,11 @@ mod tests {
         set.insert(VREG(199, Float));
         set.insert(VREG(23, Int));
         let els = [
-            VREG(10, Int), 
-            VREG(11, Vector), 
-            VREG(23, Int), 
-            VREG(199, Float), 
-            VREG(2000, Int)
+            VREG(10, Int),
+            VREG(11, Vector),
+            VREG(23, Int),
+            VREG(199, Float),
+            VREG(2000, Int),
         ];
         for (actual_el, expected_el) in set.iter().zip(els.iter()) {
             assert_eq!(actual_el, *expected_el);

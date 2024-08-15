@@ -2,7 +2,8 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use regalloc2::{
-    checker::Checker, serialize::SerializableFunction, Algorithm, Block, Edit, Function, InstOrEdit, Output, RegallocOptions
+    checker::Checker, serialize::SerializableFunction, Algorithm, Block, Edit, Function,
+    InstOrEdit, Output, RegallocOptions,
 };
 
 #[derive(Parser)]
@@ -49,7 +50,7 @@ fn main() {
     let options = RegallocOptions {
         verbose_log: true,
         validate_ssa: true,
-        algorithm: args.algorithm.into()
+        algorithm: args.algorithm.into(),
     };
     let output = match regalloc2::run(&function, function.machine_env(), &options) {
         Ok(output) => output,

@@ -41,12 +41,12 @@ type FxHashSet<V> = hashbrown::HashSet<V, BuildHasherDefault<FxHasher>>;
 
 pub(crate) mod cfg;
 pub(crate) mod domtree;
+pub(crate) mod fastalloc;
 pub mod indexset;
 pub(crate) mod ion;
 pub(crate) mod moves;
 pub(crate) mod postorder;
 pub mod ssa;
-pub(crate) mod fastalloc;
 
 #[macro_use]
 mod index;
@@ -1570,7 +1570,9 @@ pub fn run<F: Function>(
 ) -> Result<Output, RegAllocError> {
     match options.algorithm {
         Algorithm::Ion => ion::run(func, env, options.verbose_log, options.validate_ssa),
-        Algorithm::Fastalloc => fastalloc::run(func, env, options.verbose_log, options.validate_ssa)
+        Algorithm::Fastalloc => {
+            fastalloc::run(func, env, options.verbose_log, options.validate_ssa)
+        }
     }
 }
 

@@ -1,15 +1,14 @@
-use alloc::vec::Vec;
 use alloc::vec;
+use alloc::vec::Vec;
 
 type Frame = u64;
 const BITS_PER_FRAME: usize = core::mem::size_of::<Frame>() * 8;
 
 pub struct BitSet {
-    bits: Vec<Frame>
+    bits: Vec<Frame>,
 }
 
 impl BitSet {
-
     pub fn with_capacity(n: usize) -> Self {
         let quot = n / BITS_PER_FRAME;
         let no_of_frames = quot + 1;
@@ -44,15 +43,14 @@ impl BitSet {
     }
 
     pub fn is_empty(&mut self) -> bool {
-        self.bits.iter()
-            .all(|frame| *frame == 0)
+        self.bits.iter().all(|frame| *frame == 0)
     }
 
     pub fn iter(&self) -> BitSetIter {
         BitSetIter {
             next_frame_idx: 0,
             curr_frame: 0,
-            bits: &self.bits
+            bits: &self.bits,
         }
     }
 }
@@ -60,7 +58,7 @@ impl BitSet {
 pub struct BitSetIter<'a> {
     next_frame_idx: usize,
     curr_frame: Frame,
-    bits: &'a [Frame]
+    bits: &'a [Frame],
 }
 
 impl<'a> Iterator for BitSetIter<'a> {
@@ -77,7 +75,7 @@ impl<'a> Iterator for BitSetIter<'a> {
             }
             let skip = self.curr_frame.trailing_zeros();
             self.curr_frame &= !(1 << skip);
-            return Some((self.next_frame_idx - 1) * BITS_PER_FRAME + skip as usize)
+            return Some((self.next_frame_idx - 1) * BITS_PER_FRAME + skip as usize);
         }
     }
 }
