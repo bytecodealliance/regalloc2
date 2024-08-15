@@ -309,8 +309,6 @@ pub struct Env<'a, F: Function> {
     /// `reused_input_to_reuse_op[i]` is the operand index of the reuse operand
     /// that uses the `i`th operand in the current instruction as its input.
     reused_input_to_reuse_op: Vec<usize>,
-    /// The vregs defined or used in the current instruction.
-    vregs_in_curr_inst: BitSet,
     /// The physical registers allocated to the operands in the current instruction.
     /// Used during eviction to detect eviction of a register that is already in use in the
     /// instruction being processed, implying that there aren't enough registers for allocation.
@@ -386,7 +384,6 @@ impl<'a, F: Function> Env<'a, F> {
             },
             vregs_first_seen_in_curr_inst: BitSet::with_capacity(func.num_vregs()),
             reused_input_to_reuse_op: vec![usize::MAX; max_operand_len as usize],
-            vregs_in_curr_inst: BitSet::with_capacity(func.num_vregs()),
             pregs_allocd_in_curr_inst: PRegSet::empty(),
             dedicated_scratch_regs: PartedByRegClass {
                 items: [
@@ -839,7 +836,6 @@ impl<'a, F: Function> Env<'a, F> {
             );
             return Ok(());
         }
-        self.vregs_in_curr_inst.insert(op.vreg().vreg());
         self.live_vregs.insert(op.vreg());
         if !self.allocd_within_constraint(inst, op) {
             let prev_alloc = self.vreg_allocs[op.vreg().vreg()];
@@ -1138,7 +1134,7 @@ impl<'a, F: Function> Env<'a, F> {
             let vreg = self.vreg_in_preg[clobbered_preg.index()];
             if vreg != VReg::invalid() {
                 let vreg_isnt_mentioned_in_curr_inst =
-                    !self.vregs_in_curr_inst.contains(vreg.vreg());
+                    !self.vregs_allocd_in_curr_inst.contains(vreg.vreg());
                 if vreg_isnt_mentioned_in_curr_inst {
                     trace!("Adding save and restore edits for {}", vreg);
                     let preg_alloc = Allocation::reg(clobbered_preg);
@@ -1322,7 +1318,6 @@ impl<'a, F: Function> Env<'a, F> {
                     Allocation::stack(self.vreg_spillslots[vreg.vreg()]);
                 self.live_vregs.insert(*vreg);
                 self.vregs_allocd_in_curr_inst.insert(vreg.vreg());
-                self.vregs_in_curr_inst.insert(vreg.vreg());
             }
         }
     }
@@ -1523,7 +1518,6 @@ impl<'a, F: Function> Env<'a, F> {
         for entry in self.reused_input_to_reuse_op.iter_mut() {
             *entry = usize::MAX;
         }
-        self.vregs_in_curr_inst.clear();
         self.pregs_allocd_in_curr_inst = PRegSet::empty();
         if trace_enabled!() {
             self.log_post_inst_processing_state(inst);
