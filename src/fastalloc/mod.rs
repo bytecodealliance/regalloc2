@@ -1,4 +1,3 @@
-use crate::indexset::IndexSet;
 use crate::{cfg::CFGInfo, ion::Stats, Allocation, RegAllocError};
 use crate::{ssa::validate_ssa, Edit, Function, MachineEnv, Output, ProgPoint};
 use crate::{
@@ -125,11 +124,17 @@ struct Edits {
 }
 
 impl Edits {
-    fn new(fixed_stack_slots: PRegSet) -> Self {
+    fn new(fixed_stack_slots: PRegSet, max_operand_len: u32, num_insts: usize) -> Self {
+        // Some operands generate edits and some don't.
+        // The operands that generate edits add no more than two.
+        // Some edits are added due to clobbers, not operands.
+        // Anyways, I think this may be a reasonable guess.
+        let inst_edits_len_guess = max_operand_len as usize * 2;
+        let total_edits_len_guess = inst_edits_len_guess * num_insts;
         Self {
-            inst_pre_edits: VecDeque::new(),
-            inst_post_edits: VecDeque::new(),
-            edits: VecDeque::new(),
+            inst_pre_edits: VecDeque::with_capacity(inst_edits_len_guess),
+            inst_post_edits: VecDeque::with_capacity(inst_edits_len_guess),
+            edits: VecDeque::with_capacity(total_edits_len_guess),
             fixed_stack_slots,
             inst_needs_scratch_reg: PartedByRegClass {
                 items: [false, false, false],
@@ -394,7 +399,7 @@ impl<'a, F: Function> Env<'a, F> {
                 ],
             },
             allocs,
-            edits: Edits::new(fixed_stack_slots),
+            edits: Edits::new(fixed_stack_slots, max_operand_len, func.num_insts()),
             stats: Stats::default(),
         }
     }
