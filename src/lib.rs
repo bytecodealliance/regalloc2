@@ -372,6 +372,17 @@ impl VReg {
     pub const fn invalid() -> Self {
         VReg::new(Self::MAX, RegClass::Int)
     }
+
+    #[inline(always)]
+    pub const fn bits(self) -> usize {
+        self.bits as usize
+    }
+}
+
+impl From<u32> for VReg {
+    fn from(value: u32) -> Self {
+        Self { bits: value }
+    }
 }
 
 impl core::fmt::Debug for VReg {
