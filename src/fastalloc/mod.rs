@@ -18,6 +18,7 @@ mod vregset;
 use bitset::BitSet;
 use iter::*;
 use lru::*;
+use vregset::VRegSet;
 
 #[derive(Debug)]
 struct Allocs {
@@ -257,7 +258,7 @@ pub struct Env<'a, F: Function> {
     /// `vreg_spillslots[i]` is the spillslot for virtual register `i`.
     vreg_spillslots: Vec<SpillSlot>,
     /// The virtual registers that are currently live.
-    live_vregs: IndexSet,
+    live_vregs: VRegSet,
     /// Allocatable free physical registers for classes Int, Float, and Vector, respectively.
     freepregs: PartedByRegClass<PRegSet>,
     /// Least-recently-used caches for register classes Int, Float, and Vector, respectively.
@@ -356,7 +357,7 @@ impl<'a, F: Function> Env<'a, F> {
             allocatable_regs: PRegSet::from(env),
             vreg_allocs: vec![Allocation::none(); func.num_vregs()],
             vreg_spillslots: vec![SpillSlot::invalid(); func.num_vregs()],
-            live_vregs: IndexSet::new(),
+            live_vregs: VRegSet::with_capacity(func.num_vregs()),
             freepregs: PartedByRegClass {
                 items: [
                     PRegSet::from_iter(regs[0].iter().cloned()),
@@ -630,7 +631,7 @@ impl<'a, F: Function> Env<'a, F> {
             AllocationKind::None => unreachable!("Attempting to free an unallocated operand!"),
         }
         self.vreg_allocs[vreg.vreg()] = Allocation::none();
-        self.live_vregs.set(vreg.bits(), false);
+        self.live_vregs.remove(vreg.vreg());
         trace!(
             "{} curr alloc is now {}",
             vreg,
@@ -836,11 +837,11 @@ impl<'a, F: Function> Env<'a, F> {
             );
             return Ok(());
         }
-        self.live_vregs.set(op.vreg().bits(), true);
         if !self.allocd_within_constraint(inst, op) {
             let prev_alloc = self.vreg_allocs[op.vreg().vreg()];
             if prev_alloc.is_none() {
                 self.vregs_first_seen_in_curr_inst.insert(op.vreg().vreg());
+                self.live_vregs.insert(op.vreg());
             }
             self.alloc_operand(inst, op, op_idx, fixed_spillslot)?;
             // Need to insert a move to propagate flow from the current
@@ -1313,11 +1314,11 @@ impl<'a, F: Function> Env<'a, F> {
                 // are also used as operands.
                 if self.vreg_allocs[vreg.vreg()].is_none() {
                     self.vregs_first_seen_in_curr_inst.insert(vreg.vreg());
+                    self.live_vregs.insert(*vreg);
+                    self.vregs_allocd_in_curr_inst.insert(vreg.vreg());
                 }
                 self.vreg_allocs[vreg.vreg()] =
                     Allocation::stack(self.vreg_spillslots[vreg.vreg()]);
-                self.live_vregs.set(vreg.bits(), true);
-                self.vregs_allocd_in_curr_inst.insert(vreg.vreg());
             }
         }
     }
@@ -1589,8 +1590,7 @@ impl<'a, F: Function> Env<'a, F> {
                 true,
             );
         }
-        for vreg_bits in self.live_vregs.iter() {
-            let vreg = VReg::from(vreg_bits as u32);
+        for vreg in self.live_vregs.iter() {
             trace!("Processing {}", vreg);
             trace!(
                 "{} is not a block param. It's a liveout vreg from some predecessor",

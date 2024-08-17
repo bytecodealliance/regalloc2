@@ -1,133 +1,99 @@
-use crate::{RegClass, VReg};
-use alloc::vec;
-use alloc::vec::Vec;
-use core::convert::{TryFrom, TryInto};
 use core::fmt;
 
-struct RegClassNum;
+use alloc::vec;
+use alloc::vec::Vec;
+use crate::{RegClass, VReg};
 
-impl RegClassNum {
-    const INVALID: u8 = 0b00;
-    const MAX: u8 = 0b11;
-    // 0b11
-    const INT: u8 = Self::MAX - RegClass::Int as u8;
-    // 0b10
-    const FLOAT: u8 = Self::MAX - RegClass::Float as u8;
-    // 0b01
-    const VECTOR: u8 = Self::MAX - RegClass::Vector as u8;
+#[derive(Clone)]
+struct VRegNode {
+    next: u32,
+    prev: u32,
+    class: RegClass,
 }
 
-impl TryFrom<u64> for RegClass {
-    type Error = ();
-    fn try_from(value: u64) -> Result<Self, ()> {
-        if value == RegClassNum::INT as u64 {
-            Ok(RegClass::Int)
-        } else if value == RegClassNum::FLOAT as u64 {
-            Ok(RegClass::Float)
-        } else if value == RegClassNum::VECTOR as u64 {
-            Ok(RegClass::Vector)
-        } else if value == RegClassNum::INVALID as u64 {
-            Err(())
-        } else {
-            unreachable!()
-        }
-    }
-}
-
-impl From<RegClass> for Frame {
-    fn from(value: RegClass) -> Self {
-        (match value {
-            RegClass::Int => RegClassNum::INT,
-            RegClass::Float => RegClassNum::FLOAT,
-            RegClass::Vector => RegClassNum::VECTOR,
-        }) as Frame
-    }
-}
-
-type Frame = u64;
-const BITS_PER_FRAME: usize = core::mem::size_of::<Frame>() * 8;
-const VREGS_PER_FRAME: usize = BITS_PER_FRAME / 2;
-const EMPTY_FRAME: Frame = RegClassNum::INVALID as Frame;
-
+// Using a non-circular doubly linked list here for fast insertion,
+// removal and iteration.
 pub struct VRegSet {
-    bits: Vec<Frame>,
+    items: Vec<VRegNode>,
+    head: u32,
 }
 
 impl VRegSet {
-    pub fn with_capacity(n: usize) -> Self {
-        let no_of_bits_needed = 2 * n;
-        let quot = no_of_bits_needed / BITS_PER_FRAME;
-        let no_of_frames = quot + 1;
+    pub fn with_capacity(num_vregs: usize) -> Self {
         Self {
-            bits: vec![RegClassNum::INVALID as Frame; no_of_frames],
+            items: vec![VRegNode { prev: u32::MAX, next: u32::MAX, class: RegClass::Int }; num_vregs],
+            head: u32::MAX,
         }
-    }
-
-    fn compute_index(&self, el: usize) -> (usize, usize) {
-        (el / BITS_PER_FRAME, el % BITS_PER_FRAME)
     }
 
     pub fn insert(&mut self, vreg: VReg) {
-        let (frame_no, idx) = self.compute_index(vreg.vreg() * 2);
-        let reg_class_num: Frame = vreg.class().into();
-        self.bits[frame_no] |= reg_class_num << idx;
+        // Intentionally assuming that the set doesn't already
+        // contain `vreg`.
+        if self.head == u32::MAX {
+            self.items[vreg.vreg()] = VRegNode {
+                next: u32::MAX,
+                prev: u32::MAX,
+                class: vreg.class(),
+            };
+            self.head = vreg.vreg() as u32;
+        } else {
+            let old_head_next = self.items[self.head as usize].next;
+            if old_head_next != u32::MAX {
+                self.items[old_head_next as usize].prev = vreg.vreg() as u32;
+            }
+            self.items[self.head as usize].next = vreg.vreg() as u32;
+            self.items[vreg.vreg()] = VRegNode {
+                next: old_head_next,
+                prev: self.head,
+                class: vreg.class(),
+            };
+        }
     }
 
     pub fn remove(&mut self, vreg_num: usize) {
-        let (frame_no, idx) = self.compute_index(vreg_num * 2);
-        self.bits[frame_no] &= !(0b11 << idx);
-    }
-
-    pub fn contains(&self, vreg_num: usize) -> bool {
-        let (frame_no, idx) = self.compute_index(vreg_num * 2);
-        self.bits[frame_no] & (0b11 << idx) != RegClassNum::INVALID as Frame
-    }
-
-    pub fn clear(&mut self) {
-        for frame in self.bits.iter_mut() {
-            *frame = RegClassNum::INVALID as Frame;
+        let prev = self.items[vreg_num].prev;
+        let next = self.items[vreg_num].next;
+        if prev != u32::MAX {
+            self.items[prev as usize].next = next;
+        }
+        if next != u32::MAX {
+            self.items[next as usize].prev = prev;
+        }
+        if vreg_num as u32 == self.head {
+            self.head = next;
         }
     }
 
-    pub fn is_empty(&mut self) -> bool {
-        self.bits.iter().all(|frame| *frame == EMPTY_FRAME)
+    pub fn is_empty(&self) -> bool {
+        self.head == u32::MAX
     }
 
-    pub fn iter(&self) -> BitSetIter {
-        BitSetIter {
-            next_frame_idx: 0,
-            curr_frame: EMPTY_FRAME,
-            bits: &self.bits,
+    pub fn iter(&self) -> VRegSetIter {
+        VRegSetIter {
+            curr_item: self.head,
+            head: self.head,
+            items: &self.items,
         }
     }
 }
 
-pub struct BitSetIter<'a> {
-    next_frame_idx: usize,
-    curr_frame: Frame,
-    bits: &'a [Frame],
+pub struct VRegSetIter<'a> {
+    curr_item: u32,
+    head: u32,
+    items: &'a [VRegNode],
 }
 
-impl<'a> Iterator for BitSetIter<'a> {
+impl<'a> Iterator for VRegSetIter<'a> {
     type Item = VReg;
 
-    fn next(&mut self) -> Option<VReg> {
-        loop {
-            while self.curr_frame == EMPTY_FRAME {
-                if self.next_frame_idx >= self.bits.len() {
-                    return None;
-                }
-                self.curr_frame = self.bits[self.next_frame_idx];
-                self.next_frame_idx += 1;
-            }
-            let mut skip = self.curr_frame.trailing_zeros();
-            if skip % 2 != 0 {
-                skip -= 1;
-            }
-            let vreg_num = (self.next_frame_idx - 1) * VREGS_PER_FRAME + (skip / 2) as usize;
-            let class = (self.curr_frame >> skip) & 0b11;
-            self.curr_frame &= !(0b11 << skip);
-            return Some(VReg::new(vreg_num, class.try_into().unwrap()));
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.curr_item != u32::MAX {
+            let item = self.items[self.curr_item as usize].clone();
+            let vreg = VReg::new(self.curr_item as usize, item.class);
+            self.curr_item = item.next;
+            Some(vreg)
+        } else {
+            None
         }
     }
 }
@@ -135,8 +101,8 @@ impl<'a> Iterator for BitSetIter<'a> {
 impl fmt::Debug for VRegSet {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{{ ")?;
-        for el in self.iter() {
-            write!(f, "{el} ")?;
+        for vreg in self.iter() {
+            write!(f, "{vreg} ")?;
         }
         write!(f, "}}")
     }
@@ -158,27 +124,21 @@ mod tests {
         set.insert(VREG(23, Int));
         let els = [
             VREG(10, Int),
-            VREG(11, Vector),
             VREG(23, Int),
             VREG(199, Float),
+            VREG(11, Vector),
             VREG(2000, Int),
         ];
         for (actual_el, expected_el) in set.iter().zip(els.iter()) {
             assert_eq!(actual_el, *expected_el);
         }
-        assert!(set.contains(10));
-        assert!(!set.contains(12));
-        assert!(!set.contains(197));
-        assert!(set.contains(23));
-        assert!(set.contains(11));
         set.remove(23);
-        assert!(!set.contains(23));
         set.insert(VREG(73, Vector));
         let els = [
             VREG(10, Int),
-            VREG(11, Vector),
             VREG(73, Vector),
             VREG(199, Float),
+            VREG(11, Vector),
             VREG(2000, Int),
         ];
         for (actual_el, expected_el) in set.iter().zip(els.iter()) {
