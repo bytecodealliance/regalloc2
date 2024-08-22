@@ -251,6 +251,24 @@ impl PRegSet {
             self.bits[i] |= other.bits[i];
         }
     }
+
+    pub fn intersect_from(&mut self, other: PRegSet) {
+        for i in 0..self.bits.len() {
+            self.bits[i] &= other.bits[i];
+        }
+    }
+
+    pub fn invert(&self) -> PRegSet {
+        let mut set = self.bits;
+        for i in 0..self.bits.len() {
+            set[i] = !self.bits[i];
+        }
+        PRegSet{ bits: set }
+    }
+
+    pub fn is_empty(&self, regclass: RegClass) -> bool {
+        self.bits[regclass as usize] == 0
+    }
 }
 
 impl IntoIterator for PRegSet {
