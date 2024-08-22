@@ -18,6 +18,14 @@ impl<'a> Operands<'a> {
             .filter(move |(_, op)| predicate(*op))
     }
 
+    pub fn def_ops(&self) -> impl Iterator<Item = (usize, Operand)> + 'a {
+        self.matches(|op| op.kind() == OperandKind::Def)
+    }
+
+    pub fn use_ops(&self) -> impl Iterator<Item = (usize, Operand)> + 'a {
+        self.matches(|op| op.kind() == OperandKind::Use)
+    }
+
     pub fn non_fixed_non_reuse_late(&self) -> impl Iterator<Item = (usize, Operand)> + 'a {
         self.matches(|op| {
             !matches!(

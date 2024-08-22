@@ -1,4 +1,4 @@
-use crate::{PReg, RegClass};
+use crate::{PReg, PRegSet, RegClass};
 use alloc::vec;
 use alloc::vec::Vec;
 use core::{
@@ -6,6 +6,8 @@ use core::{
     ops::{Index, IndexMut},
 };
 use hashbrown::HashSet;
+
+const DUMMY_NODE_INDEX: usize = PReg::MAX + 1;
 
 /// A least-recently-used cache organized as a linked list based on a vector.
 pub struct Lru {
@@ -103,6 +105,46 @@ impl Lru {
         PReg::new(oldest as usize, self.regclass)
     }
 
+    /// Get the last PReg in the LRU from the set `from`.
+    pub fn last(&self, from: PRegSet) -> Option<PReg> {
+        trace!("Getting the last preg from the LRU in set {from}");
+        if self.is_empty() {
+            panic!("LRU is empty");
+        }
+        let mut last = self.data[self.head as usize].prev;
+        let init_last = last;
+        loop {
+            let preg = PReg::new(last as usize, self.regclass);
+            if from.contains(preg) {
+                return Some(preg);
+            }
+            last = self.data[last as usize].prev;
+            if last == init_last {
+                return None;
+            }
+        }
+    }
+
+    /// Get the last PReg from the LRU for which `f` returns true.
+    pub fn last_satisfying<F: Fn(PReg) -> bool>(&self, f: F) -> Option<PReg> {
+        trace!("Getting the last preg from the LRU satisfying...");
+        if self.is_empty() {
+            panic!("LRU is empty");
+        }
+        let mut last = self.data[self.head as usize].prev;
+        let init_last = last;
+        loop {
+            let preg = PReg::new(last as usize, self.regclass);
+            if f(preg) {
+                return Some(preg);
+            }
+            last = self.data[last as usize].prev;
+            if last == init_last {
+                return None;
+            }
+        }
+    }
+
     /// Splices out a node from the list.
     pub fn remove(&mut self, hw_enc: usize) {
         trace!(
@@ -132,38 +174,6 @@ impl Lru {
         if cfg!(debug_assertions) {
             self.validate_lru();
         }
-    }
-
-    /// Sets the physical register with hw_enc `hw_enc` to the last in the list.
-    pub fn append(&mut self, hw_enc: usize) {
-        trace!(
-            "Before appending: {:?} LRU. head: {:?}, Actual data: {:?}",
-            self.regclass,
-            self.head,
-            self.data
-        );
-        trace!("Appending p{hw_enc} to the {:?} LRU", self.regclass);
-        if self.head != u8::MAX {
-            let head = self.head as usize;
-            let last_node = self.data[head].prev;
-            self.data[last_node as usize].next = hw_enc as u8;
-            self.data[head].prev = hw_enc as u8;
-            self.data[hw_enc].prev = last_node;
-            self.data[hw_enc].next = self.head;
-        } else {
-            self.head = hw_enc as u8;
-            self.data[hw_enc].prev = hw_enc as u8;
-            self.data[hw_enc].next = hw_enc as u8;
-        }
-        trace!("Appended p{hw_enc} to the {:?} LRU", self.regclass);
-        if cfg!(debug_assertions) {
-            self.validate_lru();
-        }
-    }
-
-    pub fn append_and_poke(&mut self, preg: PReg) {
-        self.append(preg.hw_enc());
-        self.poke(preg);
     }
 
     /// Insert node `i` before node `j` in the list.
