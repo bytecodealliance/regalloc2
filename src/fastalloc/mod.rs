@@ -1282,10 +1282,10 @@ impl<'a, F: Function> Env<'a, F> {
                 if self.vreg_allocs[vreg.vreg()].is_none() {
                     self.vregs_first_seen_in_curr_inst.insert(vreg.vreg());
                     self.live_vregs.insert(*vreg);
-                    self.vregs_allocd_in_curr_inst.insert(vreg.vreg());
                 }
                 self.vreg_allocs[vreg.vreg()] =
                     Allocation::stack(self.vreg_spillslots[vreg.vreg()]);
+                self.vregs_allocd_in_curr_inst.insert(vreg.vreg());
             }
         }
     }
