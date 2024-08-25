@@ -14,7 +14,6 @@ mod bitset;
 mod iter;
 mod lru;
 mod vregset;
-use bitset::BitSet;
 use iter::*;
 use lru::*;
 use vregset::VRegSet;
@@ -305,8 +304,6 @@ pub struct Env<'a, F: Function> {
     vreg_spillslots: Vec<SpillSlot>,
     /// The virtual registers that are currently live.
     live_vregs: VRegSet,
-    /// Allocatable free physical registers for classes Int, Float, and Vector, respectively.
-    freepregs: PartedByRegClass<PRegSet>,
     /// Least-recently-used caches for register classes Int, Float, and Vector, respectively.
     lrus: Lrus,
     /// `vreg_in_preg[i]` is the virtual register currently in the physical register
@@ -314,17 +311,6 @@ pub struct Env<'a, F: Function> {
     vreg_in_preg: Vec<VReg>,
     /// For parallel moves from branch args to block param spillslots.
     temp_spillslots: PartedByRegClass<Vec<SpillSlot>>,
-    /// Used to keep track of which used vregs are seen for the first time
-    /// in the instruction, that is, if the vregs live past the current instruction.
-    /// This is used to determine whether or not reused operands
-    /// for reuse-input constraints should be restored after an instruction.
-    /// It's also used to determine if the an early operand can reuse a freed def operand's
-    /// allocation. And it's also used to determine the edits to be inserted when
-    /// allocating a use operand.
-    vregs_first_seen_in_curr_inst: BitSet,
-    /// Used to keep track of which vregs have been allocated in the current instruction.
-    /// This is used to determine which edits to insert when allocating a use operand.
-    vregs_allocd_in_curr_inst: BitSet,
     /// `reused_input_to_reuse_op[i]` is the operand index of the reuse operand
     /// that uses the `i`th operand in the current instruction as its input.
     reused_input_to_reuse_op: Vec<usize>,
@@ -386,13 +372,6 @@ impl<'a, F: Function> Env<'a, F> {
             vreg_allocs: vec![Allocation::none(); func.num_vregs()],
             vreg_spillslots: vec![SpillSlot::invalid(); func.num_vregs()],
             live_vregs: VRegSet::with_capacity(func.num_vregs()),
-            freepregs: PartedByRegClass {
-                items: [
-                    PRegSet::from_iter(regs[0].iter().cloned()),
-                    PRegSet::from_iter(regs[1].iter().cloned()),
-                    PRegSet::from_iter(regs[2].iter().cloned()),
-                ],
-            },
             lrus: Lrus::new(&regs[0], &regs[1], &regs[2]),
             vreg_in_preg: vec![VReg::invalid(); PReg::NUM_INDEX],
             stack: Stack::new(func),
@@ -404,8 +383,6 @@ impl<'a, F: Function> Env<'a, F> {
                     Vec::with_capacity(func.num_vregs()),
                 ],
             },
-            vregs_allocd_in_curr_inst: BitSet::with_capacity(func.num_vregs()),
-            vregs_first_seen_in_curr_inst: BitSet::with_capacity(func.num_vregs()),
             reused_input_to_reuse_op: vec![usize::MAX; max_operand_len as usize],
             dedicated_scratch_regs: PartedByRegClass {
                 items: [
@@ -815,7 +792,6 @@ impl<'a, F: Function> Env<'a, F> {
             trace!("{op} isn't allocated within constraints.");
             let curr_alloc = self.vreg_allocs[op.vreg().vreg()];
             if curr_alloc.is_none() {
-                self.vregs_first_seen_in_curr_inst.insert(op.vreg().vreg());
                 self.live_vregs.insert(op.vreg());
             }
             let new_alloc = self.alloc_operand(inst, op, op_idx, fixed_spillslot)?;
@@ -993,7 +969,6 @@ impl<'a, F: Function> Env<'a, F> {
         }
         trace!("Late available regs: {}", self.available_pregs[OperandPos::Late]);
         trace!("Early available regs: {}", self.available_pregs[OperandPos::Early]);
-        //self.vregs_allocd_in_curr_inst.insert(op.vreg().vreg());
         Ok(())
     }
 
@@ -1167,18 +1142,11 @@ impl<'a, F: Function> Env<'a, F> {
                 );
 
                 // All branch arguments should be in their spillslots at the end of the function.
-                //
-                // The invariants posed by `vregs_first_seen_in_curr_inst` and
-                // `vregs_allocd_in_curr_inst` must be maintained in order to
-                // insert edits in the correct order when vregs used as branch args
-                // are also used as operands.
                 if self.vreg_allocs[vreg.vreg()].is_none() {
-                    self.vregs_first_seen_in_curr_inst.insert(vreg.vreg());
                     self.live_vregs.insert(*vreg);
                 }
                 self.vreg_allocs[vreg.vreg()] =
                     Allocation::stack(self.vreg_spillslots[vreg.vreg()]);
-                self.vregs_allocd_in_curr_inst.insert(vreg.vreg());
             }
         }
     }
@@ -1276,8 +1244,6 @@ impl<'a, F: Function> Env<'a, F> {
         let scratch_regs =
             self.get_scratch_regs(inst, self.edits.inst_needs_scratch_reg.clone(), avail_for_scratch)?;
         self.edits.process_edits(scratch_regs);
-        self.vregs_first_seen_in_curr_inst.clear();
-        self.vregs_allocd_in_curr_inst.clear();
         for entry in self.reused_input_to_reuse_op.iter_mut() {
             *entry = usize::MAX;
         }
