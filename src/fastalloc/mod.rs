@@ -713,6 +713,9 @@ impl<'a, F: Function> Env<'a, F> {
             (OperandPos::Early, OperandKind::Def) => {
                 self.available_pregs[OperandPos::Late].remove(preg);
             }
+            (OperandPos::Late, OperandKind::Def) if matches!(op.constraint(), OperandConstraint::Reuse(_)) => {
+                self.available_pregs[OperandPos::Early].remove(preg);
+            }
             _ => ()
         };
         Ok(Allocation::reg(preg))
@@ -1180,6 +1183,38 @@ impl<'a, F: Function> Env<'a, F> {
             if self.vreg_in_preg[preg.index()] != VReg::invalid() {
                 self.evict_vreg_in_preg(inst, preg);
                 self.vreg_in_preg[preg.index()] = VReg::invalid();
+            }
+        }
+        for (_, op) in operands.use_ops() {
+            if let Some(preg) = self.vreg_allocs[op.vreg().vreg()].as_reg() {
+                // The current allocation, vreg_allocs[op.vreg], doesn't change,
+                // so it should be removed from the available reg sets to avoid
+                // allocating it to some other operand in the instruction.
+                //
+                // For example:
+                // 1. def v0 (reuse: 1), use v1, use v2
+                // 2. use v1 (fixed: p0)
+                //
+                // When inst 1 is about to be processed, vreg_allocs[v1] will be p0.
+                // Suppose p1 is allocated to v0: this will create a fixed constraint for
+                // v1 and p1 will also be allocated to it.
+                // When it's time to process the v2 operand, vreg_allocs[v1] will still be p0
+                // because it doesn't change (except by an explicit fixed reg constraint which
+                // will not be a problem here) and it's possible for v2 to get p0 as an allocation,
+                // which is wrong. That will lead to the following scenario:
+                //
+                // move from p0 to p1   // Inserted due to reuse constraints
+                //                      // (vreg_allocs[v1] == p0)
+                // 1. def v0 (reuse: 1), use v1, use v2 // v0: p1, v1: p1, v2: p0
+                // move from stack_v0 to p0 // Eviction here because v0 is still in p0 when
+                //                          // v2's processing picked p0 from available regs
+                // 2. use v1 (fixed: p0)
+                //
+                // To avoid this scenario, the register is removed from the available set.
+                self.available_pregs[op.pos()].remove(preg);
+                if let (OperandPos::Late, OperandKind::Use) = (op.pos(), op.kind()) {
+                    self.available_pregs[OperandPos::Early].remove(preg);
+                }
             }
         }
         for (op_idx, op) in operands.def_ops() {
