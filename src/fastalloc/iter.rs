@@ -26,6 +26,13 @@ impl<'a> Operands<'a> {
         self.matches(|op| op.kind() == OperandKind::Use)
     }
 
+    pub fn non_fixed_use(&self) -> impl Iterator<Item = (usize, Operand)> + 'a {
+        self.matches(|op| {
+            !matches!(op.constraint(), OperandConstraint::FixedReg(_))
+            && op.kind() == OperandKind::Use
+        })
+    }
+
     pub fn non_fixed_non_reuse_late(&self) -> impl Iterator<Item = (usize, Operand)> + 'a {
         self.matches(|op| {
             !matches!(
