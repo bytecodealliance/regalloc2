@@ -938,9 +938,17 @@ impl<'a, F: Function> Env<'a, F> {
                 // All branch arguments should be in their spillslots at the end of the function.
                 if self.vreg_allocs[vreg.vreg()].is_none() {
                     self.live_vregs.insert(*vreg);
+                    self.vreg_allocs[vreg.vreg()] =
+                        Allocation::stack(self.vreg_spillslots[vreg.vreg()]);
+                } else if self.vreg_allocs[vreg.vreg()] != vreg_spill {
+                    self.edits.add_move(
+                        inst,
+                        self.vreg_allocs[vreg.vreg()],
+                        vreg_spill,
+                        vreg.class(),
+                        InstPosition::Before,
+                    );
                 }
-                self.vreg_allocs[vreg.vreg()] =
-                    Allocation::stack(self.vreg_spillslots[vreg.vreg()]);
             }
         }
 
