@@ -307,11 +307,9 @@ impl<'a, F: Function> Env<'a, F> {
 
             // Include outgoing blockparams in the initial live set.
             if self.func.is_branch(insns.last()) {
-                for i in 0..self.func.block_succs(block).len() {
-                    for &param in self.func.branch_blockparams(block, insns.last(), i) {
-                        live.set(param.vreg(), true);
-                        self.observe_vreg_class(param);
-                    }
+                for &param in self.func.branch_blockparams(block) {
+                    live.set(param.vreg(), true);
+                    self.observe_vreg_class(param);
                 }
             }
 
@@ -399,24 +397,22 @@ impl<'a, F: Function> Env<'a, F> {
             // If the last instruction is a branch (rather than
             // return), create blockparam_out entries.
             if self.func.is_branch(insns.last()) {
-                for (i, &succ) in self.func.block_succs(block).iter().enumerate() {
-                    let blockparams_in = self.func.block_params(succ);
-                    let blockparams_out = self.func.branch_blockparams(block, insns.last(), i);
-                    for (&blockparam_in, &blockparam_out) in
-                        blockparams_in.iter().zip(blockparams_out)
-                    {
-                        let blockparam_out = VRegIndex::new(blockparam_out.vreg());
-                        let blockparam_in = VRegIndex::new(blockparam_in.vreg());
-                        self.blockparam_outs.push(BlockparamOut {
-                            to_vreg: blockparam_in,
-                            to_block: succ,
-                            from_block: block,
-                            from_vreg: blockparam_out,
-                        });
+                let succ = *self.func.block_succs(block).first().unwrap();
+                let blockparams_in = self.func.block_params(succ);
+                let blockparams_out = self.func.branch_blockparams(block);
+                for (&blockparam_in, &blockparam_out) in blockparams_in.iter().zip(blockparams_out)
+                {
+                    let blockparam_out = VRegIndex::new(blockparam_out.vreg());
+                    let blockparam_in = VRegIndex::new(blockparam_in.vreg());
+                    self.blockparam_outs.push(BlockparamOut {
+                        to_vreg: blockparam_in,
+                        to_block: succ,
+                        from_block: block,
+                        from_vreg: blockparam_out,
+                    });
 
-                        // Include outgoing blockparams in the initial live set.
-                        live.set(blockparam_out.index(), true);
-                    }
+                    // Include outgoing blockparams in the initial live set.
+                    live.set(blockparam_out.index(), true);
                 }
             }
 
