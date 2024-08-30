@@ -216,14 +216,12 @@ impl LiveBundle {
         minimal: bool,
         fixed: bool,
         fixed_def: bool,
-        stack: bool,
     ) {
         debug_assert!(spill_weight <= BUNDLE_MAX_SPILL_WEIGHT);
         self.spill_weight_and_props = spill_weight
             | (if minimal { 1 << 31 } else { 0 })
             | (if fixed { 1 << 30 } else { 0 })
-            | (if fixed_def { 1 << 29 } else { 0 })
-            | (if stack { 1 << 28 } else { 0 });
+            | (if fixed_def { 1 << 29 } else { 0 });
     }
 
     #[inline(always)]
