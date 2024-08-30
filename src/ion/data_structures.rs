@@ -17,7 +17,7 @@ use crate::cfg::CFGInfo;
 use crate::index::ContainerComparator;
 use crate::indexset::IndexSet;
 use crate::{
-    define_index, Allocation, Block, Edit, Function, FxHashSet, Inst, MachineEnv, Operand, PReg,
+    define_index, Allocation, Block, Edit, Function, FxHashSet, MachineEnv, Operand, PReg,
     ProgPoint, RegClass, VReg,
 };
 use alloc::collections::BTreeMap;
@@ -25,7 +25,6 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::cmp::Ordering;
 use core::fmt::Debug;
-use hashbrown::{HashMap, HashSet};
 use smallvec::{smallvec, SmallVec};
 
 /// A range from `from` (inclusive) to `to` (exclusive).
@@ -315,7 +314,6 @@ pub(crate) const MAX_SPLITS_PER_SPILLSET: u8 = 2;
 pub struct VRegData {
     pub ranges: LiveRangeList,
     pub blockparam: Block,
-    pub is_ref: bool,
     // We don't initially know the RegClass until we observe a use of the VReg.
     pub class: Option<RegClass>,
 }
@@ -460,8 +458,6 @@ pub struct Env<'a, F: Function> {
     pub vregs: VRegs,
     pub pregs: Vec<PRegData>,
     pub allocation_queue: PrioQueue,
-    pub safepoints: Vec<Inst>, // Sorted list of safepoint insts.
-    pub safepoints_per_vreg: HashMap<usize, HashSet<Inst>>,
 
     pub spilled_bundles: Vec<LiveBundleIndex>,
     pub spillslots: Vec<SpillSlotData>,
@@ -484,7 +480,6 @@ pub struct Env<'a, F: Function> {
     pub allocs: Vec<Allocation>,
     pub inst_alloc_offsets: Vec<u32>,
     pub num_spillslots: u32,
-    pub safepoint_slots: Vec<(ProgPoint, Allocation)>,
     pub debug_locations: Vec<(u32, ProgPoint, ProgPoint, Allocation)>,
 
     pub allocated_bundle_count: usize,

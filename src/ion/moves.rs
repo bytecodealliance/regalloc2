@@ -563,11 +563,10 @@ impl<'a, F: Function> Env<'a, F> {
                     let inst = usedata.pos.inst();
                     let slot = usedata.slot;
                     let operand = usedata.operand;
-                    // Safepoints add virtual uses with no slots;
-                    // avoid these.
-                    if slot != SLOT_NONE {
-                        self.set_alloc(inst, slot as usize, alloc);
-                    }
+
+                    debug_assert_ne!(slot, SLOT_NONE);
+                    self.set_alloc(inst, slot as usize, alloc);
+
                     if let OperandConstraint::Reuse(_) = operand.constraint() {
                         reuse_input_insts.push(inst);
                     }
@@ -789,19 +788,12 @@ impl<'a, F: Function> Env<'a, F> {
             from: ProgPoint,
             to: ProgPoint,
         ) {
-            // If any safepoints in range, clear and return.
-            // Also, if we cross a block boundary, clear and return.
+            // If we cross a block boundary, clear and return.
             if this.cfginfo.insn_block[from.inst().index()]
                 != this.cfginfo.insn_block[to.inst().index()]
             {
                 redundant_moves.clear();
                 return;
-            }
-            for inst in from.inst().index()..=to.inst().index() {
-                if this.func.requires_refs_on_stack(Inst::new(inst)) {
-                    redundant_moves.clear();
-                    return;
-                }
             }
 
             let start_inst = if from.pos() == InstPosition::Before {
