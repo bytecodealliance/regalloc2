@@ -648,14 +648,11 @@ other):
 
 ```plain
 
-        ___Unknown_____
-        |      |      |
-        |      |      |
-        | ____Any(rc) |
-        |/     |      |
-   Stack(rc)  FixedReg(reg)
-         \    /
-        Conflict
+                         Any(rc)
+                        /       \
+              FixedReg(reg)   FixedStack(reg)
+                        \       /
+                         Conflict
 ```
 
 Once we have the Requirement for a bundle, we can decide what to do.

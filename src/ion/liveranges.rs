@@ -805,10 +805,6 @@ impl<'a, F: Function> Env<'a, F> {
                                     first_reg_slot.get_or_insert(u.slot);
                                 }
                             }
-                            // Maybe this could be supported in this future...
-                            OperandConstraint::Stack => panic!(
-                                "multiple uses of vreg with a Stack constraint are not supported"
-                            ),
                         }
                     }
 
