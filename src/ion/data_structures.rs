@@ -203,7 +203,7 @@ pub struct LiveBundle {
     pub spill_weight_and_props: u32,
 }
 
-pub const BUNDLE_MAX_SPILL_WEIGHT: u32 = (1 << 28) - 1;
+pub const BUNDLE_MAX_SPILL_WEIGHT: u32 = (1 << 29) - 1;
 pub const MINIMAL_FIXED_BUNDLE_SPILL_WEIGHT: u32 = BUNDLE_MAX_SPILL_WEIGHT;
 pub const MINIMAL_BUNDLE_SPILL_WEIGHT: u32 = BUNDLE_MAX_SPILL_WEIGHT - 1;
 pub const BUNDLE_MAX_NORMAL_SPILL_WEIGHT: u32 = BUNDLE_MAX_SPILL_WEIGHT - 2;
