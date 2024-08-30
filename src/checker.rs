@@ -777,12 +777,7 @@ impl<'a, F: Function> Checker<'a, F> {
     }
 
     /// For each original instruction, create an `Op`.
-    fn handle_inst(
-        &mut self,
-        block: Block,
-        inst: Inst,
-        out: &Output,
-    ) {
+    fn handle_inst(&mut self, block: Block, inst: Inst, out: &Output) {
         // Skip normal checks if this is a branch: the blockparams do
         // not exist in post-regalloc code, and the edge-moves have to
         // be inserted before the branch rather than after.
