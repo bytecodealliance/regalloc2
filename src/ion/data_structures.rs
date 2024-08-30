@@ -194,8 +194,6 @@ impl Use {
     }
 }
 
-pub const SLOT_NONE: u8 = u8::MAX;
-
 #[derive(Clone, Debug)]
 pub struct LiveBundle {
     pub ranges: LiveRangeList,

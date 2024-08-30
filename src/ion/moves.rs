@@ -14,7 +14,7 @@
 
 use super::{
     Env, InsertMovePrio, InsertedMove, InsertedMoves, LiveRangeFlag, LiveRangeIndex,
-    RedundantMoveEliminator, VRegIndex, SLOT_NONE,
+    RedundantMoveEliminator, VRegIndex,
 };
 use crate::ion::data_structures::{
     u64_key, BlockparamIn, BlockparamOut, CodeRange, Edits, FixedRegFixupLevel, LiveRangeKey,
@@ -563,10 +563,7 @@ impl<'a, F: Function> Env<'a, F> {
                     let inst = usedata.pos.inst();
                     let slot = usedata.slot;
                     let operand = usedata.operand;
-
-                    debug_assert_ne!(slot, SLOT_NONE);
                     self.set_alloc(inst, slot as usize, alloc);
-
                     if let OperandConstraint::Reuse(_) = operand.constraint() {
                         reuse_input_insts.push(inst);
                     }
