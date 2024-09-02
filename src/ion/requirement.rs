@@ -61,7 +61,6 @@ pub enum Requirement {
     FixedReg(PReg),
     FixedStack(PReg),
     Register,
-    Stack,
     Any,
 }
 impl Requirement {
@@ -70,14 +69,9 @@ impl Requirement {
         match (self, other) {
             (other, Requirement::Any) | (Requirement::Any, other) => Ok(other),
             (Requirement::Register, Requirement::Register) => Ok(self),
-            (Requirement::Stack, Requirement::Stack) => Ok(self),
             (Requirement::Register, Requirement::FixedReg(preg))
             | (Requirement::FixedReg(preg), Requirement::Register) => {
                 Ok(Requirement::FixedReg(preg))
-            }
-            (Requirement::Stack, Requirement::FixedStack(preg))
-            | (Requirement::FixedStack(preg), Requirement::Stack) => {
-                Ok(Requirement::FixedStack(preg))
             }
             (Requirement::FixedReg(a), Requirement::FixedReg(b)) if a == b => Ok(self),
             (Requirement::FixedStack(a), Requirement::FixedStack(b)) if a == b => Ok(self),
@@ -88,7 +82,7 @@ impl Requirement {
     #[inline(always)]
     pub fn is_stack(self) -> bool {
         match self {
-            Requirement::Stack | Requirement::FixedStack(..) => true,
+            Requirement::FixedStack(..) => true,
             Requirement::Register | Requirement::FixedReg(..) => false,
             Requirement::Any => false,
         }
@@ -98,7 +92,7 @@ impl Requirement {
     pub fn is_reg(self) -> bool {
         match self {
             Requirement::Register | Requirement::FixedReg(..) => true,
-            Requirement::Stack | Requirement::FixedStack(..) => false,
+            Requirement::FixedStack(..) => false,
             Requirement::Any => false,
         }
     }
@@ -116,7 +110,6 @@ impl<'a, F: Function> Env<'a, F> {
                 }
             }
             OperandConstraint::Reg | OperandConstraint::Reuse(_) => Requirement::Register,
-            OperandConstraint::Stack => Requirement::Stack,
             OperandConstraint::Any => Requirement::Any,
         }
     }

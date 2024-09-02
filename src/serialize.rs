@@ -27,7 +27,6 @@ struct InstData {
     op: InstOpcode,
     operands: Vec<Operand>,
     clobbers: PRegSet,
-    is_safepoint: bool,
 }
 
 /// A wrapper around a `Function` and `MachineEnv` that can be serialized and
@@ -47,7 +46,6 @@ pub struct SerializableFunction {
     block_params_in: Vec<Vec<VReg>>,
     block_params_out: Vec<Vec<Vec<VReg>>>,
     num_vregs: usize,
-    reftype_vregs: Vec<VReg>,
     debug_value_labels: Vec<(VReg, Inst, Inst, u32)>,
     spillslot_size: Vec<usize>,
     multi_spillslot_named_by_last_slot: bool,
@@ -75,7 +73,6 @@ impl SerializableFunction {
                         op,
                         operands: func.inst_operands(inst).to_vec(),
                         clobbers: func.inst_clobbers(inst),
-                        is_safepoint: func.requires_refs_on_stack(inst),
                     }
                 })
                 .collect(),
@@ -113,7 +110,6 @@ impl SerializableFunction {
                 })
                 .collect(),
             num_vregs: func.num_vregs(),
-            reftype_vregs: func.reftype_vregs().to_vec(),
             debug_value_labels: func.debug_value_labels().to_vec(),
             spillslot_size: [
                 func.spillslot_size(RegClass::Int),
@@ -173,10 +169,6 @@ impl Function for SerializableFunction {
         &self.block_params_out[block.index()][succ][..]
     }
 
-    fn requires_refs_on_stack(&self, insn: Inst) -> bool {
-        self.insts[insn.index()].is_safepoint
-    }
-
     fn inst_operands(&self, insn: Inst) -> &[Operand] {
         &self.insts[insn.index()].operands[..]
     }
@@ -187,10 +179,6 @@ impl Function for SerializableFunction {
 
     fn num_vregs(&self) -> usize {
         self.num_vregs
-    }
-
-    fn reftype_vregs(&self) -> &[VReg] {
-        &self.reftype_vregs[..]
     }
 
     fn debug_value_labels(&self) -> &[(VReg, Inst, Inst, u32)] {
@@ -239,9 +227,6 @@ impl fmt::Debug for SerializableFunction {
             "  allow_multiple_vreg_defs: {}\n",
             self.allow_multiple_vreg_defs()
         )?;
-        for vreg in self.reftype_vregs() {
-            write!(f, "  REF: {}\n", vreg)?;
-        }
         for (i, blockrange) in self.blocks.iter().enumerate() {
             let succs = self.block_succs[i]
                 .iter()
@@ -275,9 +260,6 @@ impl fmt::Debug for SerializableFunction {
                 "  block{i}({params_in}): # succs:{succs:?} preds:{preds:?}\n",
             )?;
             for inst in blockrange.iter() {
-                if self.requires_refs_on_stack(inst) {
-                    write!(f, "    -- SAFEPOINT --\n")?;
-                }
                 let ops: Vec<_> = self
                     .inst_operands(inst)
                     .iter()

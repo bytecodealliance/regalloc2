@@ -648,14 +648,11 @@ other):
 
 ```plain
 
-        ___Unknown_____
-        |      |      |
-        |      |      |
-        | ____Any(rc) |
-        |/     |      |
-   Stack(rc)  FixedReg(reg)
-         \    /
-        Conflict
+                         Any(rc)
+                        /       \
+              FixedReg(reg)   FixedStack(reg)
+                        \       /
+                         Conflict
 ```
 
 Once we have the Requirement for a bundle, we can decide what to do.
@@ -666,12 +663,6 @@ If the requirement indicates that no register is needed (`Unknown` or
 `Any`, i.e. a register or stack slot would be OK), *and* if the spill
 bundle already exists for this bundle's spillset, then we move all the
 liveranges over to the spill bundle, as described above.
-
-If the requirement indicates that the stack is needed explicitly
-(e.g., for a safepoint), we set our spillset as "required" (this will
-cause it to allocate a spillslot) and return; because the bundle has
-no other allocation set, it will look to the spillset's spillslot by
-default.
 
 If the requirement indicates a conflict, we immediately split and
 requeue the split pieces. This split is performed at the point at

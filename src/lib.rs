@@ -497,8 +497,6 @@ pub enum OperandConstraint {
     Any,
     /// Operand must be in a register. Register is read-only for Uses.
     Reg,
-    /// Operand must be on the stack.
-    Stack,
     /// Operand must be in a fixed register.
     FixedReg(PReg),
     /// On defs only: reuse a use's register.
@@ -510,7 +508,6 @@ impl core::fmt::Display for OperandConstraint {
         match self {
             Self::Any => write!(f, "any"),
             Self::Reg => write!(f, "reg"),
-            Self::Stack => write!(f, "stack"),
             Self::FixedReg(preg) => write!(f, "fixed({})", preg),
             Self::Reuse(idx) => write!(f, "reuse({})", idx),
         }
@@ -606,7 +603,6 @@ impl Operand {
         let constraint_field = match constraint {
             OperandConstraint::Any => 0,
             OperandConstraint::Reg => 1,
-            OperandConstraint::Stack => 2,
             OperandConstraint::FixedReg(preg) => {
                 debug_assert_eq!(preg.class(), vreg.class());
                 0b1000000 | preg.hw_enc() as u32
@@ -879,7 +875,6 @@ impl Operand {
             match constraint_field {
                 0 => OperandConstraint::Any,
                 1 => OperandConstraint::Reg,
-                2 => OperandConstraint::Stack,
                 _ => unreachable!(),
             }
         }
@@ -1133,20 +1128,6 @@ pub trait Function {
     /// for each respective successor block.
     fn branch_blockparams(&self, block: Block, insn: Inst, succ_idx: usize) -> &[VReg];
 
-    /// Determine whether an instruction requires all reference-typed
-    /// values to be placed onto the stack. For these instructions,
-    /// stackmaps will be provided.
-    ///
-    /// This is usually associated with the concept of a "safepoint",
-    /// though strictly speaking, a safepoint could also support
-    /// reference-typed values in registers if there were a way to
-    /// denote their locations and if this were acceptable to the
-    /// client. Usually garbage-collector implementations want to see
-    /// roots on the stack, so we do that for now.
-    fn requires_refs_on_stack(&self, _: Inst) -> bool {
-        false
-    }
-
     // --------------------------
     // Instruction register slots
     // --------------------------
@@ -1188,24 +1169,6 @@ pub trait Function {
 
     /// Get the number of `VReg` in use in this function.
     fn num_vregs(&self) -> usize;
-
-    /// Get the VRegs that are pointer/reference types. This has the
-    /// following effects for each such vreg:
-    ///
-    /// - At all safepoint instructions, the vreg will be in a
-    ///   SpillSlot, not in a register.
-    /// - The vreg *may not* be used as a register operand on
-    ///   safepoint instructions: this is because a vreg can only live
-    ///   in one place at a time. The client should copy the value to an
-    ///   integer-typed vreg and use this to pass a pointer as an input
-    ///   to a safepoint instruction (such as a function call).
-    /// - At all safepoint instructions, all live vregs' locations
-    ///   will be included in a list in the `Output` below, so that
-    ///   pointer-inspecting/updating functionality (such as a moving
-    ///   garbage collector) may observe and edit their values.
-    fn reftype_vregs(&self) -> &[VReg] {
-        &[]
-    }
 
     /// Get the VRegs for which we should generate value-location
     /// metadata for debugging purposes. This can be used to generate
@@ -1502,12 +1465,6 @@ pub struct Output {
 
     /// Allocation offset in `allocs` for each instruction.
     pub inst_alloc_offsets: Vec<u32>,
-
-    /// Safepoint records: at a given program point, a reference-typed value
-    /// lives in the given Allocation. Currently these are guaranteed to be
-    /// stack slots, but in the future an option may be added to allow
-    /// reftype value to be kept in registers at safepoints.
-    pub safepoint_slots: Vec<(ProgPoint, Allocation)>,
 
     /// Debug info: a labeled value (as applied to vregs by
     /// `Function::debug_value_labels()` on the input side) is located

@@ -15,10 +15,9 @@
 
 use crate::cfg::CFGInfo;
 use crate::ssa::validate_ssa;
-use crate::{Function, MachineEnv, Output, PReg, ProgPoint, RegAllocError, RegClass};
+use crate::{Function, MachineEnv, Output, PReg, RegAllocError, RegClass};
 use alloc::vec;
 use alloc::vec::Vec;
-use hashbrown::HashMap;
 
 pub(crate) mod data_structures;
 pub use data_structures::Stats;
@@ -38,7 +37,6 @@ use smallvec::smallvec;
 pub(crate) mod dump;
 pub(crate) mod moves;
 pub(crate) mod spill;
-pub(crate) mod stackmap;
 
 impl<'a, F: Function> Env<'a, F> {
     pub(crate) fn new(
@@ -63,8 +61,6 @@ impl<'a, F: Function> Env<'a, F> {
             vregs: VRegs::with_capacity(n),
             pregs: vec![],
             allocation_queue: PrioQueue::new(),
-            safepoints: vec![],
-            safepoints_per_vreg: HashMap::new(),
             spilled_bundles: vec![],
             spillslots: vec![],
             slots_by_class: [
@@ -81,7 +77,6 @@ impl<'a, F: Function> Env<'a, F> {
             allocs: Vec::with_capacity(4 * n),
             inst_alloc_offsets: vec![],
             num_spillslots: 0,
-            safepoint_slots: vec![],
             debug_locations: vec![],
 
             stats: Stats::default(),
@@ -112,7 +107,6 @@ impl<'a, F: Function> Env<'a, F> {
         self.allocate_spillslots();
         let moves = self.apply_allocations_and_insert_moves();
         let edits = self.resolve_inserted_moves(moves);
-        self.compute_stackmaps();
         Ok(edits)
     }
 }
@@ -144,7 +138,6 @@ pub fn run<F: Function>(
         inst_alloc_offsets: env.inst_alloc_offsets,
         num_spillslots: env.num_spillslots as usize,
         debug_locations: env.debug_locations,
-        safepoint_slots: env.safepoint_slots,
         stats: env.stats,
     })
 }
