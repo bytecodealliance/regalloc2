@@ -1375,6 +1375,11 @@ impl ProgPoint {
     pub fn from_index(index: u32) -> Self {
         Self { bits: index }
     }
+
+    #[inline(always)]
+    pub fn invalid() -> Self {
+        Self::before(Inst::new(usize::MAX))
+    }
 }
 
 /// An instruction to insert into the program to perform some data movement.

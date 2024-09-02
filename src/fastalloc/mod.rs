@@ -1,8 +1,7 @@
 use crate::{cfg::CFGInfo, ion::Stats, Allocation, RegAllocError};
 use crate::{ssa::validate_ssa, Edit, Function, MachineEnv, Output, ProgPoint};
 use crate::{
-    AllocationKind, Block, Inst, InstPosition, Operand, OperandConstraint, OperandKind, OperandPos,
-    PReg, PRegSet, RegClass, SpillSlot, VReg,
+    AllocationKind, Block, Inst, InstPosition, Operand, OperandConstraint, OperandKind, OperandPos, PReg, PRegSet, RegClass, SpillSlot, VReg
 };
 use alloc::vec::Vec;
 use core::convert::TryInto;
@@ -16,6 +15,9 @@ mod vregset;
 use iter::*;
 use lru::*;
 use vregset::VRegSet;
+
+#[cfg(test)]
+mod tests;
 
 #[derive(Debug)]
 struct Allocs {
@@ -237,6 +239,7 @@ pub struct Env<'a, F: Function> {
     init_available_pregs: PRegSet,
     allocatable_regs: PRegSet,
     stack: Stack<'a, F>,
+    vreg_to_live_inst_range: Vec<(ProgPoint, ProgPoint, Allocation)>,
 
     fixed_stack_slots: PRegSet,
 
@@ -244,6 +247,7 @@ pub struct Env<'a, F: Function> {
     allocs: Allocs,
     edits: Edits,
     stats: Stats,
+    debug_locations: Vec<(u32, ProgPoint, ProgPoint, Allocation)>,
 }
 
 impl<'a, F: Function> Env<'a, F> {
@@ -297,6 +301,7 @@ impl<'a, F: Function> Env<'a, F> {
             vreg_in_preg: vec![VReg::invalid(); PReg::NUM_INDEX],
             stack: Stack::new(func),
             fixed_stack_slots,
+            vreg_to_live_inst_range: vec![(ProgPoint::invalid(), ProgPoint::invalid(), Allocation::none()); func.num_vregs()],
             temp_spillslots: PartedByRegClass {
                 items: [
                     Vec::with_capacity(func.num_vregs()),
@@ -315,6 +320,7 @@ impl<'a, F: Function> Env<'a, F> {
             allocs,
             edits: Edits::new(fixed_stack_slots, max_operand_len, func.num_insts(), dedicated_scratch_regs),
             stats: Stats::default(),
+            debug_locations: Vec::with_capacity(func.debug_value_labels().len()),
         }
     }
 
@@ -595,14 +601,33 @@ impl<'a, F: Function> Env<'a, F> {
         if !self.allocd_within_constraint(inst, op, fixed_spillslot) {
             trace!("{op} isn't allocated within constraints.");
             let curr_alloc = self.vreg_allocs[op.vreg().vreg()];
+            let new_alloc = self.alloc_operand(inst, op, op_idx, fixed_spillslot)?;
             if curr_alloc.is_none() {
                 self.live_vregs.insert(op.vreg());
+                self.vreg_to_live_inst_range[op.vreg().vreg()].1 = match (op.pos(), op.kind()) {
+                    (OperandPos::Late, OperandKind::Use)
+                        | (_, OperandKind::Def) => {
+                            // Live range ends just before the early phase of the
+                            // next instruction.
+                        ProgPoint::before(Inst::new(inst.index() + 1))
+                    }
+                    (OperandPos::Early, OperandKind::Use) => {
+                        // Live range ends just before the late phase of the current instruction.
+                        ProgPoint::after(inst)
+                    }
+                };
+                self.vreg_to_live_inst_range[op.vreg().vreg()].2 = new_alloc;
+
+                trace!("Setting vreg_allocs[{op}] to {new_alloc:?}");
+                self.vreg_allocs[op.vreg().vreg()] = new_alloc;
+                if let Some(preg) = new_alloc.as_reg() {
+                    self.vreg_in_preg[preg.index()] = op.vreg();
+                }
             }
-            let new_alloc = self.alloc_operand(inst, op, op_idx, fixed_spillslot)?;
             // Need to insert a move to propagate flow from the current
             // allocation to the subsequent places where the value was
             // used (in `prev_alloc`, that is).
-            if curr_alloc.is_some() {
+            else if curr_alloc.is_some() {
                 trace!("Move reason: Prev allocation doesn't meet constraints");
                 if self.is_stack(new_alloc) && self.is_stack(curr_alloc) && self.edits.scratch_regs[op.class()].is_none() {
                     let reg = self.get_scratch_reg(op.class())?;
@@ -732,12 +757,6 @@ impl<'a, F: Function> Env<'a, F> {
                 if let Some(preg) = new_alloc.as_reg() {
                     // Don't change the allocation.
                     self.vreg_in_preg[preg.index()] = VReg::invalid();
-                }
-            } else {
-                trace!("Setting vreg_allocs[{op}] to {new_alloc:?}");
-                self.vreg_allocs[op.vreg().vreg()] = new_alloc;
-                if let Some(preg) = new_alloc.as_reg() {
-                    self.vreg_in_preg[preg.index()] = op.vreg();
                 }
             }
             trace!(
@@ -938,8 +957,10 @@ impl<'a, F: Function> Env<'a, F> {
                 // All branch arguments should be in their spillslots at the end of the function.
                 if self.vreg_allocs[vreg.vreg()].is_none() {
                     self.live_vregs.insert(*vreg);
+                    let slot = self.vreg_spillslots[vreg.vreg()];
                     self.vreg_allocs[vreg.vreg()] =
-                        Allocation::stack(self.vreg_spillslots[vreg.vreg()]);
+                        Allocation::stack(slot);
+                    self.vreg_to_live_inst_range[vreg.vreg()].1 = ProgPoint::before(inst);
                 } else if self.vreg_allocs[vreg.vreg()] != vreg_spill {
                     self.edits.add_move(
                         inst,
@@ -1067,7 +1088,9 @@ impl<'a, F: Function> Env<'a, F> {
             } else {
                 self.process_operand_allocation(inst, op, op_idx, None)?;
             }
-            if self.vreg_spillslots[op.vreg().vreg()].is_valid() {
+            let slot = self.vreg_spillslots[op.vreg().vreg()];
+            if slot.is_valid() {
+                self.vreg_to_live_inst_range[op.vreg().vreg()].2 = Allocation::stack(slot);
                 let curr_alloc = self.vreg_allocs[op.vreg().vreg()];
                 let vreg_slot = self.vreg_spillslots[op.vreg().vreg()];
                 let (is_stack_to_stack, src_and_dest_are_same) = if let Some(curr_alloc) = curr_alloc.as_stack() {
@@ -1091,6 +1114,7 @@ impl<'a, F: Function> Env<'a, F> {
                     );
                 }
             }
+            self.vreg_to_live_inst_range[op.vreg().vreg()].0 = ProgPoint::after(inst);
             self.freealloc(op.vreg());
         }
         for (op_idx, op) in operands.use_ops() {
@@ -1170,6 +1194,7 @@ impl<'a, F: Function> Env<'a, F> {
         );
         trace!("Available pregs: {}", self.available_pregs[OperandPos::Early]);
         let mut available_regs_for_scratch = self.available_pregs[OperandPos::Early];
+        let first_inst = self.func.block_insns(block).first();
         // We need to check for the registers that are still live.
         // These registers are either livein or block params
         // Liveins should be stack-allocated and block params should be freed.
@@ -1187,6 +1212,8 @@ impl<'a, F: Function> Env<'a, F> {
             // the first instruction.
             let prev_alloc = self.vreg_allocs[vreg.vreg()];
             let slot = Allocation::stack(self.vreg_spillslots[vreg.vreg()]);
+            self.vreg_to_live_inst_range[vreg.vreg()].2 = slot;
+            self.vreg_to_live_inst_range[vreg.vreg()].0 = ProgPoint::before(first_inst);
             trace!("{} is a block param. Freeing it", vreg);
             // A block's block param is not live before the block.
             // And `vreg_allocs[i]` of a virtual register i is none for
@@ -1336,6 +1363,17 @@ impl<'a, F: Function> Env<'a, F> {
         Ok(())
     }
 
+    fn build_debug_info(&mut self) {
+        trace!("Building debug location info");
+        for &(vreg, start, end, label) in self.func.debug_value_labels() {
+            let (point_start, point_end, alloc) = self.vreg_to_live_inst_range[vreg.vreg()];
+            if point_start.inst() <= start && end <= point_end.inst().next() {
+                self.debug_locations.push((label, point_start, point_end, alloc));
+            }
+        }
+        self.debug_locations.sort_by_key(|loc| loc.0);
+    }
+
     fn run(&mut self) -> Result<(), RegAllocError> {
         debug_assert_eq!(self.func.entry_block().index(), 0);
         for block in (0..self.func.num_blocks()).rev() {
@@ -1343,6 +1381,7 @@ impl<'a, F: Function> Env<'a, F> {
             self.alloc_block(Block::new(block))?;
         }
         self.edits.edits.reverse();
+        self.build_debug_info();
         // Ought to check if there are livein registers
         // then throw an error, but will that be expensive?
         Ok(())
@@ -1429,8 +1468,7 @@ pub fn run<F: Function>(
         allocs: env.allocs.allocs,
         inst_alloc_offsets: env.allocs.inst_alloc_offsets,
         num_spillslots: env.stack.num_spillslots as usize,
-        // TODO: Handle debug locations.
-        debug_locations: Vec::new(),
+        debug_locations: env.debug_locations,
         safepoint_slots: Vec::new(),
         stats: env.stats,
     })
