@@ -399,12 +399,7 @@ impl<'a, F: Function> Env<'a, F> {
         Ok(())
     }
 
-    fn allocd_within_constraint(
-        &self,
-        inst: Inst,
-        op: Operand,
-        fixed_spillslot: Option<SpillSlot>,
-    ) -> bool {
+    fn allocd_within_constraint(&self, inst: Inst, op: Operand) -> bool {
         let alloc = self.vreg_allocs[op.vreg().vreg()];
         let alloc_is_clobber = if let Some(preg) = alloc.as_reg() {
             self.func.inst_clobbers(inst).contains(preg)
@@ -462,13 +457,6 @@ impl<'a, F: Function> Env<'a, F> {
                     }
                 } else {
                     false
-                }
-            }
-            OperandConstraint::Stack => {
-                if let Some(slot) = fixed_spillslot {
-                    alloc == Allocation::stack(slot)
-                } else {
-                    self.is_stack(alloc)
                 }
             }
             // It is possible for an operand to have a fixed register constraint to
@@ -572,22 +560,10 @@ impl<'a, F: Function> Env<'a, F> {
         inst: Inst,
         op: Operand,
         op_idx: usize,
-        fixed_spillslot: Option<SpillSlot>,
     ) -> Result<Allocation, RegAllocError> {
         let new_alloc = match op.constraint() {
             OperandConstraint::Any => self.alloc_reg_for_operand(inst, op)?,
             OperandConstraint::Reg => self.alloc_reg_for_operand(inst, op)?,
-            OperandConstraint::Stack => {
-                let slot = if let Some(spillslot) = fixed_spillslot {
-                    spillslot
-                } else {
-                    if self.vreg_spillslots[op.vreg().vreg()].is_invalid() {
-                        self.vreg_spillslots[op.vreg().vreg()] = self.stack.allocstack(&op.vreg());
-                    }
-                    self.vreg_spillslots[op.vreg().vreg()]
-                };
-                Allocation::stack(slot)
-            }
             OperandConstraint::FixedReg(preg) => {
                 trace!("The fixed preg: {} for operand {}", preg, op);
 
@@ -611,7 +587,6 @@ impl<'a, F: Function> Env<'a, F> {
         inst: Inst,
         op: Operand,
         op_idx: usize,
-        fixed_spillslot: Option<SpillSlot>,
     ) -> Result<(), RegAllocError> {
         if let Some(preg) = op.as_fixed_nonallocatable() {
             self.allocs[(inst.index(), op_idx)] = Allocation::reg(preg);
@@ -623,10 +598,10 @@ impl<'a, F: Function> Env<'a, F> {
             );
             return Ok(());
         }
-        if !self.allocd_within_constraint(inst, op, fixed_spillslot) {
+        if !self.allocd_within_constraint(inst, op) {
             trace!("{op} isn't allocated within constraints.");
             let curr_alloc = self.vreg_allocs[op.vreg().vreg()];
-            let new_alloc = self.alloc_operand(inst, op, op_idx, fixed_spillslot)?;
+            let new_alloc = self.alloc_operand(inst, op, op_idx)?;
             if curr_alloc.is_none() {
                 self.live_vregs.insert(op.vreg());
                 self.vreg_to_live_inst_range[op.vreg().vreg()].1 = match (op.pos(), op.kind()) {
@@ -893,9 +868,6 @@ impl<'a, F: Function> Env<'a, F> {
 
     fn alloc_inst(&mut self, block: Block, inst: Inst) -> Result<(), RegAllocError> {
         trace!("Allocating instruction {:?}", inst);
-        if self.func.requires_refs_on_stack(inst) && !self.func.reftype_vregs().is_empty() {
-            panic!("Safepoint instructions aren't supported");
-        }
         let operands = Operands::new(self.func.inst_operands(inst));
         let clobbers = self.func.inst_clobbers(inst);
 
@@ -1002,14 +974,9 @@ impl<'a, F: Function> Env<'a, F> {
                 let new_reuse_op =
                     Operand::new(op.vreg(), reused_op.constraint(), op.kind(), op.pos());
                 trace!("allocating reuse op {op} as {new_reuse_op}");
-                self.process_operand_allocation(inst, new_reuse_op, op_idx, None)?;
-                if let Some(preg) = self.allocs[(inst.index(), op_idx)].as_reg() {
-                    // The reused input is going to be processed as a fixed register for this
-                    // preg.
-                    self.available_pregs[OperandPos::Early].remove(preg);
-                }
+                self.process_operand_allocation(inst, new_reuse_op, op_idx)?;
             } else {
-                self.process_operand_allocation(inst, op, op_idx, None)?;
+                self.process_operand_allocation(inst, op, op_idx)?;
             }
             let slot = self.vreg_spillslots[op.vreg().vreg()];
             if slot.is_valid() {
@@ -1046,20 +1013,16 @@ impl<'a, F: Function> Env<'a, F> {
             if self.reused_input_to_reuse_op[op_idx] != usize::MAX {
                 let reuse_op_idx = self.reused_input_to_reuse_op[op_idx];
                 let reuse_op_alloc = self.allocs[(inst.index(), reuse_op_idx)];
-                let new_reused_input_constraint;
-                let mut fixed_slot = None;
-                if let Some(preg) = reuse_op_alloc.as_reg() {
-                    new_reused_input_constraint = OperandConstraint::FixedReg(preg);
-                } else {
-                    new_reused_input_constraint = OperandConstraint::Stack;
-                    fixed_slot = Some(reuse_op_alloc.as_stack().unwrap());
-                }
+                let Some(preg) = reuse_op_alloc.as_reg() else {
+                    unreachable!();
+                };
+                let new_reused_input_constraint = OperandConstraint::FixedReg(preg);
                 let new_reused_input =
                     Operand::new(op.vreg(), new_reused_input_constraint, op.kind(), op.pos());
-                trace!("Allocating reused input {op} as {new_reused_input}, (fixed spillslot: {fixed_slot:?})");
-                self.process_operand_allocation(inst, new_reused_input, op_idx, fixed_slot)?;
+                trace!("Allocating reused input {op} as {new_reused_input}");
+                self.process_operand_allocation(inst, new_reused_input, op_idx)?;
             } else {
-                self.process_operand_allocation(inst, op, op_idx, None)?;
+                self.process_operand_allocation(inst, op, op_idx)?;
             }
         }
         for (op_idx, op) in operands.use_ops() {
@@ -1397,7 +1360,6 @@ pub fn run<F: Function>(
         inst_alloc_offsets: env.allocs.inst_alloc_offsets,
         num_spillslots: env.stack.num_spillslots as usize,
         debug_locations: env.debug_locations,
-        safepoint_slots: Vec::new(),
         stats: env.stats,
     })
 }

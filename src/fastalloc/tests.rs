@@ -301,14 +301,6 @@ impl Function for RealFunction {
         self.num_vregs
     }
 
-    fn reftype_vregs(&self) -> &[VReg] {
-        &[]
-    }
-
-    fn requires_refs_on_stack(&self, _: Inst) -> bool {
-        false
-    }
-
     fn spillslot_size(&self, regclass: crate::RegClass) -> usize {
         match regclass {
             RegClass::Int => 2,
