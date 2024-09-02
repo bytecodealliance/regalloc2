@@ -17,7 +17,7 @@ use crate::cfg::CFGInfo;
 use crate::index::ContainerComparator;
 use crate::indexset::IndexSet;
 use crate::{
-    define_index, Allocation, Block, Edit, Function, FxHashSet, Inst, MachineEnv, Operand, PReg,
+    define_index, Allocation, Block, Edit, Function, FxHashSet, MachineEnv, Operand, PReg,
     ProgPoint, RegClass, VReg,
 };
 use alloc::collections::BTreeMap;
@@ -25,7 +25,6 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::cmp::Ordering;
 use core::fmt::Debug;
-use hashbrown::{HashMap, HashSet};
 use smallvec::{smallvec, SmallVec};
 
 /// A range from `from` (inclusive) to `to` (exclusive).
@@ -195,8 +194,6 @@ impl Use {
     }
 }
 
-pub const SLOT_NONE: u8 = u8::MAX;
-
 #[derive(Clone, Debug)]
 pub struct LiveBundle {
     pub ranges: LiveRangeList,
@@ -206,7 +203,7 @@ pub struct LiveBundle {
     pub spill_weight_and_props: u32,
 }
 
-pub const BUNDLE_MAX_SPILL_WEIGHT: u32 = (1 << 28) - 1;
+pub const BUNDLE_MAX_SPILL_WEIGHT: u32 = (1 << 29) - 1;
 pub const MINIMAL_FIXED_BUNDLE_SPILL_WEIGHT: u32 = BUNDLE_MAX_SPILL_WEIGHT;
 pub const MINIMAL_BUNDLE_SPILL_WEIGHT: u32 = BUNDLE_MAX_SPILL_WEIGHT - 1;
 pub const BUNDLE_MAX_NORMAL_SPILL_WEIGHT: u32 = BUNDLE_MAX_SPILL_WEIGHT - 2;
@@ -219,14 +216,12 @@ impl LiveBundle {
         minimal: bool,
         fixed: bool,
         fixed_def: bool,
-        stack: bool,
     ) {
         debug_assert!(spill_weight <= BUNDLE_MAX_SPILL_WEIGHT);
         self.spill_weight_and_props = spill_weight
             | (if minimal { 1 << 31 } else { 0 })
             | (if fixed { 1 << 30 } else { 0 })
-            | (if fixed_def { 1 << 29 } else { 0 })
-            | (if stack { 1 << 28 } else { 0 });
+            | (if fixed_def { 1 << 29 } else { 0 });
     }
 
     #[inline(always)]
@@ -315,7 +310,6 @@ pub(crate) const MAX_SPLITS_PER_SPILLSET: u8 = 2;
 pub struct VRegData {
     pub ranges: LiveRangeList,
     pub blockparam: Block,
-    pub is_ref: bool,
     // We don't initially know the RegClass until we observe a use of the VReg.
     pub class: Option<RegClass>,
 }
@@ -460,8 +454,6 @@ pub struct Env<'a, F: Function> {
     pub vregs: VRegs,
     pub pregs: Vec<PRegData>,
     pub allocation_queue: PrioQueue,
-    pub safepoints: Vec<Inst>, // Sorted list of safepoint insts.
-    pub safepoints_per_vreg: HashMap<usize, HashSet<Inst>>,
 
     pub spilled_bundles: Vec<LiveBundleIndex>,
     pub spillslots: Vec<SpillSlotData>,
@@ -484,7 +476,6 @@ pub struct Env<'a, F: Function> {
     pub allocs: Vec<Allocation>,
     pub inst_alloc_offsets: Vec<u32>,
     pub num_spillslots: u32,
-    pub safepoint_slots: Vec<(ProgPoint, Allocation)>,
     pub debug_locations: Vec<(u32, ProgPoint, ProgPoint, Allocation)>,
 
     pub allocated_bundle_count: usize,

@@ -14,7 +14,7 @@
 
 use super::{
     CodeRange, Env, LiveRangeFlag, LiveRangeIndex, LiveRangeKey, LiveRangeListEntry, LiveRangeSet,
-    PRegData, PRegIndex, RegClass, Use, VRegData, VRegIndex, SLOT_NONE,
+    PRegData, PRegIndex, RegClass, Use, VRegData, VRegIndex,
 };
 use crate::indexset::IndexSet;
 use crate::ion::data_structures::{
@@ -27,7 +27,6 @@ use crate::{
 use alloc::collections::VecDeque;
 use alloc::vec;
 use alloc::vec::Vec;
-use hashbrown::HashSet;
 use slice_group_by::GroupByMut;
 use smallvec::{smallvec, SmallVec};
 
@@ -127,14 +126,10 @@ impl<'a, F: Function> Env<'a, F> {
                 VRegData {
                     ranges: smallvec![],
                     blockparam: Block::invalid(),
-                    is_ref: false,
                     // We'll learn the RegClass as we scan the code.
                     class: None,
                 },
             );
-        }
-        for v in self.func.reftype_vregs() {
-            self.vregs[*v].is_ref = true;
         }
         // Create allocations too.
         for inst in 0..self.func.num_insts() {
@@ -368,10 +363,6 @@ impl<'a, F: Function> Env<'a, F> {
     }
 
     pub fn build_liveranges(&mut self) {
-        for &vreg in self.func.reftype_vregs() {
-            self.safepoints_per_vreg.insert(vreg.vreg(), HashSet::new());
-        }
-
         // Create Uses and Defs referring to VRegs, and place the Uses
         // in LiveRanges.
         //
@@ -697,17 +688,6 @@ impl<'a, F: Function> Env<'a, F> {
                         }
                     }
                 }
-
-                if self.func.requires_refs_on_stack(inst) {
-                    trace!("inst{} is safepoint", inst.index());
-                    self.safepoints.push(inst);
-                    for vreg in live.iter() {
-                        if let Some(safepoints) = self.safepoints_per_vreg.get_mut(&vreg) {
-                            trace!("vreg v{} live at safepoint inst{}", vreg, inst.index());
-                            safepoints.insert(inst);
-                        }
-                    }
-                }
             }
 
             // Block parameters define vregs at the very beginning of
@@ -739,8 +719,6 @@ impl<'a, F: Function> Env<'a, F> {
             }
         }
 
-        self.safepoints.sort_unstable();
-
         // Make ranges in each vreg and uses in each range appear in
         // sorted order. We built them in reverse order above, so this
         // is a simple reversal, *not* a full sort.
@@ -767,53 +745,6 @@ impl<'a, F: Function> Env<'a, F> {
         for range in &mut self.ranges {
             range.uses.reverse();
             debug_assert!(range.uses.windows(2).all(|win| win[0].pos <= win[1].pos));
-        }
-
-        // Insert safepoint virtual stack uses, if needed.
-        for &vreg in self.func.reftype_vregs() {
-            let vreg = VRegIndex::new(vreg.vreg());
-            let mut inserted = false;
-            let mut safepoint_idx = 0;
-            for range_idx in 0..self.vregs[vreg].ranges.len() {
-                let LiveRangeListEntry { range, index } = self.vregs[vreg].ranges[range_idx];
-                while safepoint_idx < self.safepoints.len()
-                    && ProgPoint::before(self.safepoints[safepoint_idx]) < range.from
-                {
-                    safepoint_idx += 1;
-                }
-                while safepoint_idx < self.safepoints.len()
-                    && range.contains_point(ProgPoint::before(self.safepoints[safepoint_idx]))
-                {
-                    // Create a virtual use.
-                    let pos = ProgPoint::before(self.safepoints[safepoint_idx]);
-                    let operand = Operand::new(
-                        self.vreg(vreg),
-                        OperandConstraint::Stack,
-                        OperandKind::Use,
-                        OperandPos::Early,
-                    );
-
-                    trace!(
-                        "Safepoint-induced stack use of {:?} at {:?} -> {:?}",
-                        operand,
-                        pos,
-                        index,
-                    );
-
-                    self.insert_use_into_liverange(index, Use::new(operand, pos, SLOT_NONE));
-                    safepoint_idx += 1;
-
-                    inserted = true;
-                }
-
-                if inserted {
-                    self.ranges[index].uses.sort_unstable_by_key(|u| u.pos);
-                }
-
-                if safepoint_idx >= self.safepoints.len() {
-                    break;
-                }
-            }
         }
 
         self.blockparam_ins.sort_unstable_by_key(|x| x.key());
@@ -874,10 +805,6 @@ impl<'a, F: Function> Env<'a, F> {
                                     first_reg_slot.get_or_insert(u.slot);
                                 }
                             }
-                            // Maybe this could be supported in this future...
-                            OperandConstraint::Stack => panic!(
-                                "multiple uses of vreg with a Stack constraint are not supported"
-                            ),
                         }
                     }
 

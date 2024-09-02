@@ -518,30 +518,6 @@ impl CheckerState {
                     self.check_val(inst, *op, *alloc, val, allocs, checker)?;
                 }
             }
-            &CheckerInst::Safepoint { inst, ref allocs } => {
-                for &alloc in allocs {
-                    let val = self.get_value(&alloc).unwrap_or(&default_val);
-                    trace!(
-                        "checker: checkinst {:?}: safepoint slot {}, checker value {:?}",
-                        checkinst,
-                        alloc,
-                        val
-                    );
-
-                    let reffy = val
-                        .vregs()
-                        .expect("checker value should not be Universe set")
-                        .iter()
-                        .any(|vreg| checker.reftyped_vregs.contains(vreg));
-                    if !reffy {
-                        return Err(CheckerError::NonRefValuesInStackmap {
-                            inst,
-                            alloc,
-                            vregs: val.vregs().unwrap().clone(),
-                        });
-                    }
-                }
-            }
             &CheckerInst::Move { into, from } => {
                 // Ensure that the allocator never returns stack-to-stack moves.
                 let is_stack = |alloc: Allocation| {
@@ -565,7 +541,7 @@ impl CheckerState {
     }
 
     /// Update according to instruction.
-    fn update<'a, F: Function>(&mut self, checkinst: &CheckerInst, checker: &Checker<'a, F>) {
+    fn update(&mut self, checkinst: &CheckerInst) {
         self.become_defined();
 
         match checkinst {
@@ -645,23 +621,6 @@ impl CheckerState {
                     self.remove_value(&Allocation::reg(*clobber));
                 }
             }
-            &CheckerInst::Safepoint { ref allocs, .. } => {
-                for (alloc, value) in self.get_mappings_mut() {
-                    if alloc.is_reg() {
-                        continue;
-                    }
-                    if !allocs.contains(&alloc) {
-                        // Remove all reftyped vregs as labels.
-                        let new_vregs = value
-                            .vregs()
-                            .unwrap()
-                            .difference(&checker.reftyped_vregs)
-                            .cloned()
-                            .collect();
-                        *value = CheckerValue::VRegs(new_vregs);
-                    }
-                }
-            }
         }
     }
 
@@ -689,17 +648,6 @@ impl CheckerState {
                     }
                 }
                 return Err(CheckerError::AllocationIsNotReg { inst, op, alloc });
-            }
-            OperandConstraint::Stack => {
-                if alloc.kind() != AllocationKind::Stack {
-                    // Accept pregs that represent a fixed stack slot.
-                    if let Some(preg) = alloc.as_reg() {
-                        if checker.machine_env.fixed_stack_slots.contains(&preg) {
-                            return Ok(());
-                        }
-                    }
-                    return Err(CheckerError::AllocationIsNotStack { inst, op, alloc });
-                }
             }
             OperandConstraint::FixedReg(preg) => {
                 if alloc != Allocation::reg(preg) {
@@ -749,10 +697,6 @@ pub(crate) enum CheckerInst {
         allocs: Vec<Allocation>,
         clobbers: Vec<PReg>,
     },
-
-    /// A safepoint, with the given Allocations specified as containing
-    /// reftyped values. All other reftyped values become invalid.
-    Safepoint { inst: Inst, allocs: Vec<Allocation> },
 }
 
 #[derive(Debug)]
@@ -761,7 +705,6 @@ pub struct Checker<'a, F: Function> {
     bb_in: FxHashMap<Block, CheckerState>,
     bb_insts: FxHashMap<Block, Vec<CheckerInst>>,
     edge_insts: FxHashMap<(Block, Block), Vec<CheckerInst>>,
-    reftyped_vregs: FxHashSet<VReg>,
     machine_env: &'a MachineEnv,
     stack_pregs: PRegSet,
 }
@@ -775,7 +718,6 @@ impl<'a, F: Function> Checker<'a, F> {
         let mut bb_in = FxHashMap::default();
         let mut bb_insts = FxHashMap::default();
         let mut edge_insts = FxHashMap::default();
-        let mut reftyped_vregs = FxHashSet::default();
 
         for block in 0..f.num_blocks() {
             let block = Block::new(block);
@@ -784,10 +726,6 @@ impl<'a, F: Function> Checker<'a, F> {
             for &succ in f.block_succs(block) {
                 edge_insts.insert((block, succ), vec![]);
             }
-        }
-
-        for &vreg in f.reftype_vregs() {
-            reftyped_vregs.insert(vreg);
         }
 
         bb_in.insert(f.entry_block(), CheckerState::default());
@@ -802,7 +740,6 @@ impl<'a, F: Function> Checker<'a, F> {
             bb_in,
             bb_insts,
             edge_insts,
-            reftyped_vregs,
             machine_env,
             stack_pregs,
         }
@@ -812,15 +749,6 @@ impl<'a, F: Function> Checker<'a, F> {
     /// and allocation results.
     pub fn prepare(&mut self, out: &Output) {
         trace!("checker: out = {:?}", out);
-        // Preprocess safepoint stack-maps into per-inst vecs.
-        let mut safepoint_slots: FxHashMap<Inst, Vec<Allocation>> = FxHashMap::default();
-        for &(progpoint, slot) in &out.safepoint_slots {
-            safepoint_slots
-                .entry(progpoint.inst())
-                .or_insert_with(|| vec![])
-                .push(slot);
-        }
-
         let mut last_inst = None;
         for block in 0..self.f.num_blocks() {
             let block = Block::new(block);
@@ -829,7 +757,7 @@ impl<'a, F: Function> Checker<'a, F> {
                     InstOrEdit::Inst(inst) => {
                         debug_assert!(last_inst.is_none() || inst > last_inst.unwrap());
                         last_inst = Some(inst);
-                        self.handle_inst(block, inst, &mut safepoint_slots, out);
+                        self.handle_inst(block, inst, out);
                     }
                     InstOrEdit::Edit(edit) => self.handle_edit(block, edit),
                 }
@@ -838,21 +766,7 @@ impl<'a, F: Function> Checker<'a, F> {
     }
 
     /// For each original instruction, create an `Op`.
-    fn handle_inst(
-        &mut self,
-        block: Block,
-        inst: Inst,
-        safepoint_slots: &mut FxHashMap<Inst, Vec<Allocation>>,
-        out: &Output,
-    ) {
-        // If this is a safepoint, then check the spillslots at this point.
-        if self.f.requires_refs_on_stack(inst) {
-            let allocs = safepoint_slots.remove(&inst).unwrap_or_else(|| vec![]);
-
-            let checkinst = CheckerInst::Safepoint { inst, allocs };
-            self.bb_insts.get_mut(&block).unwrap().push(checkinst);
-        }
-
+    fn handle_inst(&mut self, block: Block, inst: Inst, out: &Output) {
         // Skip normal checks if this is a branch: the blockparams do
         // not exist in post-regalloc code, and the edge-moves have to
         // be inserted before the branch rather than after.
@@ -931,14 +845,14 @@ impl<'a, F: Function> Checker<'a, F> {
             let mut state = self.bb_in.get(&block).cloned().unwrap();
             trace!("analyze: block {} has state {:?}", block.index(), state);
             for inst in self.bb_insts.get(&block).unwrap() {
-                state.update(inst, self);
+                state.update(inst);
                 trace!("analyze: inst {:?} -> state {:?}", inst, state);
             }
 
             for &succ in self.f.block_succs(block) {
                 let mut new_state = state.clone();
                 for edge_inst in self.edge_insts.get(&(block, succ)).unwrap() {
-                    new_state.update(edge_inst, self);
+                    new_state.update(edge_inst);
                     trace!(
                         "analyze: succ {:?}: inst {:?} -> state {:?}",
                         succ,
@@ -987,7 +901,7 @@ impl<'a, F: Function> Checker<'a, F> {
                     trace!("Checker error: {:?}", e);
                     errors.push(e);
                 }
-                state.update(inst, self);
+                state.update(inst);
                 if let Err(e) = state.check(InstPosition::After, inst, self) {
                     trace!("Checker error: {:?}", e);
                     errors.push(e);
@@ -1021,9 +935,6 @@ impl<'a, F: Function> Checker<'a, F> {
                 trace!("    {{ {} }}", s.join(", "))
             }
         }
-        for vreg in self.f.reftype_vregs() {
-            trace!("  REF: {}", vreg);
-        }
         for bb in 0..self.f.num_blocks() {
             let bb = Block::new(bb);
             trace!("block{}:", bb.index());
@@ -1049,18 +960,11 @@ impl<'a, F: Function> Checker<'a, F> {
                     &CheckerInst::Move { from, into } => {
                         trace!("    {} -> {}", from, into);
                     }
-                    &CheckerInst::Safepoint { ref allocs, .. } => {
-                        let mut slotargs = vec![];
-                        for &slot in allocs {
-                            slotargs.push(format!("{}", slot));
-                        }
-                        trace!("    safepoint: {}", slotargs.join(", "));
-                    }
                     &CheckerInst::ParallelMove { .. } => {
                         panic!("unexpected parallel_move in body (non-edge)")
                     }
                 }
-                state.update(inst, &self);
+                state.update(inst);
                 print_state(&state);
             }
 
@@ -1078,7 +982,7 @@ impl<'a, F: Function> Checker<'a, F> {
                         }
                         _ => panic!("unexpected edge_inst: not a parallel move"),
                     }
-                    state.update(edge_inst, &self);
+                    state.update(edge_inst);
                     print_state(&state);
                 }
             }
