@@ -1,7 +1,8 @@
 use crate::{cfg::CFGInfo, ion::Stats, Allocation, RegAllocError};
 use crate::{ssa::validate_ssa, Edit, Function, MachineEnv, Output, ProgPoint};
 use crate::{
-    AllocationKind, Block, Inst, InstPosition, Operand, OperandConstraint, OperandKind, OperandPos, PReg, PRegSet, RegClass, SpillSlot, VReg
+    AllocationKind, Block, Inst, InstPosition, Operand, OperandConstraint, OperandKind, OperandPos,
+    PReg, PRegSet, RegClass, SpillSlot, VReg,
 };
 use alloc::vec::Vec;
 use core::convert::TryInto;
@@ -111,7 +112,12 @@ struct Edits {
 }
 
 impl Edits {
-    fn new(fixed_stack_slots: PRegSet, max_operand_len: u32, num_insts: usize, dedicated_scratch_regs: PartedByRegClass<Option<PReg>>) -> Self {
+    fn new(
+        fixed_stack_slots: PRegSet,
+        max_operand_len: u32,
+        num_insts: usize,
+        dedicated_scratch_regs: PartedByRegClass<Option<PReg>>,
+    ) -> Self {
         // Some operands generate edits and some don't.
         // The operands that generate edits add no more than two.
         // Some edits are added due to clobbers, not operands.
@@ -157,15 +163,22 @@ impl Edits {
             trace!("Move 1: {scratch_alloc:?} to {to:?}");
             self.edits.push((
                 ProgPoint::new(inst, pos),
-                Edit::Move { from: scratch_alloc, to },
+                Edit::Move {
+                    from: scratch_alloc,
+                    to,
+                },
             ));
             trace!("Move 2: {from:?} to {scratch_alloc:?}");
             self.edits.push((
                 ProgPoint::new(inst, pos),
-                Edit::Move { from, to: scratch_alloc },
+                Edit::Move {
+                    from,
+                    to: scratch_alloc,
+                },
             ));
         } else {
-            self.edits.push((ProgPoint::new(inst, pos), Edit::Move { from, to }));
+            self.edits
+                .push((ProgPoint::new(inst, pos), Edit::Move { from, to }));
         }
     }
 }
@@ -192,11 +205,7 @@ use core::fmt;
 
 impl<T: fmt::Display> fmt::Display for PartedByOperandPos<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{{ early: {}, late: {} }}",
-            self.items[0], self.items[1]
-        )
+        write!(f, "{{ early: {}, late: {} }}", self.items[0], self.items[1])
     }
 }
 
@@ -291,7 +300,14 @@ impl<'a, F: Function> Env<'a, F> {
             vreg_in_preg: vec![VReg::invalid(); PReg::NUM_INDEX],
             stack: Stack::new(func),
             fixed_stack_slots,
-            vreg_to_live_inst_range: vec![(ProgPoint::invalid(), ProgPoint::invalid(), Allocation::none()); func.num_vregs()],
+            vreg_to_live_inst_range: vec![
+                (
+                    ProgPoint::invalid(),
+                    ProgPoint::invalid(),
+                    Allocation::none()
+                );
+                func.num_vregs()
+            ],
             temp_spillslots: PartedByRegClass {
                 items: [
                     Vec::with_capacity(func.num_vregs()),
@@ -302,13 +318,15 @@ impl<'a, F: Function> Env<'a, F> {
             reused_input_to_reuse_op: vec![usize::MAX; max_operand_len as usize],
             init_available_pregs,
             available_pregs: PartedByOperandPos {
-                items: [
-                    init_available_pregs,
-                    init_available_pregs,
-                ]
+                items: [init_available_pregs, init_available_pregs],
             },
             allocs,
-            edits: Edits::new(fixed_stack_slots, max_operand_len, func.num_insts(), dedicated_scratch_regs),
+            edits: Edits::new(
+                fixed_stack_slots,
+                max_operand_len,
+                func.num_insts(),
+                dedicated_scratch_regs,
+            ),
             stats: Stats::default(),
             debug_locations: Vec::with_capacity(func.debug_value_labels().len()),
         }
@@ -327,7 +345,7 @@ impl<'a, F: Function> Env<'a, F> {
     fn reset_available_pregs_and_scratch_regs(&mut self) {
         trace!("Resetting the available pregs");
         self.available_pregs = PartedByOperandPos {
-            items: [self.init_available_pregs, self.init_available_pregs]
+            items: [self.init_available_pregs, self.init_available_pregs],
         };
         self.edits.scratch_regs = self.edits.dedicated_scratch_regs.clone();
     }
@@ -340,7 +358,12 @@ impl<'a, F: Function> Env<'a, F> {
             .ok_or(RegAllocError::TooManyLiveRegs)
     }
 
-    fn reserve_reg_for_fixed_operand(&mut self, op: Operand, op_idx: usize, preg: PReg) -> Result<(), RegAllocError> {
+    fn reserve_reg_for_fixed_operand(
+        &mut self,
+        op: Operand,
+        op_idx: usize,
+        preg: PReg,
+    ) -> Result<(), RegAllocError> {
         trace!("Reserving register {preg} for fixed operand {op}");
         let early_avail_pregs = self.available_pregs[OperandPos::Early];
         let late_avail_pregs = self.available_pregs[OperandPos::Late];
@@ -364,8 +387,8 @@ impl<'a, F: Function> Env<'a, F> {
                 self.available_pregs[OperandPos::Late].remove(preg);
             }
             _ => {
-                if op.as_fixed_nonallocatable().is_none() 
-                    && (!early_avail_pregs.contains(preg) || !late_avail_pregs.contains(preg)) 
+                if op.as_fixed_nonallocatable().is_none()
+                    && (!early_avail_pregs.contains(preg) || !late_avail_pregs.contains(preg))
                 {
                     return Err(RegAllocError::TooManyLiveRegs);
                 }
@@ -376,7 +399,12 @@ impl<'a, F: Function> Env<'a, F> {
         Ok(())
     }
 
-    fn allocd_within_constraint(&self, inst: Inst, op: Operand, fixed_spillslot: Option<SpillSlot>) -> bool {
+    fn allocd_within_constraint(
+        &self,
+        inst: Inst,
+        op: Operand,
+        fixed_spillslot: Option<SpillSlot>,
+    ) -> bool {
         let alloc = self.vreg_allocs[op.vreg().vreg()];
         let alloc_is_clobber = if let Some(preg) = alloc.as_reg() {
             self.func.inst_clobbers(inst).contains(preg)
@@ -436,11 +464,13 @@ impl<'a, F: Function> Env<'a, F> {
                     false
                 }
             }
-            OperandConstraint::Stack => if let Some(slot) = fixed_spillslot {
-                alloc == Allocation::stack(slot)
-            } else {
-                self.is_stack(alloc)
-            },
+            OperandConstraint::Stack => {
+                if let Some(slot) = fixed_spillslot {
+                    alloc == Allocation::stack(slot)
+                } else {
+                    self.is_stack(alloc)
+                }
+            }
             // It is possible for an operand to have a fixed register constraint to
             // a clobber.
             OperandConstraint::FixedReg(preg) => alloc.is_reg() && alloc.as_reg().unwrap() == preg,
@@ -491,7 +521,11 @@ impl<'a, F: Function> Env<'a, F> {
     }
 
     /// Allocates a physical register for the operand `op`.
-    fn alloc_reg_for_operand(&mut self, inst: Inst, op: Operand) -> Result<Allocation, RegAllocError> {
+    fn alloc_reg_for_operand(
+        &mut self,
+        inst: Inst,
+        op: Operand,
+    ) -> Result<Allocation, RegAllocError> {
         trace!("available regs: {}", self.available_pregs);
         trace!("Int LRU: {:?}", self.lrus[RegClass::Int]);
         trace!("Float LRU: {:?}", self.lrus[RegClass::Float]);
@@ -502,7 +536,10 @@ impl<'a, F: Function> Env<'a, F> {
             return Err(RegAllocError::TooManyLiveRegs);
         }
         let Some(preg) = self.lrus[op.class()].last(self.available_pregs[op.pos()]) else {
-            trace!("Failed to find an available {:?} register in the LRU for operand {op}", op.class());
+            trace!(
+                "Failed to find an available {:?} register in the LRU for operand {op}",
+                op.class()
+            );
             return Err(RegAllocError::TooManyLiveRegs);
         };
         if self.vreg_in_preg[preg.index()] != VReg::invalid() {
@@ -518,10 +555,12 @@ impl<'a, F: Function> Env<'a, F> {
             (OperandPos::Early, OperandKind::Def) => {
                 self.available_pregs[OperandPos::Late].remove(preg);
             }
-            (OperandPos::Late, OperandKind::Def) if matches!(op.constraint(), OperandConstraint::Reuse(_)) => {
+            (OperandPos::Late, OperandKind::Def)
+                if matches!(op.constraint(), OperandConstraint::Reuse(_)) =>
+            {
                 self.available_pregs[OperandPos::Early].remove(preg);
             }
-            _ => ()
+            _ => (),
         };
         Ok(Allocation::reg(preg))
     }
@@ -536,12 +575,8 @@ impl<'a, F: Function> Env<'a, F> {
         fixed_spillslot: Option<SpillSlot>,
     ) -> Result<Allocation, RegAllocError> {
         let new_alloc = match op.constraint() {
-            OperandConstraint::Any => {
-                self.alloc_reg_for_operand(inst, op)?
-            }
-            OperandConstraint::Reg => {
-                self.alloc_reg_for_operand(inst, op)?
-            }
+            OperandConstraint::Any => self.alloc_reg_for_operand(inst, op)?,
+            OperandConstraint::Reg => self.alloc_reg_for_operand(inst, op)?,
             OperandConstraint::Stack => {
                 let slot = if let Some(spillslot) = fixed_spillslot {
                     spillslot
@@ -595,10 +630,9 @@ impl<'a, F: Function> Env<'a, F> {
             if curr_alloc.is_none() {
                 self.live_vregs.insert(op.vreg());
                 self.vreg_to_live_inst_range[op.vreg().vreg()].1 = match (op.pos(), op.kind()) {
-                    (OperandPos::Late, OperandKind::Use)
-                        | (_, OperandKind::Def) => {
-                            // Live range ends just before the early phase of the
-                            // next instruction.
+                    (OperandPos::Late, OperandKind::Use) | (_, OperandKind::Def) => {
+                        // Live range ends just before the early phase of the
+                        // next instruction.
                         ProgPoint::before(Inst::new(inst.index() + 1))
                     }
                     (OperandPos::Early, OperandKind::Use) => {
@@ -619,7 +653,10 @@ impl<'a, F: Function> Env<'a, F> {
             // used (in `prev_alloc`, that is).
             else if curr_alloc.is_some() {
                 trace!("Move reason: Prev allocation doesn't meet constraints");
-                if self.is_stack(new_alloc) && self.is_stack(curr_alloc) && self.edits.scratch_regs[op.class()].is_none() {
+                if self.is_stack(new_alloc)
+                    && self.is_stack(curr_alloc)
+                    && self.edits.scratch_regs[op.class()].is_none()
+                {
                     let reg = self.get_scratch_reg(op.class())?;
                     self.edits.scratch_regs[op.class()] = Some(reg);
                     self.available_pregs[OperandPos::Early].remove(reg);
@@ -666,7 +703,7 @@ impl<'a, F: Function> Env<'a, F> {
                     (OperandPos::Early, OperandKind::Def) => {
                         self.available_pregs[OperandPos::Late].remove(preg);
                     }
-                    _ => ()
+                    _ => (),
                 };
             }
             trace!(
@@ -676,8 +713,14 @@ impl<'a, F: Function> Env<'a, F> {
                 self.allocs[(inst.index(), op_idx)]
             );
         }
-        trace!("Late available regs: {}", self.available_pregs[OperandPos::Late]);
-        trace!("Early available regs: {}", self.available_pregs[OperandPos::Early]);
+        trace!(
+            "Late available regs: {}",
+            self.available_pregs[OperandPos::Late]
+        );
+        trace!(
+            "Early available regs: {}",
+            self.available_pregs[OperandPos::Early]
+        );
         Ok(())
     }
 
@@ -742,7 +785,8 @@ impl<'a, F: Function> Env<'a, F> {
                 }
                 let succ_param_vreg = succ_params[pos];
                 if self.vreg_spillslots[succ_param_vreg.vreg()].is_invalid() {
-                    self.vreg_spillslots[succ_param_vreg.vreg()] = self.stack.allocstack(&succ_param_vreg);
+                    self.vreg_spillslots[succ_param_vreg.vreg()] =
+                        self.stack.allocstack(&succ_param_vreg);
                     trace!(
                         "Block param {} is in {}",
                         vreg,
@@ -760,13 +804,8 @@ impl<'a, F: Function> Env<'a, F> {
                     // because branches are processed last.
                     self.edits.scratch_regs[vreg.class()] = Some(reg);
                 }
-                self.edits.add_move(
-                    inst,
-                    temp,
-                    param_alloc,
-                    vreg.class(),
-                    InstPosition::Before,
-                );
+                self.edits
+                    .add_move(inst, temp, param_alloc, vreg.class(), InstPosition::Before);
             }
         }
 
@@ -828,20 +867,14 @@ impl<'a, F: Function> Env<'a, F> {
                     vreg_spill,
                     temp
                 );
-                
-                self.edits.add_move(
-                    inst,
-                    vreg_spill,
-                    temp,
-                    vreg.class(),
-                    InstPosition::Before,
-                );
+
+                self.edits
+                    .add_move(inst, vreg_spill, temp, vreg.class(), InstPosition::Before);
                 // All branch arguments should be in their spillslots at the end of the function.
                 if self.vreg_allocs[vreg.vreg()].is_none() {
                     self.live_vregs.insert(*vreg);
                     let slot = self.vreg_spillslots[vreg.vreg()];
-                    self.vreg_allocs[vreg.vreg()] =
-                        Allocation::stack(slot);
+                    self.vreg_allocs[vreg.vreg()] = Allocation::stack(slot);
                     self.vreg_to_live_inst_range[vreg.vreg()].1 = ProgPoint::before(inst);
                 } else if self.vreg_allocs[vreg.vreg()] != vreg_spill {
                     self.edits.add_move(
@@ -888,9 +921,16 @@ impl<'a, F: Function> Env<'a, F> {
             };
             // Eviction has to be done separately to avoid using a fixed register
             // as a scratch register.
-            if self.vreg_in_preg[preg.index()] != VReg::invalid() && self.vreg_in_preg[preg.index()] != op.vreg() {
-                trace!("Evicting {} from fixed register {preg}", self.vreg_in_preg[preg.index()]);
-                if self.fixed_stack_slots.contains(preg) && self.edits.scratch_regs[preg.class()].is_none() {
+            if self.vreg_in_preg[preg.index()] != VReg::invalid()
+                && self.vreg_in_preg[preg.index()] != op.vreg()
+            {
+                trace!(
+                    "Evicting {} from fixed register {preg}",
+                    self.vreg_in_preg[preg.index()]
+                );
+                if self.fixed_stack_slots.contains(preg)
+                    && self.edits.scratch_regs[preg.class()].is_none()
+                {
                     let reg = self.get_scratch_reg(preg.class())?;
                     self.edits.scratch_regs[preg.class()] = Some(reg);
                     self.available_pregs[OperandPos::Early].remove(reg);
@@ -903,8 +943,13 @@ impl<'a, F: Function> Env<'a, F> {
         self.remove_clobbers_from_available_pregs(clobbers);
         for preg in clobbers {
             if self.vreg_in_preg[preg.index()] != VReg::invalid() {
-                trace!("Evicting {} from clobber {preg}", self.vreg_in_preg[preg.index()]);
-                if self.fixed_stack_slots.contains(preg) && self.edits.scratch_regs[preg.class()].is_none() {
+                trace!(
+                    "Evicting {} from clobber {preg}",
+                    self.vreg_in_preg[preg.index()]
+                );
+                if self.fixed_stack_slots.contains(preg)
+                    && self.edits.scratch_regs[preg.class()].is_none()
+                {
                     let reg = self.get_scratch_reg(preg.class())?;
                     self.edits.scratch_regs[preg.class()] = Some(reg);
                     self.available_pregs[OperandPos::Early].remove(reg);
@@ -954,12 +999,8 @@ impl<'a, F: Function> Env<'a, F> {
             trace!("Allocating def operands {op}");
             if let OperandConstraint::Reuse(reused_idx) = op.constraint() {
                 let reused_op = operands[reused_idx];
-                let new_reuse_op = Operand::new(
-                    op.vreg(),
-                    reused_op.constraint(),
-                    op.kind(),
-                    op.pos(),
-                );
+                let new_reuse_op =
+                    Operand::new(op.vreg(), reused_op.constraint(), op.kind(), op.pos());
                 trace!("allocating reuse op {op} as {new_reuse_op}");
                 self.process_operand_allocation(inst, new_reuse_op, op_idx, None)?;
                 if let Some(preg) = self.allocs[(inst.index(), op_idx)].as_reg() {
@@ -975,11 +1016,12 @@ impl<'a, F: Function> Env<'a, F> {
                 self.vreg_to_live_inst_range[op.vreg().vreg()].2 = Allocation::stack(slot);
                 let curr_alloc = self.vreg_allocs[op.vreg().vreg()];
                 let vreg_slot = self.vreg_spillslots[op.vreg().vreg()];
-                let (is_stack_to_stack, src_and_dest_are_same) = if let Some(curr_alloc) = curr_alloc.as_stack() {
-                    (true, curr_alloc == vreg_slot)
-                } else {
-                    (self.is_stack(curr_alloc), false)
-                };
+                let (is_stack_to_stack, src_and_dest_are_same) =
+                    if let Some(curr_alloc) = curr_alloc.as_stack() {
+                        (true, curr_alloc == vreg_slot)
+                    } else {
+                        (self.is_stack(curr_alloc), false)
+                    };
                 if !src_and_dest_are_same {
                     if is_stack_to_stack && self.edits.scratch_regs[op.class()].is_none() {
                         let reg = self.get_scratch_reg(op.class())?;
@@ -1012,12 +1054,8 @@ impl<'a, F: Function> Env<'a, F> {
                     new_reused_input_constraint = OperandConstraint::Stack;
                     fixed_slot = Some(reuse_op_alloc.as_stack().unwrap());
                 }
-                let new_reused_input = Operand::new(
-                    op.vreg(),
-                    new_reused_input_constraint,
-                    op.kind(),
-                    op.pos(),
-                );
+                let new_reused_input =
+                    Operand::new(op.vreg(), new_reused_input_constraint, op.kind(), op.pos());
                 trace!("Allocating reused input {op} as {new_reused_input}, (fixed spillslot: {fixed_slot:?})");
                 self.process_operand_allocation(inst, new_reused_input, op_idx, fixed_slot)?;
             } else {
@@ -1074,7 +1112,10 @@ impl<'a, F: Function> Env<'a, F> {
             block,
             self.func.block_params(block)
         );
-        trace!("Available pregs: {}", self.available_pregs[OperandPos::Early]);
+        trace!(
+            "Available pregs: {}",
+            self.available_pregs[OperandPos::Early]
+        );
         let mut available_regs_for_scratch = self.available_pregs[OperandPos::Early];
         let first_inst = self.func.block_insns(block).first();
         // We need to check for the registers that are still live.
@@ -1221,7 +1262,11 @@ impl<'a, F: Function> Env<'a, F> {
         let mut v = Vec::new();
         for i in 0..self.vreg_in_preg.len() {
             if self.vreg_in_preg[i] != VReg::invalid() {
-                v.push(format!("{}: {}, ", PReg::from_index(i), self.vreg_in_preg[i]));
+                v.push(format!(
+                    "{}: {}, ",
+                    PReg::from_index(i),
+                    self.vreg_in_preg[i]
+                ));
             }
         }
         trace!("vreg_in_preg: {:?}", v);
@@ -1246,11 +1291,12 @@ impl<'a, F: Function> Env<'a, F> {
     }
 
     fn build_debug_info(&mut self) {
-        trace!("Building debug location info"); 
+        trace!("Building debug location info");
         for &(vreg, start, end, label) in self.func.debug_value_labels() {
             let (point_start, point_end, alloc) = self.vreg_to_live_inst_range[vreg.vreg()];
             if point_start.inst() <= start && end <= point_end.inst().next() {
-                self.debug_locations.push((label, point_start, point_end, alloc));
+                self.debug_locations
+                    .push((label, point_start, point_end, alloc));
             }
         }
         self.debug_locations.sort_by_key(|loc| loc.0);

@@ -1,8 +1,11 @@
-use crate::{run, Algorithm, Allocation, Block, Function, Inst, InstOrEdit, InstRange, MachineEnv, Operand, OperandPos, Output, PReg, PRegSet, ProgPoint, RegClass, RegallocOptions, SpillSlot, VReg};
+use crate::OperandConstraint::{self, *};
+use crate::OperandKind::{self, *};
+use crate::{
+    run, Algorithm, Allocation, Block, Function, Inst, InstOrEdit, InstRange, MachineEnv, Operand,
+    OperandPos, Output, PReg, PRegSet, ProgPoint, RegClass, RegallocOptions, SpillSlot, VReg,
+};
 use alloc::vec;
 use alloc::vec::Vec;
-use crate::OperandKind::{self, *};
-use crate::OperandConstraint::{self, *};
 
 #[test]
 fn test_debug_locations1() {
@@ -10,16 +13,24 @@ fn test_debug_locations1() {
     let mut options = RegallocOptions::default();
     options.validate_ssa = true;
     options.algorithm = Algorithm::Fastalloc;
-    let mut f = RealFunction::new(vec![
-        BlockBuildInfo {
-            insts: vec![
-                /* 0. */ vec![op(Def, 0, FixedReg(p(0)))],
-                /* 1. */ vec![op(Def, 1, FixedReg(p(0))), op(Use, 0, FixedReg(p(0))), op(Use, 0, Reg)],
-                /* 2. */ vec![op(Def, 2, FixedReg(p(8))), op(Use, 0, FixedReg(p(2))), op(Use, 1, FixedReg(p(0)))],
-                /* 3. */ vec![op(Def, 3, FixedReg(p(9))), op(Use, 0, FixedReg(p(9)))]
+    let mut f = RealFunction::new(vec![BlockBuildInfo {
+        insts: vec![
+            /* 0. */ vec![op(Def, 0, FixedReg(p(0)))],
+            /* 1. */
+            vec![
+                op(Def, 1, FixedReg(p(0))),
+                op(Use, 0, FixedReg(p(0))),
+                op(Use, 0, Reg),
             ],
-        }
-    ]);
+            /* 2. */
+            vec![
+                op(Def, 2, FixedReg(p(8))),
+                op(Use, 0, FixedReg(p(2))),
+                op(Use, 1, FixedReg(p(0))),
+            ],
+            /* 3. */ vec![op(Def, 3, FixedReg(p(9))), op(Use, 0, FixedReg(p(9)))],
+        ],
+    }]);
     f.debug_value_labels = vec![
         (v(0), i(0), i(4), 32),
         (v(2), i(2), i(4), 70),
@@ -27,12 +38,35 @@ fn test_debug_locations1() {
         (v(3), i(3), i(4), 34),
     ];
     let result = run(&f, &mach_env, &options).unwrap();
-    assert_eq!(result.debug_locations, vec![
-        (32, ProgPoint::after(i(0)), ProgPoint::after(i(3)), alloc(p(9))),
-        (34, ProgPoint::after(i(3)), ProgPoint::before(i(4)), alloc(p(9))),
-        (70, ProgPoint::after(i(2)), ProgPoint::before(i(3)), alloc(p(8))),
-        (71, ProgPoint::after(i(2)), ProgPoint::before(i(3)), alloc(p(8))),
-    ]);
+    assert_eq!(
+        result.debug_locations,
+        vec![
+            (
+                32,
+                ProgPoint::after(i(0)),
+                ProgPoint::after(i(3)),
+                alloc(p(9))
+            ),
+            (
+                34,
+                ProgPoint::after(i(3)),
+                ProgPoint::before(i(4)),
+                alloc(p(9))
+            ),
+            (
+                70,
+                ProgPoint::after(i(2)),
+                ProgPoint::before(i(3)),
+                alloc(p(8))
+            ),
+            (
+                71,
+                ProgPoint::after(i(2)),
+                ProgPoint::before(i(3)),
+                alloc(p(8))
+            ),
+        ]
+    );
 }
 
 #[test]
@@ -41,17 +75,15 @@ fn test_debug_locations2() {
     let mut options = RegallocOptions::default();
     options.validate_ssa = true;
     options.algorithm = Algorithm::Fastalloc;
-    let mut f = RealFunction::new(vec![
-        BlockBuildInfo {
-            insts: vec![
-                /* 0. */ vec![op(Def, 2, FixedReg(p(0)))],
-                /* 1. */ vec![op(Def, 0, FixedReg(p(0)))],
-                /* 2. */ vec![op(Def, 1, FixedReg(p(1)))],
-                /* 3. */ vec![op(Use, 0, FixedReg(p(0))), op(Use, 0, FixedReg(p(1)))],
-                /* 4. */ vec![op(Use, 1, FixedReg(p(1)))],
-            ],
-        }
-    ]);
+    let mut f = RealFunction::new(vec![BlockBuildInfo {
+        insts: vec![
+            /* 0. */ vec![op(Def, 2, FixedReg(p(0)))],
+            /* 1. */ vec![op(Def, 0, FixedReg(p(0)))],
+            /* 2. */ vec![op(Def, 1, FixedReg(p(1)))],
+            /* 3. */ vec![op(Use, 0, FixedReg(p(0))), op(Use, 0, FixedReg(p(1)))],
+            /* 4. */ vec![op(Use, 1, FixedReg(p(1)))],
+        ],
+    }]);
     f.debug_value_labels = vec![
         (v(0), i(1), i(4), 10),
         (v(1), i(0), i(1), 11),
@@ -61,7 +93,12 @@ fn test_debug_locations2() {
     assert_eq!(result.debug_locations.len(), 2);
     assert_eq!(
         result.debug_locations[0],
-        (10, ProgPoint::after(i(1)), ProgPoint::after(i(3)), alloc(p(0)))
+        (
+            10,
+            ProgPoint::after(i(1)),
+            ProgPoint::after(i(3)),
+            alloc(p(0))
+        )
     );
     assert_eq!(result.debug_locations[1].0, 23);
     assert_eq!(result.debug_locations[1].1, ProgPoint::after(i(2)));
@@ -84,7 +121,7 @@ impl RealFunction {
             for inst in block.insts.iter() {
                 f.insts.push(RealInst {
                     inst: Inst::new(f.insts.len()),
-                    kind: RealInstKind::Normal
+                    kind: RealInstKind::Normal,
                 });
                 let start_op_idx = f.operands.len();
                 for op in inst.iter() {
@@ -110,7 +147,7 @@ fn mach_env(no_of_regs: usize) -> MachineEnv {
                 .map(|no| PReg::new(no, RegClass::Int))
                 .collect(),
             vec![],
-            vec![]
+            vec![],
         ],
         non_preferred_regs_by_class: [vec![], vec![], vec![]],
         scratch_by_class: [None, None, None],
@@ -119,10 +156,15 @@ fn mach_env(no_of_regs: usize) -> MachineEnv {
 }
 
 fn op(kind: OperandKind, vreg_num: usize, constraint: OperandConstraint) -> Operand {
-    Operand::new(VReg::new(vreg_num, RegClass::Int), constraint, kind, match kind {
-        Use => OperandPos::Early,
-        Def => OperandPos::Late
-    })
+    Operand::new(
+        VReg::new(vreg_num, RegClass::Int),
+        constraint,
+        kind,
+        match kind {
+            Use => OperandPos::Early,
+            Def => OperandPos::Late,
+        },
+    )
 }
 
 fn alloc(preg: PReg) -> Allocation {
@@ -186,7 +228,7 @@ impl RealInst {
 enum RealInstKind {
     Normal,
     Branch(Block, Vec<VReg>),
-    Ret
+    Ret,
 }
 
 impl Function for RealFunction {
@@ -201,7 +243,10 @@ impl Function for RealFunction {
     fn block_insns(&self, block: crate::Block) -> crate::InstRange {
         let (start, end) = self.inst_ranges[block.index()];
         if start != end {
-            InstRange::new(self.insts[start].inst, Inst::new(self.insts[end - 1].inst.index() + 1))
+            InstRange::new(
+                self.insts[start].inst,
+                Inst::new(self.insts[end - 1].inst.index() + 1),
+            )
         } else {
             InstRange::new(Inst::new(0), Inst::new(0))
         }

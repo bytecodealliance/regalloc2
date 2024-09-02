@@ -263,7 +263,7 @@ impl PRegSet {
         for i in 0..self.bits.len() {
             set[i] = !self.bits[i];
         }
-        PRegSet{ bits: set }
+        PRegSet { bits: set }
     }
 
     pub fn is_empty(&self, regclass: RegClass) -> bool {

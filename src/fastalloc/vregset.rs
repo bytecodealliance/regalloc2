@@ -1,8 +1,8 @@
 use core::fmt;
 
+use crate::{RegClass, VReg};
 use alloc::vec;
 use alloc::vec::Vec;
-use crate::{RegClass, VReg};
 
 #[derive(Clone)]
 struct VRegNode {
@@ -21,7 +21,14 @@ pub struct VRegSet {
 impl VRegSet {
     pub fn with_capacity(num_vregs: usize) -> Self {
         Self {
-            items: vec![VRegNode { prev: u32::MAX, next: u32::MAX, class: RegClass::Int }; num_vregs],
+            items: vec![
+                VRegNode {
+                    prev: u32::MAX,
+                    next: u32::MAX,
+                    class: RegClass::Int
+                };
+                num_vregs
+            ],
             head: u32::MAX,
         }
     }
