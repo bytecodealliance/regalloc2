@@ -66,15 +66,6 @@ impl IndexMut<(usize, usize)> for Allocs {
     }
 }
 
-fn remove_any_from_pregset(set: &mut PRegSet) -> Option<PReg> {
-    if let Some(preg) = set.into_iter().next() {
-        set.remove(preg);
-        Some(preg)
-    } else {
-        None
-    }
-}
-
 #[derive(Debug)]
 struct Stack<'a, F: Function> {
     num_spillslots: u32,
@@ -252,6 +243,7 @@ pub struct Env<'a, F: Function> {
 
 impl<'a, F: Function> Env<'a, F> {
     fn new(func: &'a F, env: &'a MachineEnv) -> Self {
+        use alloc::vec;
         let mut regs = [
             env.preferred_regs_by_class[RegClass::Int as usize].clone(),
             env.preferred_regs_by_class[RegClass::Float as usize].clone(),
@@ -287,7 +279,6 @@ impl<'a, F: Function> Env<'a, F> {
                 env.scratch_by_class[2],
             ],
         };
-        use alloc::vec;
         trace!("{:?}", env);
         let (allocs, max_operand_len) = Allocs::new(func);
         let fixed_stack_slots = PRegSet::from_iter(env.fixed_stack_slots.iter().cloned());
@@ -1364,7 +1355,7 @@ impl<'a, F: Function> Env<'a, F> {
     }
 
     fn build_debug_info(&mut self) {
-        trace!("Building debug location info");
+        trace!("Building debug location info"); 
         for &(vreg, start, end, label) in self.func.debug_value_labels() {
             let (point_start, point_end, alloc) = self.vreg_to_live_inst_range[vreg.vreg()];
             if point_start.inst() <= start && end <= point_end.inst().next() {
@@ -1444,7 +1435,7 @@ fn log_output<'a, F: Function>(env: &Env<'a, F>) {
 pub fn run<F: Function>(
     func: &F,
     mach_env: &MachineEnv,
-    enable_annotations: bool,
+    verbose_log: bool,
     enable_ssa_checker: bool,
 ) -> Result<Output, RegAllocError> {
     if enable_ssa_checker {
@@ -1452,14 +1443,14 @@ pub fn run<F: Function>(
         validate_ssa(func, &cfginfo)?;
     }
 
-    if trace_enabled!() {
+    if trace_enabled!() || verbose_log {
         log_function(func);
     }
 
     let mut env = Env::new(func, mach_env);
     env.run()?;
 
-    if trace_enabled!() {
+    if trace_enabled!() || verbose_log {
         log_output(&env);
     }
 
