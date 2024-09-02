@@ -8,7 +8,6 @@ use core::convert::TryInto;
 use core::iter::FromIterator;
 use core::ops::{Index, IndexMut};
 
-mod bitset;
 mod iter;
 mod lru;
 mod vregset;
@@ -628,41 +627,6 @@ impl<'a, F: Function> Env<'a, F> {
                 }
                 if op.kind() == OperandKind::Def {
                     trace!("Adding edit from {new_alloc:?} to {curr_alloc:?} after inst {inst:?} for {op}");
-                    // In the case where `op` is a def,
-                    // the allocation of `op` will not be holding the value
-                    // of `op` before the instruction. Since it's a def,
-                    // it will only hold the value after. So, the move
-                    // has to be done after.
-                    //
-                    // The move also has to be prepended. Consider the scenario:
-                    //
-                    // 1. def v0 (any reg), use v1 (fixed: p0)
-                    // 2. use v0 (fixed: p0)
-                    //
-                    // During the processing of the first instruction, v0 is already in
-                    // p0. Since v1 has a fixed register constraint, it's processed
-                    // first and evicts v0 from p0. Edits are inserted to flow v0 from
-                    // its spillslot to p0 after the instruction:
-                    //
-                    // 1. def v0 (any reg), use v1 (fixed: p0)
-                    // move from stack_v0 to p0
-                    // 2. use v0 (fixed: p0)
-                    //
-                    // When it's time to process v0, it has to be moved again: this time
-                    // because it needs to be in a register, not on the stack.
-                    // Edits are inserted to flow v0 from its spillslot to the newly allocated
-                    // register, say p1.
-                    //
-                    // 1. def v0 (any reg), use v1 (fixed: p0)
-                    // move from stack_v0 to p0
-                    // move from p1 to stack_v0
-                    // 2. use v0 (fixed: p0)
-                    //
-                    // The problem here is that the edits are out of order. p1, the
-                    // allocation used for v0 in inst 1., is never moved into p0,
-                    // the location v0 is expected to be in after inst 1.
-                    // This messes up the dataflow.
-                    // To avoid this, the moves are prepended.
                     self.edits.add_move(
                         inst,
                         new_alloc,
@@ -672,79 +636,10 @@ impl<'a, F: Function> Env<'a, F> {
                     );
                     // No need to set vreg_in_preg because it will be set during
                     // `freealloc` if needed.
-                } else {
-                    // This was handled by a simple move from the operand to its previous
-                    // allocation before the instruction, but this is incorrect.
-                    // Consider the scenario:
-                    // 1. use v0 (fixed: p0), use v1 (fixed: p1)
-                    // 2. use v0 (fixed: p1)
-                    // By the time inst 1 is to be processed, v0 will be in p1.
-                    // But v1 should be in p1, not v0. If v0 is moved to p1 before inst 1,
-                    // then it will overwrite v1 and v0 will be used instead of v1.
-                    // It's also possible that the register used by v0 could be reused
-                    // with a def operand.
-                    // To resolve this, v0 is moved into its spillslot before inst 1.
-                    // Then it's moved from its spillslot into p1 after inst 1, which is the place
-                    // where it's expected to be after the instruction.
-                    // This is to avoid two problems:
-                    // 1. Overwriting a vreg that uses p1 in the current instruction.
-                    // 2. Avoiding a situation where a def reuses the register used by v0
-                    // and overwrites v0.
-                    //
-                    // It is possible for a virtual register to be used twice in the
-                    // same instruction with different constraints.
-                    // For example:
-                    // 1. use v0 (fixed: stack0), use v0 (fixed: p0)
-                    // 2. use v0 (fixed: p1)
-                    // By the time inst 1 is to be processed, v0 will be in p1.
-                    // But it should be in p0 and stack0. If stack0 is processed
-                    // first, moves will be inserted to move from stack0 to v0's
-                    // spillslot before inst 1 and to move from spillslot
-                    // to p1 after the instruction:
-                    //
-                    // move from stack0 to stack_v0
-                    // 1. use v0 (fixed: stack0), use v0 (fixed: p0)
-                    // move from stack_v0 to p1
-                    // 2. use v0 (fixed: p1)
-                    //
-                    // But when the second use is encountered, moves will be inserted again
-                    // and mess up the dataflow:
-                    //
-                    // move from p0 to stack_v0
-                    // move from stack0 to stack_v0
-                    // 1. use v0 (fixed: stack0), use v0 (fixed: p0)
-                    // move from stack_v0 to p1
-                    // move from stack_v0 to p1
-                    // 2. use v0 (fixed: p1)
-                    //
-                    // Assuming that after instruction 1 is processed, v0's
-                    // location is p0, then stack0 will always overwrite it,
-                    // and v0 is not in stack0 (it's in p0, now).
-                    // To avoid this scenario, these moves are only inserted
-                    // for the first encountered constraint in an instruction.
-                    // After this, any other operands with the same virtual register
-                    // but different constraint will simply generate a move from the
-                    // new location to the prev_alloc. This new move is inserted before
-                    // the original one because the new location is now where v0 is
-                    // expected to be before the instruction.
-                    // For example:
-                    //
-                    // move from stack0 to stack_v0
-                    // 1. use v0 (fixed: stack0), use v0 (fixed: p0)
-                    // move from stack_v0 to p1
-                    // 2. use v0 (fixed: p1)
-                    //
-                    // When the second use is encountered, the current location for v0 becomes
-                    // p0 and a move from p0 to stack0 is prepended to the edits:
-                    //
-                    // move from p0 to stack0
-                    // move from stack0 to stack_v0
-                    // 1. use v0 (fixed: stack0), use v0 (fixed: p0)
-                    // move from stack_v0 to p1
-                    // 2. use v0 (fixed: p1)
-                    
-                    // Edits for use operands are added later.
                 }
+                // Edits for use operands are added later to avoid inserting
+                // edits out of order.
+
                 if let Some(preg) = new_alloc.as_reg() {
                     // Don't change the allocation.
                     self.vreg_in_preg[preg.index()] = VReg::invalid();
@@ -933,10 +828,6 @@ impl<'a, F: Function> Env<'a, F> {
                     vreg_spill,
                     temp
                 );
-                // Assuming that vregs defined in the current branch instruction can't be
-                // used as branch args for successors, else inserting the moves before, instead
-                // of after will be wrong. But the edits are inserted before because the fuzzer
-                // doesn't recognize moves inserted after branch instructions.
                 
                 self.edits.add_move(
                     inst,
