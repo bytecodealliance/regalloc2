@@ -307,11 +307,13 @@ impl<'a, F: Function> Env<'a, F> {
                 );
                 func.num_vregs()
             ],
-            preferred_victim: PartedByRegClass { items: [
-                regs[0].last().cloned().unwrap_or(PReg::invalid()),
-                regs[1].last().cloned().unwrap_or(PReg::invalid()),
-                regs[2].last().cloned().unwrap_or(PReg::invalid()),
-            ] },
+            preferred_victim: PartedByRegClass {
+                items: [
+                    regs[0].last().cloned().unwrap_or(PReg::invalid()),
+                    regs[1].last().cloned().unwrap_or(PReg::invalid()),
+                    regs[2].last().cloned().unwrap_or(PReg::invalid()),
+                ],
+            },
             reused_input_to_reuse_op: vec![usize::MAX; max_operand_len as usize],
             init_available_pregs,
             available_pregs: PartedByOperandPos {
@@ -511,12 +513,13 @@ impl<'a, F: Function> Env<'a, F> {
         trace!("");
         let draw_from = match (op.pos(), op.kind()) {
             (OperandPos::Late, OperandKind::Use)
-                | (OperandPos::Early, OperandKind::Def)
-                | (OperandPos::Late, OperandKind::Def)
-                    if matches!(op.constraint(), OperandConstraint::Reuse(_)) => {
+            | (OperandPos::Early, OperandKind::Def)
+            | (OperandPos::Late, OperandKind::Def)
+                if matches!(op.constraint(), OperandConstraint::Reuse(_)) =>
+            {
                 self.available_pregs[OperandPos::Late] & self.available_pregs[OperandPos::Early]
             }
-            _ => self.available_pregs[op.pos()]
+            _ => self.available_pregs[op.pos()],
         };
         if draw_from.is_empty(op.class()) {
             trace!("No registers available for {op}");
@@ -782,7 +785,7 @@ impl<'a, F: Function> Env<'a, F> {
         for (resolved, class) in [
             (resolved_int, RegClass::Int),
             (resolved_float, RegClass::Float),
-            (resolved_vec, RegClass::Vector)
+            (resolved_vec, RegClass::Vector),
         ] {
             let scratch_resolver = MoveAndScratchResolver {
                 find_free_reg: || {
@@ -814,14 +817,14 @@ impl<'a, F: Function> Env<'a, F> {
                     num_spillslots = offset;
                     Allocation::stack(SpillSlot::new(slot as usize))
                 },
-                is_stack_alloc: |alloc| {
-                    self.is_stack(alloc)
-                },
+                is_stack_alloc: |alloc| self.is_stack(alloc),
                 borrowed_scratch_reg: self.preferred_victim[class],
             };
             let moves = scratch_resolver.compute(resolved);
             for (from, to, _) in moves.into_iter().rev() {
-                self.edits.edits.push((ProgPoint::before(inst), Edit::Move { from, to }))
+                self.edits
+                    .edits
+                    .push((ProgPoint::before(inst), Edit::Move { from, to }))
             }
             self.stack.num_spillslots = num_spillslots;
         }
