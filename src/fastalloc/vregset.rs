@@ -1,21 +1,22 @@
 use core::fmt;
 
-use crate::{RegClass, VReg};
+use crate::ion::data_structures::VRegIndex;
+use crate::VReg;
 use alloc::vec;
 use alloc::vec::Vec;
 
 #[derive(Clone)]
 struct VRegNode {
-    next: u32,
-    prev: u32,
-    class: RegClass,
+    next: VRegIndex,
+    prev: VRegIndex,
+    vreg: VReg,
 }
 
 // Using a non-circular doubly linked list here for fast insertion,
 // removal and iteration.
 pub struct VRegSet {
     items: Vec<VRegNode>,
-    head: u32,
+    head: VRegIndex,
 }
 
 impl VRegSet {
@@ -23,61 +24,43 @@ impl VRegSet {
         Self {
             items: vec![
                 VRegNode {
-                    prev: u32::MAX,
-                    next: u32::MAX,
-                    class: RegClass::Int
+                    prev: VRegIndex::new(num_vregs),
+                    next: VRegIndex::new(num_vregs),
+                    vreg: VReg::invalid()
                 };
-                num_vregs
+                num_vregs + 1
             ],
-            head: u32::MAX,
+            head: VRegIndex::new(num_vregs),
         }
     }
 
     pub fn insert(&mut self, vreg: VReg) {
         // Intentionally assuming that the set doesn't already
         // contain `vreg`.
-        if self.head == u32::MAX {
-            self.items[vreg.vreg()] = VRegNode {
-                next: u32::MAX,
-                prev: u32::MAX,
-                class: vreg.class(),
-            };
-            self.head = vreg.vreg() as u32;
-        } else {
-            let old_head_next = self.items[self.head as usize].next;
-            if old_head_next != u32::MAX {
-                self.items[old_head_next as usize].prev = vreg.vreg() as u32;
-            }
-            self.items[self.head as usize].next = vreg.vreg() as u32;
-            self.items[vreg.vreg()] = VRegNode {
-                next: old_head_next,
-                prev: self.head,
-                class: vreg.class(),
-            };
-        }
+        let old_head_next = self.items[self.head.index()].next;
+        self.items[vreg.vreg()] = VRegNode {
+            next: old_head_next,
+            prev: self.head,
+            vreg,
+        };
+        self.items[self.head.index()].next = VRegIndex::new(vreg.vreg());
+        self.items[old_head_next.index()].prev = VRegIndex::new(vreg.vreg());
     }
 
     pub fn remove(&mut self, vreg_num: usize) {
         let prev = self.items[vreg_num].prev;
         let next = self.items[vreg_num].next;
-        if prev != u32::MAX {
-            self.items[prev as usize].next = next;
-        }
-        if next != u32::MAX {
-            self.items[next as usize].prev = prev;
-        }
-        if vreg_num as u32 == self.head {
-            self.head = next;
-        }
+        self.items[prev.index()].next = next;
+        self.items[next.index()].prev = prev;
     }
 
     pub fn is_empty(&self) -> bool {
-        self.head == u32::MAX
+        self.items[self.head.index()].next == self.head
     }
 
     pub fn iter(&self) -> VRegSetIter {
         VRegSetIter {
-            curr_item: self.head,
+            curr_item: self.items[self.head.index()].next,
             head: self.head,
             items: &self.items,
         }
@@ -85,8 +68,8 @@ impl VRegSet {
 }
 
 pub struct VRegSetIter<'a> {
-    curr_item: u32,
-    head: u32,
+    curr_item: VRegIndex,
+    head: VRegIndex,
     items: &'a [VRegNode],
 }
 
@@ -94,11 +77,10 @@ impl<'a> Iterator for VRegSetIter<'a> {
     type Item = VReg;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.curr_item != u32::MAX {
-            let item = self.items[self.curr_item as usize].clone();
-            let vreg = VReg::new(self.curr_item as usize, item.class);
+        if self.curr_item != self.head {
+            let item = self.items[self.curr_item.index()].clone();
             self.curr_item = item.next;
-            Some(vreg)
+            Some(item.vreg)
         } else {
             None
         }
@@ -118,39 +100,35 @@ impl fmt::Debug for VRegSet {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::RegClass;
     use RegClass::*;
     const VREG: fn(usize, RegClass) -> VReg = VReg::new;
 
     #[test]
     fn operations() {
         let mut set = VRegSet::with_capacity(3090);
+        assert!(set.is_empty());
         set.insert(VREG(10, Int));
         set.insert(VREG(2000, Int));
         set.insert(VREG(11, Vector));
         set.insert(VREG(199, Float));
         set.insert(VREG(23, Int));
-        let els = [
-            VREG(10, Int),
-            VREG(23, Int),
-            VREG(199, Float),
-            VREG(11, Vector),
-            VREG(2000, Int),
-        ];
-        for (actual_el, expected_el) in set.iter().zip(els.iter()) {
-            assert_eq!(actual_el, *expected_el);
-        }
+        let mut iter = set.iter();
+        assert_eq!(iter.next(), Some(VREG(23, Int)));
+        assert_eq!(iter.next(), Some(VREG(199, Float)));
+        assert_eq!(iter.next(), Some(VREG(11, Vector)));
+        assert_eq!(iter.next(), Some(VREG(2000, Int)));
+        assert_eq!(iter.next(), Some(VREG(10, Int)));
+
         set.remove(23);
+        set.remove(11);
         set.insert(VREG(73, Vector));
-        let els = [
-            VREG(10, Int),
-            VREG(73, Vector),
-            VREG(199, Float),
-            VREG(11, Vector),
-            VREG(2000, Int),
-        ];
-        for (actual_el, expected_el) in set.iter().zip(els.iter()) {
-            assert_eq!(actual_el, *expected_el);
-        }
+        let mut iter = set.iter();
+        assert_eq!(iter.next(), Some(VREG(73, Vector)));
+        assert_eq!(iter.next(), Some(VREG(199, Float)));
+        assert_eq!(iter.next(), Some(VREG(2000, Int)));
+        assert_eq!(iter.next(), Some(VREG(10, Int)));
+        assert!(!set.is_empty());
     }
 
     #[test]
