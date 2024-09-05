@@ -30,17 +30,17 @@ struct Allocs {
 impl Allocs {
     fn new<F: Function>(func: &F) -> (Self, u32) {
         let operand_no_guess = func.num_insts() * 3;
-        let mut allocs = Vec::with_capacity(operand_no_guess);
+        let mut allocs = Vec::new();
         let mut inst_alloc_offsets = Vec::with_capacity(operand_no_guess);
         let mut max_operand_len = 0;
+        let mut no_of_operands = 0;
         for inst in 0..func.num_insts() {
             let operands_len = func.inst_operands(Inst::new(inst)).len() as u32;
             max_operand_len = max_operand_len.max(operands_len);
-            inst_alloc_offsets.push(allocs.len() as u32);
-            for _ in 0..operands_len {
-                allocs.push(Allocation::none());
-            }
+            inst_alloc_offsets.push(no_of_operands as u32);
+            no_of_operands += operands_len;
         }
+        allocs.resize(no_of_operands as usize, Allocation::none());
         (
             Self {
                 allocs,
