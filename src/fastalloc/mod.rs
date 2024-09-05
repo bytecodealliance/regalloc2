@@ -350,12 +350,16 @@ impl<'a, F: Function> Env<'a, F> {
         self.edits.scratch_regs = self.edits.dedicated_scratch_regs.clone();
     }
 
-    fn get_scratch_reg(&self, class: RegClass) -> Result<PReg, RegAllocError> {
+    fn get_scratch_reg(&mut self, inst: Inst, class: RegClass) -> Result<PReg, RegAllocError> {
         let mut avail_regs = self.available_pregs[OperandPos::Early];
         avail_regs.intersect_from(self.available_pregs[OperandPos::Late]);
-        self.lrus[class]
-            .last(avail_regs)
-            .ok_or(RegAllocError::TooManyLiveRegs)
+        let Some(preg) = self.lrus[class].last(avail_regs) else {
+            return Err(RegAllocError::TooManyLiveRegs);
+        };
+        if self.vreg_in_preg[preg.index()] != VReg::invalid() {
+            self.evict_vreg_in_preg(inst, preg);
+        }
+        Ok(preg)
     }
 
     fn reserve_reg_for_fixed_operand(
@@ -622,7 +626,7 @@ impl<'a, F: Function> Env<'a, F> {
                     && self.is_stack(curr_alloc)
                     && self.edits.scratch_regs[op.class()].is_none()
                 {
-                    let reg = self.get_scratch_reg(op.class())?;
+                    let reg = self.get_scratch_reg(inst, op.class())?;
                     self.edits.scratch_regs[op.class()] = Some(reg);
                     self.available_pregs[OperandPos::Early].remove(reg);
                     self.available_pregs[OperandPos::Late].remove(reg);
@@ -764,7 +768,7 @@ impl<'a, F: Function> Env<'a, F> {
                 next_temp_idx[vreg.class()] += 1;
                 trace!(" Branch arg {vreg} from {temp} to {param_alloc}");
                 if self.edits.scratch_regs[vreg.class()].is_none() {
-                    let reg = self.get_scratch_reg(vreg.class())?;
+                    let reg = self.get_scratch_reg(inst, vreg.class())?;
                     // No need to remove the scratch register from the available reg sets
                     // because branches are processed last.
                     self.edits.scratch_regs[vreg.class()] = Some(reg);
@@ -893,7 +897,7 @@ impl<'a, F: Function> Env<'a, F> {
                 if self.fixed_stack_slots.contains(preg)
                     && self.edits.scratch_regs[preg.class()].is_none()
                 {
-                    let reg = self.get_scratch_reg(preg.class())?;
+                    let reg = self.get_scratch_reg(inst, preg.class())?;
                     self.edits.scratch_regs[preg.class()] = Some(reg);
                     self.available_pregs[OperandPos::Early].remove(reg);
                     self.available_pregs[OperandPos::Late].remove(reg);
@@ -912,7 +916,7 @@ impl<'a, F: Function> Env<'a, F> {
                 if self.fixed_stack_slots.contains(preg)
                     && self.edits.scratch_regs[preg.class()].is_none()
                 {
-                    let reg = self.get_scratch_reg(preg.class())?;
+                    let reg = self.get_scratch_reg(inst, preg.class())?;
                     self.edits.scratch_regs[preg.class()] = Some(reg);
                     self.available_pregs[OperandPos::Early].remove(reg);
                     self.available_pregs[OperandPos::Late].remove(reg);
@@ -945,7 +949,7 @@ impl<'a, F: Function> Env<'a, F> {
                     };
                 if !src_and_dest_are_same {
                     if is_stack_to_stack && self.edits.scratch_regs[op.class()].is_none() {
-                        let reg = self.get_scratch_reg(op.class())?;
+                        let reg = self.get_scratch_reg(inst, op.class())?;
                         self.edits.scratch_regs[op.class()] = Some(reg);
                         self.available_pregs[OperandPos::Early].remove(reg);
                         self.available_pregs[OperandPos::Late].remove(reg);
@@ -1074,7 +1078,7 @@ impl<'a, F: Function> Env<'a, F> {
                 vreg
             );
             if self.is_stack(prev_alloc) && self.edits.scratch_regs[vreg.class()].is_none() {
-                let reg = self.get_scratch_reg(vreg.class())?;
+                let reg = self.get_scratch_reg(first_inst, vreg.class())?;
                 self.edits.scratch_regs[vreg.class()] = Some(reg);
             }
             self.edits.add_move(
