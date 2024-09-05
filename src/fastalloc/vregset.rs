@@ -12,7 +12,7 @@ struct VRegNode {
     vreg: VReg,
 }
 
-// Using a non-circular doubly linked list here for fast insertion,
+// Using a doubly linked list here for fast insertion,
 // removal and iteration.
 pub struct VRegSet {
     items: Vec<VRegNode>,
