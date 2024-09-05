@@ -271,6 +271,26 @@ impl PRegSet {
     }
 }
 
+impl core::ops::BitAnd<PRegSet> for PRegSet {
+    type Output = PRegSet;
+
+    fn bitand(self, rhs: PRegSet) -> Self::Output {
+        let mut out = self;
+        out.intersect_from(rhs);
+        out
+    }
+}
+
+impl core::ops::BitOr<PRegSet> for PRegSet {
+    type Output = PRegSet;
+
+    fn bitor(self, rhs: PRegSet) -> Self::Output {
+        let mut out = self;
+        out.union_from(rhs);
+        out
+    }
+}
+
 impl IntoIterator for PRegSet {
     type Item = PReg;
     type IntoIter = PRegSetIter;
