@@ -399,26 +399,10 @@ impl<'a, F: Function> Env<'a, F> {
         Ok(())
     }
 
-    fn allocd_within_constraint(&self, inst: Inst, op: Operand) -> bool {
+    fn allocd_within_constraint(&self, op: Operand) -> bool {
         let alloc = self.vreg_allocs[op.vreg().vreg()];
-        let alloc_is_clobber = if let Some(preg) = alloc.as_reg() {
-            self.func.inst_clobbers(inst).contains(preg)
-        } else {
-            false
-        };
         match op.constraint() {
             OperandConstraint::Any => {
-                // Completely avoid assigning clobbers, if possible.
-                // Assigning a clobber to a def operand that lives past the
-                // current instruction makes it impossible to restore
-                // the vreg.
-                // And assigning a clobber to a use operand that is reused
-                // by a def operand with a reuse constraint will end up
-                // assigning the clobber to that def, and if it lives past
-                // the current instruction, then restoration will be impossible.
-                if alloc_is_clobber {
-                    return false;
-                }
                 if let Some(preg) = alloc.as_reg() {
                     if !self.available_pregs[op.pos()].contains(preg) {
                         // If a register isn't in the available pregs list, then
@@ -442,9 +426,6 @@ impl<'a, F: Function> Env<'a, F> {
                 }
             }
             OperandConstraint::Reg => {
-                if alloc_is_clobber {
-                    return false;
-                }
                 if self.is_stack(alloc) {
                     return false;
                 }
@@ -598,7 +579,7 @@ impl<'a, F: Function> Env<'a, F> {
             );
             return Ok(());
         }
-        if !self.allocd_within_constraint(inst, op) {
+        if !self.allocd_within_constraint(op) {
             trace!("{op} isn't allocated within constraints.");
             let curr_alloc = self.vreg_allocs[op.vreg().vreg()];
             let new_alloc = self.alloc_operand(inst, op, op_idx)?;
