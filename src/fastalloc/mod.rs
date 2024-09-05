@@ -29,9 +29,8 @@ struct Allocs {
 
 impl Allocs {
     fn new<F: Function>(func: &F) -> (Self, u32) {
-        let operand_no_guess = func.num_insts() * 3;
         let mut allocs = Vec::new();
-        let mut inst_alloc_offsets = Vec::with_capacity(operand_no_guess);
+        let mut inst_alloc_offsets = Vec::with_capacity(func.num_insts());
         let mut max_operand_len = 0;
         let mut no_of_operands = 0;
         for inst in 0..func.num_insts() {
@@ -350,6 +349,14 @@ impl<'a, F: Function> Env<'a, F> {
         self.edits.scratch_regs = self.edits.dedicated_scratch_regs.clone();
     }
 
+    fn alloc_scratch_reg(&mut self, inst: Inst, class: RegClass) -> Result<(), RegAllocError> {
+        let reg = self.get_scratch_reg(inst, class)?;
+        self.edits.scratch_regs[class] = Some(reg);
+        self.available_pregs[OperandPos::Early].remove(reg);
+        self.available_pregs[OperandPos::Late].remove(reg);
+        Ok(())
+    }
+
     fn get_scratch_reg(&mut self, inst: Inst, class: RegClass) -> Result<PReg, RegAllocError> {
         let mut avail_regs = self.available_pregs[OperandPos::Early];
         avail_regs.intersect_from(self.available_pregs[OperandPos::Late]);
@@ -626,10 +633,7 @@ impl<'a, F: Function> Env<'a, F> {
                     && self.is_stack(curr_alloc)
                     && self.edits.scratch_regs[op.class()].is_none()
                 {
-                    let reg = self.get_scratch_reg(inst, op.class())?;
-                    self.edits.scratch_regs[op.class()] = Some(reg);
-                    self.available_pregs[OperandPos::Early].remove(reg);
-                    self.available_pregs[OperandPos::Late].remove(reg);
+                    self.alloc_scratch_reg(inst, op.class())?;
                 }
                 if op.kind() == OperandKind::Def {
                     trace!("Adding edit from {new_alloc:?} to {curr_alloc:?} after inst {inst:?} for {op}");
@@ -897,10 +901,7 @@ impl<'a, F: Function> Env<'a, F> {
                 if self.fixed_stack_slots.contains(preg)
                     && self.edits.scratch_regs[preg.class()].is_none()
                 {
-                    let reg = self.get_scratch_reg(inst, preg.class())?;
-                    self.edits.scratch_regs[preg.class()] = Some(reg);
-                    self.available_pregs[OperandPos::Early].remove(reg);
-                    self.available_pregs[OperandPos::Late].remove(reg);
+                    self.alloc_scratch_reg(inst, preg.class())?;
                 }
                 self.evict_vreg_in_preg(inst, preg);
                 self.vreg_in_preg[preg.index()] = VReg::invalid();
@@ -916,10 +917,7 @@ impl<'a, F: Function> Env<'a, F> {
                 if self.fixed_stack_slots.contains(preg)
                     && self.edits.scratch_regs[preg.class()].is_none()
                 {
-                    let reg = self.get_scratch_reg(inst, preg.class())?;
-                    self.edits.scratch_regs[preg.class()] = Some(reg);
-                    self.available_pregs[OperandPos::Early].remove(reg);
-                    self.available_pregs[OperandPos::Late].remove(reg);
+                    self.alloc_scratch_reg(inst, preg.class())?;
                 }
                 self.evict_vreg_in_preg(inst, preg);
                 self.vreg_in_preg[preg.index()] = VReg::invalid();
@@ -949,10 +947,7 @@ impl<'a, F: Function> Env<'a, F> {
                     };
                 if !src_and_dest_are_same {
                     if is_stack_to_stack && self.edits.scratch_regs[op.class()].is_none() {
-                        let reg = self.get_scratch_reg(inst, op.class())?;
-                        self.edits.scratch_regs[op.class()] = Some(reg);
-                        self.available_pregs[OperandPos::Early].remove(reg);
-                        self.available_pregs[OperandPos::Late].remove(reg);
+                        self.alloc_scratch_reg(inst, op.class())?;
                     };
                     self.edits.add_move(
                         inst,
