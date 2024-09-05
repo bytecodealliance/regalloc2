@@ -1,3 +1,4 @@
+use crate::moves::{MoveAndScratchResolver, ParallelMoves};
 use crate::{cfg::CFGInfo, ion::Stats, Allocation, RegAllocError};
 use crate::{ssa::validate_ssa, Edit, Function, MachineEnv, Output, ProgPoint};
 use crate::{
@@ -80,8 +81,8 @@ impl<'a, F: Function> Stack<'a, F> {
     }
 
     /// Allocates a spill slot on the stack for `vreg`
-    fn allocstack(&mut self, vreg: &VReg) -> SpillSlot {
-        let size: u32 = self.func.spillslot_size(vreg.class()).try_into().unwrap();
+    fn allocstack(&mut self, class: RegClass) -> SpillSlot {
+        let size: u32 = self.func.spillslot_size(class).try_into().unwrap();
         // Rest of this function was copied verbatim
         // from `Env::allocate_spillslot` in src/ion/spill.rs.
         let mut offset = self.num_spillslots;
@@ -224,8 +225,6 @@ pub struct Env<'a, F: Function> {
     /// `vreg_in_preg[i]` is the virtual register currently in the physical register
     /// with index `i`.
     vreg_in_preg: Vec<VReg>,
-    /// For parallel moves from branch args to block param spillslots.
-    temp_spillslots: PartedByRegClass<Vec<SpillSlot>>,
     /// `reused_input_to_reuse_op[i]` is the operand index of the reuse operand
     /// that uses the `i`th operand in the current instruction as its input.
     reused_input_to_reuse_op: Vec<usize>,
@@ -237,6 +236,7 @@ pub struct Env<'a, F: Function> {
     init_available_pregs: PRegSet,
     allocatable_regs: PRegSet,
     stack: Stack<'a, F>,
+    preferred_victim: PartedByRegClass<PReg>,
     vreg_to_live_inst_range: Vec<(ProgPoint, ProgPoint, Allocation)>,
 
     fixed_stack_slots: PRegSet,
@@ -307,13 +307,11 @@ impl<'a, F: Function> Env<'a, F> {
                 );
                 func.num_vregs()
             ],
-            temp_spillslots: PartedByRegClass {
-                items: [
-                    Vec::with_capacity(func.num_vregs()),
-                    Vec::with_capacity(func.num_vregs()),
-                    Vec::with_capacity(func.num_vregs()),
-                ],
-            },
+            preferred_victim: PartedByRegClass { items: [
+                regs[0].last().cloned().unwrap_or(PReg::invalid()),
+                regs[1].last().cloned().unwrap_or(PReg::invalid()),
+                regs[2].last().cloned().unwrap_or(PReg::invalid()),
+            ] },
             reused_input_to_reuse_op: vec![usize::MAX; max_operand_len as usize],
             init_available_pregs,
             available_pregs: PartedByOperandPos {
@@ -466,7 +464,7 @@ impl<'a, F: Function> Env<'a, F> {
         trace!("The removed vreg: {}", evicted_vreg);
         debug_assert_ne!(evicted_vreg, VReg::invalid());
         if self.vreg_spillslots[evicted_vreg.vreg()].is_invalid() {
-            self.vreg_spillslots[evicted_vreg.vreg()] = self.stack.allocstack(&evicted_vreg);
+            self.vreg_spillslots[evicted_vreg.vreg()] = self.stack.allocstack(evicted_vreg.class());
         }
         let slot = self.vreg_spillslots[evicted_vreg.vreg()];
         self.vreg_allocs[evicted_vreg.vreg()] = Allocation::stack(slot);
@@ -718,132 +716,35 @@ impl<'a, F: Function> Env<'a, F> {
     /// If instruction `inst` is a branch in `block`,
     /// this function places branch arguments in the spillslots
     /// expected by the destination blocks.
-    ///
-    /// The process used to do this is as follows:
-    ///
-    /// 1. Move all branch arguments into corresponding temporary spillslots.
-    /// 2. Move values from the temporary spillslots to corresponding block param spillslots.
-    ///
-    /// These temporaries are used because the moves have to be parallel in the case where
-    /// a block parameter of the successor block is a branch argument.
     fn process_branch(&mut self, block: Block, inst: Inst) -> Result<(), RegAllocError> {
-        // Used to know which temporary spillslot should be used next.
-        let mut next_temp_idx = PartedByRegClass { items: [0, 0, 0] };
+        trace!("Processing branch instruction {inst:?} in block {block:?}");
 
-        fn reset_temp_idx(next_temp_idx: &mut PartedByRegClass<usize>) {
-            next_temp_idx[RegClass::Int] = 0;
-            next_temp_idx[RegClass::Float] = 0;
-            next_temp_idx[RegClass::Vector] = 0;
-        }
+        let mut int_parallel_moves = ParallelMoves::new();
+        let mut float_parallel_moves = ParallelMoves::new();
+        let mut vec_parallel_moves = ParallelMoves::new();
 
-        // In the case where the block param of a successor is also a branch arg,
-        // the reading of all the block params must be done before the writing.
-        // This is necessary to prevent overwriting the branch arg's value before
-        // placing it in the corresponding branch param spillslot.
-
-        trace!("Adding temp to block params spillslots for branch args");
         for (succ_idx, succ) in self.func.block_succs(block).iter().enumerate() {
-            let succ_params = self.func.block_params(*succ);
-
-            // Move from temporaries to block param spillslots.
             for (pos, vreg) in self
                 .func
                 .branch_blockparams(block, inst, succ_idx)
                 .iter()
                 .enumerate()
             {
-                if self.temp_spillslots[vreg.class()].len() == next_temp_idx[vreg.class()] {
-                    let newslot = self.stack.allocstack(vreg);
-                    self.temp_spillslots[vreg.class()].push(newslot);
-                }
+                let succ_params = self.func.block_params(*succ);
                 let succ_param_vreg = succ_params[pos];
                 if self.vreg_spillslots[succ_param_vreg.vreg()].is_invalid() {
                     self.vreg_spillslots[succ_param_vreg.vreg()] =
-                        self.stack.allocstack(&succ_param_vreg);
+                        self.stack.allocstack(succ_param_vreg.class());
                     trace!(
                         "Block param {} is in {}",
                         vreg,
                         Allocation::stack(self.vreg_spillslots[vreg.vreg()])
                     );
                 }
-                let param_alloc = Allocation::stack(self.vreg_spillslots[succ_param_vreg.vreg()]);
-                let temp_slot = self.temp_spillslots[vreg.class()][next_temp_idx[vreg.class()]];
-                let temp = Allocation::stack(temp_slot);
-                next_temp_idx[vreg.class()] += 1;
-                trace!(" Branch arg {vreg} from {temp} to {param_alloc}");
-                if self.edits.scratch_regs[vreg.class()].is_none() {
-                    let reg = self.get_scratch_reg(inst, vreg.class())?;
-                    // No need to remove the scratch register from the available reg sets
-                    // because branches are processed last.
-                    self.edits.scratch_regs[vreg.class()] = Some(reg);
-                }
-                self.edits
-                    .add_move(inst, temp, param_alloc, vreg.class(), InstPosition::Before);
-            }
-        }
-
-        reset_temp_idx(&mut next_temp_idx);
-
-        for (succ_idx, _) in self.func.block_succs(block).iter().enumerate() {
-            // Move from branch args spillslots to temporaries.
-            //
-            // Consider a scenario:
-            //
-            // block entry:
-            //      goto Y(...)
-            //
-            // block Y(vp)
-            //      goto X
-            //
-            // block X
-            //      use vp
-            //      goto Y(va)
-            //
-            // block X branches to block Y and block Y branches to block X.
-            // Block Y has block param vp and block X uses virtual register va as the branch arg for vp.
-            // Block X has an instruction that uses vp.
-            // In the case where branch arg va is defined in a predecessor, there is a possibility
-            // that, at the beginning of the block, during the reload, that va will always overwrite vp.
-            // This could happen because at the end of the block, va is allocated to be in vp's
-            // spillslot. If va isn't used throughout the block (or if all its use constraints allow it to be
-            // in vp's spillslot), then during reload, it will still be allocated to vp's spillslot.
-            // This will mean that at the beginning of the block, both va and vp will be expected to be
-            // in vp's spillslot. An edit will be inserted to move from va's spillslot to vp's.
-            // And depending on the constraints of vp's use, an edit may or may not be inserted to move
-            // from vp's spillslot to somewhere else.
-            // Either way, the correctness of the dataflow will depend on the order of edits.
-            // If vp is required in be on the stack, then no edit will be inserted for it (it's already on
-            // the stack, in its spillslot). But an edit will be inserted to move from va's spillslot
-            // to vp's.
-            // If block Y has other predecessors that define vp to be other values, then this dataflow
-            // is clearly wrong.
-            //
-            // To avoid this scenario, branch args are placed into their own spillslots here
-            // so that if they aren't moved at all throughout the block, they will not be expected to
-            // be in another vreg's spillslot at the block beginning.
-            for vreg in self.func.branch_blockparams(block, inst, succ_idx).iter() {
                 if self.vreg_spillslots[vreg.vreg()].is_invalid() {
-                    self.vreg_spillslots[vreg.vreg()] = self.stack.allocstack(vreg);
-                    trace!(
-                        "Block arg {} is going to be in {}",
-                        vreg,
-                        Allocation::stack(self.vreg_spillslots[vreg.vreg()])
-                    );
+                    self.vreg_spillslots[vreg.vreg()] = self.stack.allocstack(vreg.class());
                 }
-                let temp_slot = self.temp_spillslots[vreg.class()][next_temp_idx[vreg.class()]];
-                let temp = Allocation::stack(temp_slot);
-                next_temp_idx[vreg.class()] += 1;
                 let vreg_spill = Allocation::stack(self.vreg_spillslots[vreg.vreg()]);
-                trace!(
-                    "{} which is going to be in {} inserting move to {}",
-                    vreg,
-                    vreg_spill,
-                    temp
-                );
-
-                self.edits
-                    .add_move(inst, vreg_spill, temp, vreg.class(), InstPosition::Before);
-                // All branch arguments should be in their spillslots at the end of the function.
                 if self.vreg_allocs[vreg.vreg()].is_none() {
                     self.live_vregs.insert(*vreg);
                     let slot = self.vreg_spillslots[vreg.vreg()];
@@ -852,15 +753,78 @@ impl<'a, F: Function> Env<'a, F> {
                 } else if self.vreg_allocs[vreg.vreg()] != vreg_spill {
                     self.edits.add_move(
                         inst,
-                        self.vreg_allocs[vreg.vreg()],
                         vreg_spill,
+                        self.vreg_allocs[vreg.vreg()],
                         vreg.class(),
                         InstPosition::Before,
                     );
+                    self.vreg_allocs[vreg.vreg()] = vreg_spill;
                 }
+                let parallel_moves = match vreg.class() {
+                    RegClass::Int => &mut int_parallel_moves,
+                    RegClass::Float => &mut float_parallel_moves,
+                    RegClass::Vector => &mut vec_parallel_moves,
+                };
+                parallel_moves.add(
+                    Allocation::stack(self.vreg_spillslots[vreg.vreg()]),
+                    Allocation::stack(self.vreg_spillslots[succ_param_vreg.vreg()]),
+                    Some(*vreg),
+                );
             }
         }
 
+        let resolved_int = int_parallel_moves.resolve();
+        let resolved_float = float_parallel_moves.resolve();
+        let resolved_vec = vec_parallel_moves.resolve();
+        let mut new_scratch_reg = PartedByRegClass { items: [None; 3] };
+        let mut num_spillslots = self.stack.num_spillslots;
+
+        for (resolved, class) in [
+            (resolved_int, RegClass::Int),
+            (resolved_float, RegClass::Float),
+            (resolved_vec, RegClass::Vector)
+        ] {
+            let scratch_resolver = MoveAndScratchResolver {
+                find_free_reg: || {
+                    if let Some(reg) = self.edits.scratch_regs[class] {
+                        Some(Allocation::reg(reg))
+                    } else if let Some(reg) = new_scratch_reg[class] {
+                        Some(Allocation::reg(reg))
+                    } else {
+                        use OperandPos::*;
+                        let avail_regs = self.available_pregs[Early] & self.available_pregs[Late];
+                        let Some(preg) = self.lrus[class].last(avail_regs) else {
+                            return None;
+                        };
+                        new_scratch_reg[RegClass::Int] = Some(preg);
+                        Some(Allocation::reg(preg))
+                    }
+                },
+                get_stackslot: || {
+                    let size: u32 = self.func.spillslot_size(class).try_into().unwrap();
+                    let mut offset = num_spillslots;
+                    debug_assert!(size.is_power_of_two());
+                    offset = (offset + size - 1) & !(size - 1);
+                    let slot = if self.func.multi_spillslot_named_by_last_slot() {
+                        offset + size - 1
+                    } else {
+                        offset
+                    };
+                    offset += size;
+                    num_spillslots = offset;
+                    Allocation::stack(SpillSlot::new(slot as usize))
+                },
+                is_stack_alloc: |alloc| {
+                    self.is_stack(alloc)
+                },
+                borrowed_scratch_reg: self.preferred_victim[class],
+            };
+            let moves = scratch_resolver.compute(resolved);
+            for (from, to, _) in moves.into_iter().rev() {
+                self.edits.edits.push((ProgPoint::before(inst), Edit::Move { from, to }))
+            }
+            self.stack.num_spillslots = num_spillslots;
+        }
         Ok(())
     }
 
@@ -1045,7 +1009,7 @@ impl<'a, F: Function> Env<'a, F> {
                 continue;
             }
             if self.vreg_spillslots[vreg.vreg()].is_invalid() {
-                self.vreg_spillslots[vreg.vreg()] = self.stack.allocstack(&vreg);
+                self.vreg_spillslots[vreg.vreg()] = self.stack.allocstack(vreg.class());
             }
             // The allocation where the vreg is expected to be before
             // the first instruction.
@@ -1091,7 +1055,7 @@ impl<'a, F: Function> Env<'a, F> {
                 vreg
             );
             if self.vreg_spillslots[vreg.vreg()].is_invalid() {
-                self.vreg_spillslots[vreg.vreg()] = self.stack.allocstack(&vreg);
+                self.vreg_spillslots[vreg.vreg()] = self.stack.allocstack(vreg.class());
             }
             // The allocation where the vreg is expected to be before
             // the first instruction.
@@ -1274,14 +1238,7 @@ fn log_output<'a, F: Function>(env: &Env<'a, F>) {
             ));
         }
     }
-    let mut temp_slots = Vec::new();
-    for class in [RegClass::Int, RegClass::Float, RegClass::Vector] {
-        for slot in env.temp_spillslots[class].iter() {
-            temp_slots.push(format!("{slot}"));
-        }
-    }
     trace!("VReg spillslots: {:?}", v);
-    trace!("Temp spillslots: {:?}", temp_slots);
     trace!("Final edits: {:?}", env.edits.edits);
 }
 

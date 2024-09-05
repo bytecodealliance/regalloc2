@@ -270,12 +270,12 @@ impl fmt::Debug for Lru {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct PartedByRegClass<T> {
     pub items: [T; 3],
 }
 
-impl<T: core::fmt::Debug> Index<RegClass> for PartedByRegClass<T> {
+impl<T> Index<RegClass> for PartedByRegClass<T> {
     type Output = T;
 
     fn index(&self, index: RegClass) -> &Self::Output {
@@ -283,7 +283,7 @@ impl<T: core::fmt::Debug> Index<RegClass> for PartedByRegClass<T> {
     }
 }
 
-impl<T: core::fmt::Debug> IndexMut<RegClass> for PartedByRegClass<T> {
+impl<T> IndexMut<RegClass> for PartedByRegClass<T> {
     fn index_mut(&mut self, index: RegClass) -> &mut Self::Output {
         &mut self.items[index as usize]
     }
@@ -306,11 +306,21 @@ impl Lrus {
 
 use core::fmt::{Debug, Display};
 
-impl<T: Display + Debug> Display for PartedByRegClass<T> {
+impl<T: Display> Display for PartedByRegClass<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
             "{{ int: {}, float: {}, vector: {} }}",
+            self.items[0], self.items[1], self.items[2]
+        )
+    }
+}
+
+impl<T: Debug> Debug for PartedByRegClass<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{{ int: {:?}, float: {:?}, vector: {:?} }}",
             self.items[0], self.items[1], self.items[2]
         )
     }
