@@ -16,7 +16,7 @@ repository = "https://github.com/bytecodealliance/regalloc2"
 [dependencies]
 log = { version = "0.4.8", default-features = false }
 smallvec = { version = "1.6.1", features = ["union"] }
-rustc-hash = { version = "1.1.0", default-features = false }
+rustc-hash = { version = "2.0.0", default-features = false }
 slice-group-by = { version = "0.3.0", default-features = false }
 hashbrown = { version = "0.14", features = ["ahash"], default-features = false }
 
