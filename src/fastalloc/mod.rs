@@ -616,7 +616,7 @@ impl<'a, F: Function> Env<'a, F> {
             // Need to insert a move to propagate flow from the current
             // allocation to the subsequent places where the value was
             // used (in `prev_alloc`, that is).
-            else if curr_alloc.is_some() {
+            else {
                 trace!("Move reason: Prev allocation doesn't meet constraints");
                 if self.is_stack(new_alloc)
                     && self.is_stack(curr_alloc)
