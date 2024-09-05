@@ -500,11 +500,20 @@ impl<'a, F: Function> Env<'a, F> {
         trace!("Float LRU: {:?}", self.lrus[RegClass::Float]);
         trace!("Vector LRU: {:?}", self.lrus[RegClass::Vector]);
         trace!("");
-        if self.available_pregs[op.pos()].is_empty(op.class()) {
-            trace!("No registers available in class {:?}", op.class());
+        let draw_from = match (op.pos(), op.kind()) {
+            (OperandPos::Late, OperandKind::Use)
+                | (OperandPos::Early, OperandKind::Def)
+                | (OperandPos::Late, OperandKind::Def)
+                    if matches!(op.constraint(), OperandConstraint::Reuse(_)) => {
+                self.available_pregs[OperandPos::Late] & self.available_pregs[OperandPos::Early]
+            }
+            _ => self.available_pregs[op.pos()]
+        };
+        if draw_from.is_empty(op.class()) {
+            trace!("No registers available for {op}");
             return Err(RegAllocError::TooManyLiveRegs);
         }
-        let Some(preg) = self.lrus[op.class()].last(self.available_pregs[op.pos()]) else {
+        let Some(preg) = self.lrus[op.class()].last(draw_from) else {
             trace!(
                 "Failed to find an available {:?} register in the LRU for operand {op}",
                 op.class()
