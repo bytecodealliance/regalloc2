@@ -108,21 +108,7 @@ impl Lru {
     /// Get the last PReg in the LRU from the set `from`.
     pub fn last(&self, from: PRegSet) -> Option<PReg> {
         trace!("Getting the last preg from the LRU in set {from}");
-        if self.is_empty() {
-            panic!("LRU is empty");
-        }
-        let mut last = self.data[self.head as usize].prev;
-        let init_last = last;
-        loop {
-            let preg = PReg::new(last as usize, self.regclass);
-            if from.contains(preg) {
-                return Some(preg);
-            }
-            last = self.data[last as usize].prev;
-            if last == init_last {
-                return None;
-            }
-        }
+        self.last_satisfying(|preg| from.contains(preg))
     }
 
     /// Get the last PReg from the LRU for which `f` returns true.
@@ -146,7 +132,7 @@ impl Lru {
     }
 
     /// Splices out a node from the list.
-    pub fn remove(&mut self, hw_enc: usize) {
+    fn remove(&mut self, hw_enc: usize) {
         trace!(
             "Before removing: {:?} LRU. head: {:?}, Actual data: {:?}",
             self.regclass,
