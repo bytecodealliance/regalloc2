@@ -852,6 +852,47 @@ impl<'a, F: Function> Env<'a, F> {
                 self.lrus[preg.class()].poke(preg);
             }
         }
+        for (_, op) in operands.non_fixed() {
+            if op.as_fixed_nonallocatable().is_some() {
+                continue;
+            }
+            if let Some(preg) = self.vreg_allocs[op.vreg().vreg()].as_reg() {
+                trace!("Removing {op}'s current reg allocation {preg} from reg sets");
+                // The current allocation, vreg_allocs[op.vreg], doesn't change,
+                // so it should be removed from the available reg sets to avoid
+                // allocating it as scratch.
+                //
+                // For example:
+                //
+                // 1. def v0 (fixed: p23), use v1 (reg)
+                // 2. use v1 (fixed: p0)
+                // v0 is in stack_v0 and v1 is in stack_v1
+                //
+                // Suppose p23 is a fixed stack slot. Then an edit will need to
+                // be inserted after inst 1 to move from stack_v0 to p23 and
+                // a scratch register is needed. It is possible for p0 to be used
+                // as scratch since it hasn't been removed from the available regsets.
+                // If it is used as scratch, then we'll have:
+                //
+                // 1. def v0 (fixed: p23), use v1 (reg)
+                // move from stack_v1 to p0   // v1 is evicted
+                // move from p23 to p0        // v1 is overwritten by v0
+                // move from p0 to stack_v0
+                // 2. use v1 (fixed: p0)      // v0 is used instead of v1
+                //
+                // To avoid this scenario, the register is removed from the available set.
+                self.available_pregs[op.pos()].remove(preg);
+                match (op.pos(), op.kind()) {
+                    (OperandPos::Late, OperandKind::Use) => {
+                        self.available_pregs[OperandPos::Early].remove(preg)
+                    }
+                    (OperandPos::Early, OperandKind::Def) => {
+                        self.available_pregs[OperandPos::Late].remove(preg);
+                    }
+                    _ => ()
+                };
+            }
+        }
         for (_, op) in operands.fixed() {
             let OperandConstraint::FixedReg(preg) = op.constraint() else {
                 unreachable!();
