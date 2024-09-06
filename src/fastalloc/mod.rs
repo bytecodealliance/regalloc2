@@ -350,11 +350,11 @@ impl<'a, F: Function> Env<'a, F> {
     }
 
     fn alloc_scratch_reg(&mut self, inst: Inst, class: RegClass) -> Result<(), RegAllocError> {
-        use OperandPos::{Late, Early};
+        use OperandPos::{Early, Late};
         let reg = self.get_scratch_reg(
             inst,
             class,
-            self.available_pregs[Late] & self.available_pregs[Early]
+            self.available_pregs[Late] & self.available_pregs[Early],
         )?;
         self.edits.scratch_regs[class] = Some(reg);
         self.available_pregs[OperandPos::Early].remove(reg);
@@ -362,7 +362,12 @@ impl<'a, F: Function> Env<'a, F> {
         Ok(())
     }
 
-    fn get_scratch_reg_for_reload(&mut self, inst: Inst, class: RegClass, avail_regs: PRegSet) -> Result<PReg, RegAllocError> {
+    fn get_scratch_reg_for_reload(
+        &mut self,
+        inst: Inst,
+        class: RegClass,
+        avail_regs: PRegSet,
+    ) -> Result<PReg, RegAllocError> {
         let Some(preg) = self.lrus[class].last(avail_regs) else {
             return Err(RegAllocError::TooManyLiveRegs);
         };
@@ -372,7 +377,12 @@ impl<'a, F: Function> Env<'a, F> {
         Ok(preg)
     }
 
-    fn get_scratch_reg(&mut self, inst: Inst, class: RegClass, avail_regs: PRegSet) -> Result<PReg, RegAllocError> {
+    fn get_scratch_reg(
+        &mut self,
+        inst: Inst,
+        class: RegClass,
+        avail_regs: PRegSet,
+    ) -> Result<PReg, RegAllocError> {
         let Some(preg) = self.lrus[class].last(avail_regs) else {
             return Err(RegAllocError::TooManyLiveRegs);
         };
@@ -923,7 +933,7 @@ impl<'a, F: Function> Env<'a, F> {
                     (OperandPos::Early, OperandKind::Def) => {
                         self.available_pregs[OperandPos::Late].remove(preg);
                     }
-                    _ => ()
+                    _ => (),
                 };
             }
         }
@@ -1114,7 +1124,11 @@ impl<'a, F: Function> Env<'a, F> {
                 vreg
             );
             if self.is_stack(prev_alloc) && self.edits.scratch_regs[vreg.class()].is_none() {
-                let reg = self.get_scratch_reg_for_reload(first_inst, vreg.class(), avail_regs_for_scratch)?;
+                let reg = self.get_scratch_reg_for_reload(
+                    first_inst,
+                    vreg.class(),
+                    avail_regs_for_scratch,
+                )?;
                 self.edits.scratch_regs[vreg.class()] = Some(reg);
             }
             self.edits.add_move(
@@ -1168,7 +1182,8 @@ impl<'a, F: Function> Env<'a, F> {
                     trace!("The removed vreg: {}", evicted_vreg);
                     debug_assert_ne!(evicted_vreg, VReg::invalid());
                     if self.vreg_spillslots[evicted_vreg.vreg()].is_invalid() {
-                        self.vreg_spillslots[evicted_vreg.vreg()] = self.stack.allocstack(evicted_vreg.class());
+                        self.vreg_spillslots[evicted_vreg.vreg()] =
+                            self.stack.allocstack(evicted_vreg.class());
                     }
                     let slot = self.vreg_spillslots[evicted_vreg.vreg()];
                     self.vreg_allocs[evicted_vreg.vreg()] = Allocation::stack(slot);
