@@ -594,7 +594,17 @@ impl<'a, F: Function> Env<'a, F> {
                                 if !reused_inputs.is_empty()
                                     && !reused_inputs.contains(&operand.vreg()) =>
                             {
-                                ProgPoint::after(inst)
+                                if let OperandConstraint::FixedReg(preg) = operand.constraint() {
+                                    if self.func.inst_clobbers(inst).contains(preg)
+                                        || late_def_fixed.contains(&preg)
+                                    {
+                                        ProgPoint::before(inst)
+                                    } else {
+                                        ProgPoint::after(inst)
+                                    }
+                                } else {
+                                    ProgPoint::after(inst)
+                                }
                             }
                             (OperandKind::Use, OperandPos::Early) => ProgPoint::before(inst),
                         };
