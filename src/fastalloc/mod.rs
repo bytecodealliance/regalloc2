@@ -82,6 +82,7 @@ impl<'a, F: Function> Stack<'a, F> {
 
     /// Allocates a spill slot on the stack for `vreg`
     fn allocstack(&mut self, class: RegClass) -> SpillSlot {
+        trace!("Allocating a spillslot for class {class:?}");
         let size: u32 = self.func.spillslot_size(class).try_into().unwrap();
         // Rest of this function was copied verbatim
         // from `Env::allocate_spillslot` in src/ion/spill.rs.
@@ -96,6 +97,7 @@ impl<'a, F: Function> Stack<'a, F> {
         };
         offset += size;
         self.num_spillslots = offset;
+        trace!("Allocated slot: {slot}");
         SpillSlot::new(slot as usize)
     }
 }
@@ -763,6 +765,7 @@ impl<'a, F: Function> Env<'a, F> {
     /// this function places branch arguments in the spillslots
     /// expected by the destination blocks.
     fn process_branch(&mut self, block: Block, inst: Inst) -> Result<(), RegAllocError> {
+        use OperandPos::*;
         trace!("Processing branch instruction {inst:?} in block {block:?}");
 
         let mut int_parallel_moves = ParallelMoves::new();
@@ -781,50 +784,56 @@ impl<'a, F: Function> Env<'a, F> {
                 if self.vreg_spillslots[succ_param_vreg.vreg()].is_invalid() {
                     self.vreg_spillslots[succ_param_vreg.vreg()] =
                         self.stack.allocstack(succ_param_vreg.class());
-                    trace!(
-                        "Block param {} is in {}",
-                        vreg,
-                        Allocation::stack(self.vreg_spillslots[vreg.vreg()])
-                    );
                 }
                 if self.vreg_spillslots[vreg.vreg()].is_invalid() {
                     self.vreg_spillslots[vreg.vreg()] = self.stack.allocstack(vreg.class());
                 }
                 let vreg_spill = Allocation::stack(self.vreg_spillslots[vreg.vreg()]);
-                if self.vreg_allocs[vreg.vreg()].is_none() {
+                let curr_alloc = self.vreg_allocs[vreg.vreg()];
+                if curr_alloc.is_none() {
                     self.live_vregs.insert(*vreg);
-                    let slot = self.vreg_spillslots[vreg.vreg()];
-                    self.vreg_allocs[vreg.vreg()] = Allocation::stack(slot);
                     self.vreg_to_live_inst_range[vreg.vreg()].1 = ProgPoint::before(inst);
-                } else if self.vreg_allocs[vreg.vreg()] != vreg_spill {
+                } else if curr_alloc != vreg_spill {
+                    if self.is_stack(curr_alloc) && self.edits.scratch_regs[vreg.class()].is_none()
+                    {
+                        let reg = self.get_scratch_reg_for_reload(
+                            inst,
+                            vreg.class(),
+                            self.available_pregs[Early] & self.available_pregs[Late],
+                        )?;
+                        self.edits.scratch_regs[vreg.class()] = Some(reg);
+                        self.available_pregs[OperandPos::Early].remove(reg);
+                        self.available_pregs[OperandPos::Late].remove(reg);
+                    }
                     self.edits.add_move(
                         inst,
                         vreg_spill,
-                        self.vreg_allocs[vreg.vreg()],
+                        curr_alloc,
                         vreg.class(),
                         InstPosition::Before,
                     );
-                    self.vreg_allocs[vreg.vreg()] = vreg_spill;
                 }
+                self.vreg_allocs[vreg.vreg()] = vreg_spill;
                 let parallel_moves = match vreg.class() {
                     RegClass::Int => &mut int_parallel_moves,
                     RegClass::Float => &mut float_parallel_moves,
                     RegClass::Vector => &mut vec_parallel_moves,
                 };
-                parallel_moves.add(
-                    Allocation::stack(self.vreg_spillslots[vreg.vreg()]),
-                    Allocation::stack(self.vreg_spillslots[succ_param_vreg.vreg()]),
-                    Some(*vreg),
-                );
+                let from = Allocation::stack(self.vreg_spillslots[vreg.vreg()]);
+                let to = Allocation::stack(self.vreg_spillslots[succ_param_vreg.vreg()]);
+                trace!("Recording parallel move from {from} to {to}");
+                parallel_moves.add(from, to, Some(*vreg));
             }
         }
 
         let resolved_int = int_parallel_moves.resolve();
         let resolved_float = float_parallel_moves.resolve();
         let resolved_vec = vec_parallel_moves.resolve();
-        let mut new_scratch_reg = PartedByRegClass { items: [None; 3] };
+        let mut scratch_regs = self.edits.scratch_regs.clone();
         let mut num_spillslots = self.stack.num_spillslots;
+        let mut avail_regs = self.available_pregs[Early] & self.available_pregs[Late];
 
+        trace!("Resolving parallel moves");
         for (resolved, class) in [
             (resolved_int, RegClass::Int),
             (resolved_float, RegClass::Float),
@@ -832,17 +841,17 @@ impl<'a, F: Function> Env<'a, F> {
         ] {
             let scratch_resolver = MoveAndScratchResolver {
                 find_free_reg: || {
-                    if let Some(reg) = self.edits.scratch_regs[class] {
-                        Some(Allocation::reg(reg))
-                    } else if let Some(reg) = new_scratch_reg[class] {
+                    if let Some(reg) = scratch_regs[class] {
+                        trace!("Retrieved reg {reg} for scratch resolver");
+                        scratch_regs[class] = None;
                         Some(Allocation::reg(reg))
                     } else {
-                        use OperandPos::*;
-                        let avail_regs = self.available_pregs[Early] & self.available_pregs[Late];
                         let Some(preg) = self.lrus[class].last(avail_regs) else {
+                            trace!("Couldn't find any reg for scratch resolver");
                             return None;
                         };
-                        new_scratch_reg[RegClass::Int] = Some(preg);
+                        avail_regs.remove(preg);
+                        trace!("Retrieved reg {preg} for scratch resolver");
                         Some(Allocation::reg(preg))
                     }
                 },
@@ -858,12 +867,14 @@ impl<'a, F: Function> Env<'a, F> {
                     };
                     offset += size;
                     num_spillslots = offset;
+                    trace!("Retrieved slot {slot} for scratch resolver");
                     Allocation::stack(SpillSlot::new(slot as usize))
                 },
                 is_stack_alloc: |alloc| self.is_stack(alloc),
                 borrowed_scratch_reg: self.preferred_victim[class],
             };
             let moves = scratch_resolver.compute(resolved);
+            trace!("Resolved {class:?} parallel moves");
             for (from, to, _) in moves.into_iter().rev() {
                 self.edits
                     .edits
@@ -871,6 +882,7 @@ impl<'a, F: Function> Env<'a, F> {
             }
             self.stack.num_spillslots = num_spillslots;
         }
+        trace!("Completed processing branch");
         Ok(())
     }
 
