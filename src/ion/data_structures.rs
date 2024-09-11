@@ -240,11 +240,6 @@ impl LiveBundle {
     }
 
     #[inline(always)]
-    pub fn cached_stack(&self) -> bool {
-        self.spill_weight_and_props & (1 << 28) != 0
-    }
-
-    #[inline(always)]
     pub fn set_cached_fixed(&mut self) {
         self.spill_weight_and_props |= 1 << 30;
     }
@@ -255,13 +250,7 @@ impl LiveBundle {
     }
 
     #[inline(always)]
-    pub fn set_cached_stack(&mut self) {
-        self.spill_weight_and_props |= 1 << 28;
-    }
-
-    #[inline(always)]
     pub fn cached_spill_weight(&self) -> u32 {
-        self.spill_weight_and_props & ((1 << 28) - 1)
         self.spill_weight_and_props & BUNDLE_MAX_SPILL_WEIGHT
     }
 }
