@@ -35,8 +35,7 @@ impl VRegSet {
     }
 
     pub fn insert(&mut self, vreg: VReg) {
-        // Intentionally assuming that the set doesn't already
-        // contain `vreg`.
+        debug_assert_eq!(self.items[vreg.vreg()].vreg, VReg::invalid());
         let old_head_next = self.items[self.head.index()].next;
         self.items[vreg.vreg()] = VRegNode {
             next: old_head_next,
@@ -52,6 +51,7 @@ impl VRegSet {
         let next = self.items[vreg_num].next;
         self.items[prev.index()].next = next;
         self.items[next.index()].prev = prev;
+        self.items[vreg_num].vreg = VReg::invalid();
     }
 
     pub fn is_empty(&self) -> bool {
