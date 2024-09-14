@@ -116,18 +116,14 @@ struct Edits {
 impl Edits {
     fn new(
         fixed_stack_slots: PRegSet,
-        max_operand_len: u32,
         num_insts: usize,
         dedicated_scratch_regs: PartedByRegClass<Option<PReg>>,
     ) -> Self {
-        // Some operands generate edits and some don't.
-        // The operands that generate edits add no more than two.
-        // Some edits are added due to clobbers, not operands.
-        // Anyways, I think this may be a reasonable guess.
-        let inst_edits_len_guess = max_operand_len as usize * 2;
-        let total_edits_len_guess = inst_edits_len_guess * num_insts;
+        // This guess is based on the sightglass benchmarks:
+        // The average number of edits per instruction is 1.
+        let edits_len_guess = num_insts;
         Self {
-            edits: Vec::with_capacity(total_edits_len_guess),
+            edits: Vec::with_capacity(edits_len_guess),
             fixed_stack_slots,
             scratch_regs: dedicated_scratch_regs.clone(),
             dedicated_scratch_regs,
@@ -317,12 +313,7 @@ impl<'a, F: Function> Env<'a, F> {
                 items: [init_available_pregs, init_available_pregs],
             },
             allocs,
-            edits: Edits::new(
-                fixed_stack_slots,
-                max_operand_len,
-                func.num_insts(),
-                dedicated_scratch_regs,
-            ),
+            edits: Edits::new(fixed_stack_slots, func.num_insts(), dedicated_scratch_regs),
             stats: Stats::default(),
             debug_locations: Vec::with_capacity(func.debug_value_labels().len()),
         }
