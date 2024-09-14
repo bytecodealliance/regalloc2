@@ -137,13 +137,8 @@ impl Edits {
 
 impl Edits {
     fn is_stack(&self, alloc: Allocation) -> bool {
-        if alloc.is_stack() {
-            return true;
-        }
-        if alloc.is_reg() {
-            return self.fixed_stack_slots.contains(alloc.as_reg().unwrap());
-        }
-        false
+        alloc.is_stack()
+            || (alloc.is_reg() && self.fixed_stack_slots.contains(alloc.as_reg().unwrap()))
     }
 
     fn add_move(
@@ -333,16 +328,6 @@ impl<'a, F: Function> Env<'a, F> {
         }
     }
 
-    fn is_stack(&self, alloc: Allocation) -> bool {
-        if alloc.is_stack() {
-            return true;
-        }
-        if alloc.is_reg() {
-            return self.fixed_stack_slots.contains(alloc.as_reg().unwrap());
-        }
-        false
-    }
-
     fn reset_available_pregs_and_scratch_regs(&mut self) {
         trace!("Resetting the available pregs");
         self.available_pregs = PartedByOperandPos {
@@ -462,7 +447,7 @@ impl<'a, F: Function> Env<'a, F> {
                 }
             }
             OperandConstraint::Reg => {
-                if self.is_stack(alloc) {
+                if self.edits.is_stack(alloc) {
                     return false;
                 }
                 if let Some(preg) = alloc.as_reg() {
@@ -485,7 +470,7 @@ impl<'a, F: Function> Env<'a, F> {
         }
     }
 
-    fn evict_vreg_in_preg_before_inst(&mut self, inst: Inst, preg: PReg) {
+    fn base_evict_vreg_in_preg(&mut self, inst: Inst, preg: PReg, pos: InstPosition) {
         trace!("Removing the vreg in preg {} for eviction", preg);
         let evicted_vreg = self.vreg_in_preg[preg.index()];
         trace!("The removed vreg: {}", evicted_vreg);
@@ -501,28 +486,16 @@ impl<'a, F: Function> Env<'a, F> {
             self.vreg_allocs[evicted_vreg.vreg()],
             Allocation::reg(preg),
             evicted_vreg.class(),
-            InstPosition::Before,
+            pos,
         );
     }
 
+    fn evict_vreg_in_preg_before_inst(&mut self, inst: Inst, preg: PReg) {
+        self.base_evict_vreg_in_preg(inst, preg, InstPosition::Before)
+    }
+
     fn evict_vreg_in_preg(&mut self, inst: Inst, preg: PReg) {
-        trace!("Removing the vreg in preg {} for eviction", preg);
-        let evicted_vreg = self.vreg_in_preg[preg.index()];
-        trace!("The removed vreg: {}", evicted_vreg);
-        debug_assert_ne!(evicted_vreg, VReg::invalid());
-        if self.vreg_spillslots[evicted_vreg.vreg()].is_invalid() {
-            self.vreg_spillslots[evicted_vreg.vreg()] = self.stack.allocstack(evicted_vreg.class());
-        }
-        let slot = self.vreg_spillslots[evicted_vreg.vreg()];
-        self.vreg_allocs[evicted_vreg.vreg()] = Allocation::stack(slot);
-        trace!("Move reason: eviction");
-        self.edits.add_move(
-            inst,
-            self.vreg_allocs[evicted_vreg.vreg()],
-            Allocation::reg(preg),
-            evicted_vreg.class(),
-            InstPosition::After,
-        );
+        self.base_evict_vreg_in_preg(inst, preg, InstPosition::After)
     }
 
     fn freealloc(&mut self, vreg: VReg) {
@@ -675,8 +648,8 @@ impl<'a, F: Function> Env<'a, F> {
             // used (in `prev_alloc`, that is).
             else {
                 trace!("Move reason: Prev allocation doesn't meet constraints");
-                if self.is_stack(new_alloc)
-                    && self.is_stack(curr_alloc)
+                if self.edits.is_stack(new_alloc)
+                    && self.edits.is_stack(curr_alloc)
                     && self.edits.scratch_regs[op.class()].is_none()
                 {
                     self.alloc_scratch_reg(inst, op.class())?;
@@ -794,7 +767,8 @@ impl<'a, F: Function> Env<'a, F> {
                     self.live_vregs.insert(*vreg);
                     self.vreg_to_live_inst_range[vreg.vreg()].1 = ProgPoint::before(inst);
                 } else if curr_alloc != vreg_spill {
-                    if self.is_stack(curr_alloc) && self.edits.scratch_regs[vreg.class()].is_none()
+                    if self.edits.is_stack(curr_alloc)
+                        && self.edits.scratch_regs[vreg.class()].is_none()
                     {
                         let reg = self.get_scratch_reg_for_reload(
                             inst,
@@ -870,7 +844,7 @@ impl<'a, F: Function> Env<'a, F> {
                     trace!("Retrieved slot {slot} for scratch resolver");
                     Allocation::stack(SpillSlot::new(slot as usize))
                 },
-                is_stack_alloc: |alloc| self.is_stack(alloc),
+                is_stack_alloc: |alloc| self.edits.is_stack(alloc),
                 borrowed_scratch_reg: self.preferred_victim[class],
             };
             let moves = scratch_resolver.compute(resolved);
@@ -1007,7 +981,7 @@ impl<'a, F: Function> Env<'a, F> {
                     if let Some(curr_alloc) = curr_alloc.as_stack() {
                         (true, curr_alloc == vreg_slot)
                     } else {
-                        (self.is_stack(curr_alloc), false)
+                        (self.edits.is_stack(curr_alloc), false)
                     };
                 if !src_and_dest_are_same {
                     if is_stack_to_stack && self.edits.scratch_regs[op.class()].is_none() {
@@ -1135,7 +1109,7 @@ impl<'a, F: Function> Env<'a, F> {
                 "Move reason: reload {} at begin - move from its spillslot",
                 vreg
             );
-            if self.is_stack(prev_alloc) && self.edits.scratch_regs[vreg.class()].is_none() {
+            if self.edits.is_stack(prev_alloc) && self.edits.scratch_regs[vreg.class()].is_none() {
                 let reg = self.get_scratch_reg_for_reload(
                     first_inst,
                     vreg.class(),
@@ -1183,7 +1157,7 @@ impl<'a, F: Function> Env<'a, F> {
                 "Move reason: reload {} at begin - move from its spillslot",
                 vreg
             );
-            if self.is_stack(prev_alloc) && self.edits.scratch_regs[vreg.class()].is_none() {
+            if self.edits.is_stack(prev_alloc) && self.edits.scratch_regs[vreg.class()].is_none() {
                 let Some(preg) = self.lrus[vreg.class()].last(avail_regs_for_scratch) else {
                     return Err(RegAllocError::TooManyLiveRegs);
                 };
