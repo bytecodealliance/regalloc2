@@ -7,8 +7,6 @@ use core::{
 };
 use hashbrown::HashSet;
 
-const DUMMY_NODE_INDEX: usize = PReg::MAX + 1;
-
 /// A least-recently-used cache organized as a linked list based on a vector.
 pub struct Lru {
     /// The list of node information.
