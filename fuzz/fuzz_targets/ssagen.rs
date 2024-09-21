@@ -33,6 +33,16 @@ impl Arbitrary<'_> for TestCase {
 }
 
 fuzz_target!(|t: TestCase| {
-    let cfginfo = CFGInfo::new(&t.f).expect("could not create CFG info");
-    validate_ssa(&t.f, &cfginfo).expect("invalid SSA");
+    thread_local! {
+        // we thets that ctx is cleared properly between runs
+        static CFG_INFO: std::cell::RefCell<CFGInfo> = std::cell::RefCell::default();
+    }
+
+    CFG_INFO.with(|cfginfo| {
+        cfginfo
+            .borrow_mut()
+            .init(&t.f)
+            .expect("could not create CFG info");
+        validate_ssa(&t.f, &cfginfo.borrow()).expect("invalid SSA");
+    });
 });

@@ -213,7 +213,7 @@ impl<'a, F: Function> Env<'a, F> {
         if self.bundles[from].spillset != self.bundles[to].spillset {
             // Widen the range for the target spillset to include the one being merged in.
             let from_range = self.spillsets[self.bundles[from].spillset].range;
-            let to_range = &mut self.spillsets[self.bundles[to].spillset].range;
+            let to_range = &mut self.ctx.spillsets[self.ctx.bundles[to].spillset].range;
             *to_range = to_range.join(from_range);
         }
 
@@ -241,14 +241,14 @@ impl<'a, F: Function> Env<'a, F> {
 
             self.bundles[bundle].ranges = self.vregs[vreg].ranges.clone();
             trace!("vreg v{} gets bundle{}", vreg.index(), bundle.index());
-            for entry in &self.bundles[bundle].ranges {
+            for entry in &self.ctx.bundles[bundle].ranges {
                 trace!(
                     " -> with LR range{}: {:?}",
                     entry.index.index(),
                     entry.range
                 );
                 range = range.join(entry.range);
-                self.ranges[entry.index].bundle = bundle;
+                self.ctx.ranges[entry.index].bundle = bundle;
             }
 
             let mut fixed = false;
@@ -361,6 +361,6 @@ impl<'a, F: Function> Env<'a, F> {
             self.allocation_queue
                 .insert(bundle, prio as usize, PReg::invalid());
         }
-        self.stats.merged_bundle_count = self.allocation_queue.heap.len();
+        self.output.stats.merged_bundle_count = self.allocation_queue.heap.len();
     }
 }

@@ -22,11 +22,9 @@ use crate::ion::data_structures::{
 };
 use crate::{
     Allocation, Block, Function, FxHashMap, FxHashSet, Inst, InstPosition, Operand,
-    OperandConstraint, OperandKind, OperandPos, PReg, ProgPoint, RegAllocError, VReg,
+    OperandConstraint, OperandKind, OperandPos, PReg, ProgPoint, RegAllocError, VReg, VecExt,
 };
 use alloc::collections::VecDeque;
-use alloc::vec;
-use alloc::vec::Vec;
 use slice_group_by::GroupByMut;
 use smallvec::{smallvec, SmallVec};
 
@@ -133,10 +131,10 @@ impl<'a, F: Function> Env<'a, F> {
         }
         // Create allocations too.
         for inst in 0..self.func.num_insts() {
-            let start = self.allocs.len() as u32;
-            self.inst_alloc_offsets.push(start);
+            let start = self.output.allocs.len() as u32;
+            self.output.inst_alloc_offsets.push(start);
             for _ in 0..self.func.inst_operands(Inst::new(inst)).len() {
-                self.allocs.push(Allocation::none());
+                self.output.allocs.push(Allocation::none());
             }
         }
     }
@@ -295,7 +293,7 @@ impl<'a, F: Function> Env<'a, F> {
 
             trace!("computing liveins for block{}", block.index());
 
-            self.stats.livein_iterations += 1;
+            self.output.stats.livein_iterations += 1;
 
             let mut live = self.liveouts[block.index()].clone();
             trace!(" -> initial liveout set: {:?}", live);
@@ -375,14 +373,14 @@ impl<'a, F: Function> Env<'a, F> {
         //
         // Invariant: a stale range may be present here; ranges are
         // only valid if `live.get(vreg)` is true.
-        let mut vreg_ranges: Vec<LiveRangeIndex> =
-            vec![LiveRangeIndex::invalid(); self.func.num_vregs()];
+        let mut vreg_ranges = std::mem::take(&mut self.ctx.scratch_vreg_ranges);
+        vreg_ranges.repopuate(self.func.num_vregs(), LiveRangeIndex::invalid());
 
         for i in (0..self.func.num_blocks()).rev() {
             let block = Block::new(i);
             let insns = self.func.block_insns(block);
 
-            self.stats.livein_blocks += 1;
+            self.output.stats.livein_blocks += 1;
 
             // Init our local live-in set.
             let mut live = self.liveouts[block.index()].clone();
@@ -729,13 +727,13 @@ impl<'a, F: Function> Env<'a, F> {
         // when needed, here and then again at the end of allocation
         // when resolving moves.
 
-        for vreg in &mut self.vregs {
+        for vreg in &mut self.ctx.vregs {
             vreg.ranges.reverse();
             let mut last = None;
             for entry in &mut vreg.ranges {
                 // Ranges may have been truncated above at defs. We
                 // need to update with the final range here.
-                entry.range = self.ranges[entry.index].range;
+                entry.range = self.ctx.ranges[entry.index].range;
                 // Assert in-order and non-overlapping.
                 debug_assert!(last.is_none() || last.unwrap() <= entry.range.from);
                 last = Some(entry.range.to);
@@ -750,9 +748,10 @@ impl<'a, F: Function> Env<'a, F> {
         self.blockparam_ins.sort_unstable_by_key(|x| x.key());
         self.blockparam_outs.sort_unstable_by_key(|x| x.key());
 
-        self.stats.initial_liverange_count = self.ranges.len();
-        self.stats.blockparam_ins_count = self.blockparam_ins.len();
-        self.stats.blockparam_outs_count = self.blockparam_outs.len();
+        self.output.stats.initial_liverange_count = self.ranges.len();
+        self.output.stats.blockparam_ins_count = self.blockparam_ins.len();
+        self.output.stats.blockparam_outs_count = self.blockparam_outs.len();
+        self.ctx.scratch_vreg_ranges = vreg_ranges;
     }
 
     pub fn fixup_multi_fixed_vregs(&mut self) {
@@ -774,7 +773,10 @@ impl<'a, F: Function> Env<'a, F> {
                 trace!("multi-fixed-reg cleanup: vreg {:?} range {:?}", vreg, range,);
 
                 // Find groups of uses that occur in at the same program point.
-                for uses in self.ranges[range].uses.linear_group_by_key_mut(|u| u.pos) {
+                for uses in self.ctx.ranges[range]
+                    .uses
+                    .linear_group_by_key_mut(|u| u.pos)
+                {
                     if uses.len() < 2 {
                         continue;
                     }
@@ -796,7 +798,7 @@ impl<'a, F: Function> Env<'a, F> {
                                 requires_reg = true;
                             }
                             OperandConstraint::FixedReg(preg) => {
-                                if self.pregs[preg.index()].is_stack {
+                                if self.ctx.pregs[preg.index()].is_stack {
                                     num_fixed_stack += 1;
                                     first_stack_slot.get_or_insert(u.slot);
                                 } else {
@@ -842,14 +844,14 @@ impl<'a, F: Function> Env<'a, F> {
                             // FixedReg constraint. If either condition is true,
                             // we edit the constraint below; otherwise, we can
                             // skip this edit.
-                            if !(requires_reg && self.pregs[preg.index()].is_stack)
+                            if !(requires_reg && self.ctx.pregs[preg.index()].is_stack)
                                 && *first_preg.get_or_insert(preg) == preg
                             {
                                 continue;
                             }
 
                             trace!(" -> duplicate; switching to constraint Any");
-                            self.multi_fixed_reg_fixups.push(MultiFixedRegFixup {
+                            self.ctx.multi_fixed_reg_fixups.push(MultiFixedRegFixup {
                                 pos: u.pos,
                                 from_slot: source_slot,
                                 to_slot: u.slot,

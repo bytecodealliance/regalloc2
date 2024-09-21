@@ -52,7 +52,7 @@ fn main() {
 }
 
 fn print_output(func: &SerializableFunction, output: &Output) {
-    print!("Register allocation result: {{\n");
+    println!("Register allocation result: {{");
     for i in 0..func.num_blocks() {
         let block = Block::new(i);
         let succs = func
@@ -65,7 +65,7 @@ fn print_output(func: &SerializableFunction, output: &Output) {
             .iter()
             .map(|b| b.index())
             .collect::<Vec<_>>();
-        print!("  block{}: # succs:{:?} preds:{:?}\n", i, succs, preds);
+        println!("  block{}: # succs:{:?} preds:{:?}", i, succs, preds);
         for inst_or_edit in output.block_insts_and_edits(func, block) {
             match inst_or_edit {
                 InstOrEdit::Inst(inst) => {
@@ -83,13 +83,13 @@ fn print_output(func: &SerializableFunction, output: &Output) {
                         .map(|(op, alloc)| format!("{op} => {alloc}"))
                         .collect();
                     let ops = ops.join(", ");
-                    print!("    inst{}: {op} {ops}\n", inst.index(),);
+                    println!("    inst{}: {op} {ops}", inst.index(),);
                 }
                 InstOrEdit::Edit(Edit::Move { from, to }) => {
-                    print!("    edit: move {to} <- {from}\n");
+                    println!("    edit: move {to} <- {from}");
                 }
             }
         }
     }
-    print!("}}\n");
+    println!("}}");
 }

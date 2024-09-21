@@ -13,18 +13,20 @@
 //! Data structures for backtracking allocator.
 
 use super::liveranges::SpillWeight;
+use super::moves::MoveCtx;
 use crate::cfg::CFGInfo;
 use crate::index::ContainerComparator;
 use crate::indexset::IndexSet;
 use crate::{
-    define_index, Allocation, Block, Edit, Function, FxHashSet, MachineEnv, Operand, PReg,
-    ProgPoint, RegClass, VReg,
+    define_index, Allocation, Block, Edit, Function, FxHashMap, FxHashSet, MachineEnv, Operand,
+    Output, PReg, ProgPoint, RegClass, VReg, VecExt,
 };
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::cmp::Ordering;
 use core::fmt::Debug;
+use core::ops::{Deref, DerefMut};
 use smallvec::{smallvec, SmallVec};
 
 /// A range from `from` (inclusive) to `to` (exclusive).
@@ -428,29 +430,27 @@ impl core::ops::IndexMut<VReg> for VRegs {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct Env<'a, F: Function> {
-    pub func: &'a F,
-    pub env: &'a MachineEnv,
-    pub cfginfo: CFGInfo,
-    pub liveins: Vec<IndexSet>,
-    pub liveouts: Vec<IndexSet>,
-    pub blockparam_outs: Vec<BlockparamOut>,
-    pub blockparam_ins: Vec<BlockparamIn>,
+#[derive(Debug, Default)]
+pub struct Ctx {
+    pub(crate) cfginfo: CFGInfo,
+    pub(crate) liveins: Vec<IndexSet>,
+    pub(crate) liveouts: Vec<IndexSet>,
+    pub(crate) blockparam_outs: Vec<BlockparamOut>,
+    pub(crate) blockparam_ins: Vec<BlockparamIn>,
 
-    pub ranges: LiveRanges,
-    pub bundles: LiveBundles,
-    pub spillsets: SpillSets,
-    pub vregs: VRegs,
-    pub pregs: Vec<PRegData>,
-    pub allocation_queue: PrioQueue,
+    pub(crate) ranges: LiveRanges,
+    pub(crate) bundles: LiveBundles,
+    pub(crate) spillsets: SpillSets,
+    pub(crate) vregs: VRegs,
+    pub(crate) pregs: Vec<PRegData>,
+    pub(crate) allocation_queue: PrioQueue,
 
-    pub spilled_bundles: Vec<LiveBundleIndex>,
-    pub spillslots: Vec<SpillSlotData>,
-    pub slots_by_class: [SpillSlotList; 3],
+    pub(crate) spilled_bundles: Vec<LiveBundleIndex>,
+    pub(crate) spillslots: Vec<SpillSlotData>,
+    pub(crate) slots_by_class: [SpillSlotList; 3],
 
-    pub extra_spillslots_by_class: [SmallVec<[Allocation; 2]>; 3],
-    pub preferred_victim_by_class: [PReg; 3],
+    pub(crate) extra_spillslots_by_class: [SmallVec<[Allocation; 2]>; 3],
+    pub(crate) preferred_victim_by_class: [PReg; 3],
 
     // When multiple fixed-register constraints are present on a
     // single VReg at a single program point (this can happen for,
@@ -460,26 +460,47 @@ pub struct Env<'a, F: Function> {
     // the register available. When we produce the final edit-list, we
     // will insert a copy from wherever the VReg's primary allocation
     // was to the approprate PReg.
-    pub multi_fixed_reg_fixups: Vec<MultiFixedRegFixup>,
+    pub(crate) multi_fixed_reg_fixups: Vec<MultiFixedRegFixup>,
 
-    // Output:
-    pub allocs: Vec<Allocation>,
-    pub inst_alloc_offsets: Vec<u32>,
-    pub num_spillslots: u32,
-    pub debug_locations: Vec<(u32, ProgPoint, ProgPoint, Allocation)>,
-
-    pub allocated_bundle_count: usize,
-
-    pub stats: Stats,
+    pub(crate) allocated_bundle_count: usize,
 
     // For debug output only: a list of textual annotations at every
     // ProgPoint to insert into the final allocated program listing.
-    pub debug_annotations: hashbrown::HashMap<ProgPoint, Vec<String>>,
-    pub annotations_enabled: bool,
+    pub(crate) debug_annotations: FxHashMap<ProgPoint, Vec<String>>,
+    pub(crate) annotations_enabled: bool,
 
     // Cached allocation for `try_to_allocate_bundle_to_reg` to avoid allocating
     // a new HashSet on every call.
-    pub conflict_set: FxHashSet<LiveBundleIndex>,
+    pub(crate) conflict_set: FxHashSet<LiveBundleIndex>,
+
+    // Output:
+    pub output: Output,
+
+    pub(crate) scratch_moves: MoveCtx,
+    pub(crate) scratch_removed_lrs: FxHashSet<LiveRangeIndex>,
+    pub(crate) scratch_removed_lrs_vregs: FxHashSet<VRegIndex>,
+    pub(crate) scratch_vreg_ranges: Vec<LiveRangeIndex>,
+}
+
+#[derive(Debug)]
+pub struct Env<'a, F: Function> {
+    pub func: &'a F,
+    pub env: &'a MachineEnv,
+    pub ctx: &'a mut Ctx,
+}
+
+impl<'a, F: Function> Deref for Env<'a, F> {
+    type Target = Ctx;
+
+    fn deref(&self) -> &Self::Target {
+        self.ctx
+    }
+}
+
+impl<'a, F: Function> DerefMut for Env<'a, F> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.ctx
+    }
 }
 
 impl<'a, F: Function> Env<'a, F> {
@@ -527,20 +548,13 @@ pub struct SpillSlotData {
     pub alloc: Allocation,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct SpillSlotList {
     pub slots: SmallVec<[SpillSlotIndex; 32]>,
     pub probe_start: usize,
 }
 
 impl SpillSlotList {
-    pub fn new() -> Self {
-        SpillSlotList {
-            slots: smallvec![],
-            probe_start: 0,
-        }
-    }
-
     /// Get the next spillslot index in probing order, wrapping around
     /// at the end of the slots list.
     pub(crate) fn next_index(&self, index: usize) -> usize {
@@ -553,7 +567,7 @@ impl SpillSlotList {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct PrioQueue {
     pub heap: alloc::collections::BinaryHeap<PrioQueueEntry>,
 }
@@ -631,12 +645,6 @@ impl<'a> ContainerComparator for PrioQueueComparator<'a> {
 }
 
 impl PrioQueue {
-    pub fn new() -> Self {
-        PrioQueue {
-            heap: alloc::collections::BinaryHeap::new(),
-        }
-    }
-
     #[inline(always)]
     pub fn insert(&mut self, bundle: LiveBundleIndex, prio: usize, reg_hint: PReg) {
         self.heap.push(PrioQueueEntry {
@@ -727,17 +735,16 @@ impl InsertedMoves {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Edits {
     edits: Vec<(PosWithPrio, Edit)>,
 }
 
 impl Edits {
     #[inline(always)]
-    pub fn with_capacity(n: usize) -> Self {
-        Self {
-            edits: Vec::with_capacity(n),
-        }
+    pub fn prepare(&mut self, n: usize) -> &mut Self {
+        self.edits.prepare(n);
+        self
     }
 
     #[inline(always)]
@@ -751,8 +758,8 @@ impl Edits {
     }
 
     #[inline(always)]
-    pub fn into_edits(self) -> impl Iterator<Item = (ProgPoint, Edit)> {
-        self.edits.into_iter().map(|(pos, edit)| (pos.pos, edit))
+    pub fn drain_edits(&mut self) -> impl Iterator<Item = (ProgPoint, Edit)> + '_ {
+        self.edits.drain(..).map(|(pos, edit)| (pos.pos, edit))
     }
 
     /// Sort edits by the combination of their program position and priority. This is a stable sort

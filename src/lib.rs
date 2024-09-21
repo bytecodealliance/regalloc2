@@ -11,6 +11,7 @@
  */
 
 #![allow(dead_code)]
+#![allow(clippy::all)]
 #![no_std]
 
 #[cfg(feature = "std")]
@@ -50,6 +51,7 @@ pub mod ssa;
 #[macro_use]
 mod index;
 
+pub use self::ion::data_structures::Ctx;
 use alloc::vec::Vec;
 pub use index::{Block, Inst, InstRange};
 
@@ -157,6 +159,12 @@ impl PReg {
     #[inline(always)]
     pub const fn invalid() -> Self {
         PReg::new(Self::MAX, RegClass::Int)
+    }
+}
+
+impl Default for PReg {
+    fn default() -> Self {
+        Self::invalid()
     }
 }
 
@@ -1394,7 +1402,7 @@ pub struct MachineEnv {
 }
 
 /// The output of the register allocator.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 #[cfg_attr(feature = "enable-serde", derive(Serialize, Deserialize))]
 pub struct Output {
     /// How many spillslots are needed in the frame?
@@ -1504,7 +1512,19 @@ pub fn run<F: Function>(
     env: &MachineEnv,
     options: &RegallocOptions,
 ) -> Result<Output, RegAllocError> {
-    ion::run(func, env, options.verbose_log, options.validate_ssa)
+    let mut ctx = Ctx::default();
+    run_with_ctx(func, env, options, &mut ctx)?;
+    Ok(ctx.output)
+}
+
+/// Run the allocator.
+pub fn run_with_ctx<F: Function>(
+    func: &F,
+    env: &MachineEnv,
+    options: &RegallocOptions,
+    ctx: &mut Ctx,
+) -> Result<(), RegAllocError> {
+    ion::run(func, env, ctx, options.verbose_log, options.validate_ssa)
 }
 
 /// Options for allocation.
@@ -1515,4 +1535,34 @@ pub struct RegallocOptions {
 
     /// Run the SSA validator before allocating registers.
     pub validate_ssa: bool,
+}
+
+pub(crate) trait VecExt<T> {
+    fn repopuate(&mut self, len: usize, value: T) -> &mut [T]
+    where
+        T: Clone;
+    fn cleared(&mut self) -> &mut Self;
+    fn prepare(&mut self, cap: usize) -> &mut Self;
+}
+
+impl<T> VecExt<T> for Vec<T> {
+    fn repopuate(&mut self, len: usize, value: T) -> &mut [T]
+    where
+        T: Clone,
+    {
+        self.clear();
+        self.resize(len, value);
+        self
+    }
+
+    fn cleared(&mut self) -> &mut Self {
+        self.clear();
+        self
+    }
+
+    fn prepare(&mut self, cap: usize) -> &mut Self {
+        self.clear();
+        self.reserve(cap);
+        self
+    }
 }
