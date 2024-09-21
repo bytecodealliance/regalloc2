@@ -61,7 +61,7 @@ impl<K: Eq + Ord + Copy, V> BTreeMap<K, V> {
             .map(|i| self.values.remove(i).1)
     }
 
-    pub fn range(&self, range: std::ops::RangeFrom<K>) -> impl Iterator<Item = (&K, &V)> {
+    pub fn range(&self, range: core::ops::RangeFrom<K>) -> impl Iterator<Item = (&K, &V)> {
         let start = self
             .values
             .binary_search_by_key(&range.start, |e| e.0)

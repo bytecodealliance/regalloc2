@@ -16,7 +16,7 @@ use super::{
     AllocRegResult, Env, LiveRangeKey, PReg, PRegIndex, RegTraversalIter, SpillSetIndex,
     SpillSlotData, SpillSlotIndex,
 };
-use crate::{ion::data_structures::SpillSetRanges, Allocation, Function, SpillSlot};
+use crate::{Allocation, Function, SpillSlot};
 
 impl<'a, F: Function> Env<'a, F> {
     pub fn try_allocating_regs_for_spilled_bundles(&mut self) {
