@@ -48,10 +48,14 @@ impl<'a, F: Function> Env<'a, F> {
         ctx.bundles.prepare(ninstrs);
         ctx.spillsets.prepare(ninstrs);
         ctx.vregs.prepare(ninstrs);
-        ctx.pregs.clear();
+        for preg in ctx.pregs.iter_mut() {
+            preg.is_stack = false;
+            preg.allocations.btree.clear();
+        }
         ctx.allocation_queue.heap.clear();
         ctx.spilled_bundles.clear();
-        ctx.spillslots.clear();
+        ctx.scratch_spillset_pool
+            .extend(ctx.spillslots.drain(..).map(|s| s.ranges));
         ctx.slots_by_class = core::array::from_fn(|_| SpillSlotList::default());
         ctx.extra_spillslots_by_class = core::array::from_fn(|_| smallvec![]);
         ctx.preferred_victim_by_class = [PReg::invalid(); 3];

@@ -132,7 +132,7 @@ impl<'a, F: Function> Env<'a, F> {
                 // Allocate a new spillslot.
                 let spillslot = SpillSlotIndex::new(self.ctx.spillslots.len());
                 self.ctx.spillslots.push(SpillSlotData {
-                    ranges: SpillSetRanges::new(),
+                    ranges: self.ctx.scratch_spillset_pool.pop().unwrap_or_default(),
                     alloc: Allocation::none(),
                     slots: self.func.spillslot_size(self.ctx.spillsets[spillset].class) as u32,
                 });

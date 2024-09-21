@@ -187,6 +187,8 @@ impl<'a, F: Function> Env<'a, F> {
             }
         }
 
+        drop(preg_range_iter);
+
         if conflicts.len() > 0 {
             return AllocRegResult::Conflict(conflicts, first_conflict.unwrap());
         }

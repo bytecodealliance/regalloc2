@@ -21,13 +21,62 @@ use crate::{
     define_index, Allocation, Block, Edit, Function, FxHashMap, FxHashSet, MachineEnv, Operand,
     Output, PReg, ProgPoint, RegClass, VReg, VecExt,
 };
-use alloc::collections::BTreeMap;
+//use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::cmp::Ordering;
+use core::convert::identity;
 use core::fmt::Debug;
 use core::ops::{Deref, DerefMut};
 use smallvec::{smallvec, SmallVec};
+
+#[derive(Clone, Debug)]
+pub struct BTreeMap<K, V> {
+    values: Vec<(K, V)>,
+}
+
+impl<K: Eq + Ord + Copy, V> BTreeMap<K, V> {
+    pub fn clear(&mut self) {
+        self.values.clear();
+    }
+
+    pub fn contains_key(&self, key: &K) -> bool {
+        self.values.binary_search_by_key(key, |e| e.0).is_ok()
+    }
+
+    pub fn insert(&mut self, key: K, value: V) -> Option<V> {
+        match self.values.binary_search_by_key(&key, |e| e.0) {
+            Ok(i) => Some(core::mem::replace(&mut self.values[i], (key, value)).1),
+            Err(i) => {
+                self.values.insert(i, (key, value));
+                None
+            }
+        }
+    }
+
+    pub fn remove(&mut self, key: &K) -> Option<V> {
+        self.values
+            .binary_search_by_key(key, |e| e.0)
+            .ok()
+            .map(|i| self.values.remove(i).1)
+    }
+
+    pub fn range(&self, range: std::ops::RangeFrom<K>) -> impl Iterator<Item = (&K, &V)> {
+        let start = self
+            .values
+            .binary_search_by_key(&range.start, |e| e.0)
+            .unwrap_or_else(identity);
+        self.values[start..].iter().map(|(k, v)| (k, v))
+    }
+}
+
+impl<K, V> Default for BTreeMap<K, V> {
+    fn default() -> Self {
+        Self {
+            values: Default::default(),
+        }
+    }
+}
 
 /// A range from `from` (inclusive) to `to` (exclusive).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -476,6 +525,7 @@ pub struct Ctx {
     // Output:
     pub output: Output,
 
+    pub(crate) scratch_spillset_pool: Vec<SpillSetRanges>,
     pub(crate) scratch_moves: MoveCtx,
     pub(crate) scratch_removed_lrs: FxHashSet<LiveRangeIndex>,
     pub(crate) scratch_removed_lrs_vregs: FxHashSet<VRegIndex>,
@@ -528,17 +578,9 @@ impl<'a, F: Function> Env<'a, F> {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct SpillSetRanges {
     pub btree: BTreeMap<LiveRangeKey, SpillSetIndex>,
-}
-
-impl SpillSetRanges {
-    pub fn new() -> Self {
-        Self {
-            btree: BTreeMap::new(),
-        }
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -668,7 +710,7 @@ impl PrioQueue {
 impl LiveRangeSet {
     pub(crate) fn new() -> Self {
         Self {
-            btree: BTreeMap::new(),
+            btree: BTreeMap::default(),
         }
     }
 }
