@@ -52,8 +52,8 @@ impl<'a, F: Function> Env<'a, F> {
         ctx.allocation_queue.heap.clear();
         ctx.spilled_bundles.clear();
         ctx.spillslots.clear();
-        ctx.slots_by_class = std::array::from_fn(|_| SpillSlotList::default());
-        ctx.extra_spillslots_by_class = std::array::from_fn(|_| smallvec![]);
+        ctx.slots_by_class = core::array::from_fn(|_| SpillSlotList::default());
+        ctx.extra_spillslots_by_class = core::array::from_fn(|_| smallvec![]);
         ctx.preferred_victim_by_class = [PReg::invalid(); 3];
         ctx.multi_fixed_reg_fixups.clear();
         ctx.allocated_bundle_count = 0;

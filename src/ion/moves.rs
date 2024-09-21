@@ -85,7 +85,7 @@ impl<'a, F: Function> Env<'a, F> {
             vreg.ranges.sort_unstable_by_key(|entry| entry.range.from);
         }
 
-        let mut moves = std::mem::take(&mut self.ctx.scratch_moves);
+        let mut moves = core::mem::take(&mut self.ctx.scratch_moves);
 
         let inserted_moves = &mut moves.inserted_moves;
         inserted_moves.moves.clear();
@@ -603,7 +603,7 @@ impl<'a, F: Function> Env<'a, F> {
 
     pub fn resolve_inserted_moves(&mut self) {
         assert_eq!(self.ctx.scratch_moves.edits.len(), 0);
-        let mut inserted_moves = std::mem::take(&mut self.ctx.scratch_moves.inserted_moves);
+        let mut inserted_moves = core::mem::take(&mut self.ctx.scratch_moves.inserted_moves);
 
         // For each program point, gather all moves together. Then
         // resolve (see cases below).
@@ -664,7 +664,8 @@ impl<'a, F: Function> Env<'a, F> {
         }
 
         let mut last_pos = ProgPoint::before(Inst::new(0));
-        let mut edits = std::mem::take(self.ctx.scratch_moves.edits.prepare(self.func.num_insts()));
+        let mut edits =
+            core::mem::take(self.ctx.scratch_moves.edits.prepare(self.func.num_insts()));
 
         while i < inserted_moves.moves.len() {
             let start = i;
