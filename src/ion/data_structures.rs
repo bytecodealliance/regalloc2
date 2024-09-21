@@ -45,6 +45,12 @@ impl<K: Eq + Ord + Copy, V> BTreeMap<K, V> {
     }
 
     pub fn insert(&mut self, key: K, value: V) -> Option<V> {
+        // this is woth it becuase we often insert later liveranges
+        if self.values.last().map(|e| e.0) < Some(key) {
+            self.values.push((key, value));
+            return None;
+        }
+
         match self.values.binary_search_by_key(&key, |e| e.0) {
             Ok(i) => Some(core::mem::replace(&mut self.values[i], (key, value)).1),
             Err(i) => {

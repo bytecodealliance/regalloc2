@@ -55,7 +55,10 @@ impl<'a, F: Function> Env<'a, F> {
         ctx.allocation_queue.heap.clear();
         ctx.spilled_bundles.clear();
         ctx.scratch_spillset_pool
-            .extend(ctx.spillslots.drain(..).map(|s| s.ranges));
+            .extend(ctx.spillslots.drain(..).map(|mut s| {
+                s.ranges.btree.clear();
+                s.ranges
+            }));
         ctx.slots_by_class = core::array::from_fn(|_| SpillSlotList::default());
         ctx.extra_spillslots_by_class = core::array::from_fn(|_| smallvec![]);
         ctx.preferred_victim_by_class = [PReg::invalid(); 3];
