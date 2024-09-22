@@ -552,10 +552,13 @@ impl<'a, F: Function> Env<'a, F> {
         if split_at > new_lr_list[0].range.from {
             debug_assert_eq!(last_lr_in_old_bundle_idx, first_lr_in_new_bundle_idx);
             let orig_lr = new_lr_list[0].index;
-            let new_lr = self.ctx.ranges.add(CodeRange {
-                from: split_at,
-                to: new_lr_list[0].range.to,
-            });
+            let new_lr = self.ctx.ranges.add(
+                CodeRange {
+                    from: split_at,
+                    to: new_lr_list[0].range.to,
+                },
+                self.ctx.bump(),
+            );
             self.ctx.ranges[new_lr].vreg = self.ranges[orig_lr].vreg;
             trace!(" -> splitting LR {:?} into {:?}", orig_lr, new_lr);
             let first_use = self.ctx.ranges[orig_lr]
@@ -563,12 +566,14 @@ impl<'a, F: Function> Env<'a, F> {
                 .iter()
                 .position(|u| u.pos >= split_at)
                 .unwrap_or(self.ctx.ranges[orig_lr].uses.len());
-            let rest_uses: UseList = self.ctx.ranges[orig_lr]
-                .uses
-                .iter()
-                .cloned()
-                .skip(first_use)
-                .collect();
+            let mut rest_uses = UseList::new_in(self.ctx.bump());
+            rest_uses.extend(
+                self.ctx.ranges[orig_lr]
+                    .uses
+                    .iter()
+                    .cloned()
+                    .skip(first_use),
+            );
             self.ctx.ranges[new_lr].uses = rest_uses;
             self.ctx.ranges[orig_lr].uses.truncate(first_use);
             self.ctx.ranges[orig_lr].uses.shrink_to_fit();
@@ -643,7 +648,7 @@ impl<'a, F: Function> Env<'a, F> {
                         from: split,
                         to: end,
                     };
-                    let empty_lr = self.ctx.ranges.add(range);
+                    let empty_lr = self.ctx.ranges.add(range, self.ctx.bump());
                     self.ctx.bundles[spill].ranges.push(LiveRangeListEntry {
                         range,
                         index: empty_lr,
@@ -708,7 +713,7 @@ impl<'a, F: Function> Env<'a, F> {
                         from: start,
                         to: split,
                     };
-                    let empty_lr = self.ctx.ranges.add(range);
+                    let empty_lr = self.ctx.ranges.add(range, self.ctx.bump());
                     self.ctx.bundles[spill].ranges.push(LiveRangeListEntry {
                         range,
                         index: empty_lr,
@@ -803,7 +808,7 @@ impl<'a, F: Function> Env<'a, F> {
         let mut last_inst: Option<Inst> = None;
         let mut last_vreg: Option<VRegIndex> = None;
 
-        let mut spill_uses = UseList::new();
+        let mut spill_uses = UseList::new_in(self.ctx.bump());
 
         let vc = LiveRangeList::new_in(self.ctx.bump());
         for entry in core::mem::replace(&mut self.ctx.bundles[bundle].ranges, vc) {
@@ -819,7 +824,8 @@ impl<'a, F: Function> Env<'a, F> {
             let mut spill_starts_def = false;
 
             let mut last_live_pos = entry.range.from;
-            for u in core::mem::take(&mut self.ctx.ranges[entry.index].uses) {
+            let uc = UseList::new_in(self.ctx.bump());
+            for u in core::mem::replace(&mut self.ctx.ranges[entry.index].uses, uc) {
                 trace!("   -> use {:?} (last_live_pos {:?})", u, last_live_pos);
 
                 let is_def = u.operand.kind() == OperandKind::Def;
@@ -866,7 +872,7 @@ impl<'a, F: Function> Env<'a, F> {
                 // new bundle.
                 if Some(u.pos.inst()) == last_inst {
                     let cr = CodeRange { from: u.pos, to };
-                    let lr = self.ctx.ranges.add(cr);
+                    let lr = self.ctx.ranges.add(cr, self.ctx.bump());
                     new_lrs.push((vreg, lr));
                     self.ctx.ranges[lr].uses.push(u);
                     self.ctx.ranges[lr].vreg = vreg;
@@ -900,7 +906,7 @@ impl<'a, F: Function> Env<'a, F> {
                 let pos = ProgPoint::before(u.pos.inst());
                 let pos = core::cmp::max(lr_from, pos);
                 let cr = CodeRange { from: pos, to };
-                let lr = self.ctx.ranges.add(cr);
+                let lr = self.ctx.ranges.add(cr, self.ctx.bump());
                 new_lrs.push((vreg, lr));
                 self.ctx.ranges[lr].uses.push(u);
                 self.ctx.ranges[lr].vreg = vreg;
@@ -941,7 +947,7 @@ impl<'a, F: Function> Env<'a, F> {
                 // Make one entry in the spill bundle that covers the whole range.
                 // TODO: it might be worth tracking enough state to only create this LR when there is
                 // open space in the original LR.
-                let spill_lr = self.ctx.ranges.add(spill_range);
+                let spill_lr = self.ctx.ranges.add(spill_range, self.ctx.bump());
                 self.ctx.ranges[spill_lr].vreg = vreg;
                 self.ctx.ranges[spill_lr].bundle = spill;
                 self.ctx.ranges[spill_lr].uses.extend(spill_uses.drain(..));
@@ -1056,9 +1062,9 @@ impl<'a, F: Function> Env<'a, F> {
 
         // Try to allocate!
         let mut attempts = 0;
-        let mut scratch = Vec::<LiveBundleIndex>::new();
-        let mut lowest_cost_evict_conflict_set = Vec::<LiveBundleIndex>::new();
-        loop {
+        let mut scratch = std::mem::take(&mut self.ctx.scratch_conflicts);
+        let mut lowest_cost_evict_conflict_set = std::mem::take(&mut self.ctx.scratch_bundle);
+        'o: loop {
             attempts += 1;
             trace!("attempt {}, req {:?}", attempts, req);
             debug_assert!(attempts < 100 * self.func.num_insts());
@@ -1069,12 +1075,13 @@ impl<'a, F: Function> Env<'a, F> {
 
                 Requirement::Any => {
                     self.ctx.spilled_bundles.push(bundle);
-                    return Ok(());
+                    break;
                 }
             };
             // Scan all pregs, or the one fixed preg, and attempt to allocate.
 
             let mut lowest_cost_evict_conflict_cost: Option<u32> = None;
+            lowest_cost_evict_conflict_set.clear();
 
             let mut lowest_cost_split_conflict_cost: Option<u32> = None;
             let mut lowest_cost_split_conflict_point = ProgPoint::before(Inst::new(0));
@@ -1123,7 +1130,7 @@ impl<'a, F: Function> Env<'a, F> {
                         trace!(" -> allocated to any {:?}", preg_idx);
                         self.ctx.spillsets[self.ctx.bundles[bundle].spillset].reg_hint =
                             alloc.as_reg().unwrap();
-                        return Ok(());
+                        break 'o;
                     }
                     AllocRegResult::Conflict(bundles, first_conflict_point) => {
                         trace!(
@@ -1251,7 +1258,7 @@ impl<'a, F: Function> Env<'a, F> {
                                 continue;
                             }
                             if preg_range.from >= range.to {
-                                break;
+                                break 'o;
                             }
                             if lr.is_valid() {
                                 if self.minimal_bundle(self.ranges[*lr].bundle) {
@@ -1333,7 +1340,7 @@ impl<'a, F: Function> Env<'a, F> {
                     requeue_with_reg,
                     /* should_trim = */ true,
                 );
-                return Ok(());
+                break 'o;
             } else {
                 // Evict all bundles in `conflicting bundles` and try again.
                 self.ctx.output.stats.evict_bundle_event += 1;
@@ -1344,5 +1351,9 @@ impl<'a, F: Function> Env<'a, F> {
                 }
             }
         }
+
+        self.ctx.scratch_conflicts = scratch;
+        self.ctx.scratch_bundle = lowest_cost_evict_conflict_set;
+        return Ok(());
     }
 }

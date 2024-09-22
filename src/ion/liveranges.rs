@@ -21,10 +21,9 @@ use crate::ion::data_structures::{
     BlockparamIn, BlockparamOut, FixedRegFixupLevel, MultiFixedRegFixup,
 };
 use crate::{
-    Allocation, Block, Function, FxHashMap, FxHashSet, Inst, InstPosition, Operand,
-    OperandConstraint, OperandKind, OperandPos, PReg, ProgPoint, RegAllocError, VReg, VecExt,
+    Allocation, Block, Function, Inst, InstPosition, Operand, OperandConstraint, OperandKind,
+    OperandPos, PReg, ProgPoint, RegAllocError, VReg, VecExt,
 };
-use alloc::collections::VecDeque;
 use slice_group_by::GroupByMut;
 use smallvec::{smallvec, SmallVec};
 
@@ -193,7 +192,7 @@ impl<'a, F: Function> Env<'a, F> {
         {
             // Is not contiguous with previously-added (immediately
             // following) range; create a new range.
-            let lr = self.ranges.add(range);
+            let lr = self.ctx.ranges.add(range, self.ctx.bump());
             self.ranges[lr].vreg = vreg;
             self.vregs[vreg]
                 .ranges
@@ -279,8 +278,9 @@ impl<'a, F: Function> Env<'a, F> {
 
         // Run a worklist algorithm to precisely compute liveins and
         // liveouts.
-        let mut workqueue = VecDeque::new();
-        let mut workqueue_set = FxHashSet::default();
+        let mut workqueue = std::mem::take(&mut self.ctx.scratch_workqueue);
+        let mut workqueue_set = std::mem::take(&mut self.ctx.scratch_workqueue_set);
+        workqueue_set.clear();
         // Initialize workqueue with postorder traversal.
         for &block in &self.cfginfo.postorder[..] {
             workqueue.push_back(block);
@@ -302,7 +302,7 @@ impl<'a, F: Function> Env<'a, F> {
             if self.func.is_branch(insns.last()) {
                 for i in 0..self.func.block_succs(block).len() {
                     for &param in self.func.branch_blockparams(block, insns.last(), i) {
-                        live.set(param.vreg(), true);
+                        live.set(param.vreg(), true, self.ctx.bump());
                         self.observe_vreg_class(param);
                     }
                 }
@@ -319,10 +319,10 @@ impl<'a, F: Function> Env<'a, F> {
                             trace!("op {:?} was_live = {}", op, was_live);
                             match op.kind() {
                                 OperandKind::Use => {
-                                    live.set(op.vreg().vreg(), true);
+                                    live.set(op.vreg().vreg(), true, self.ctx.bump());
                                 }
                                 OperandKind::Def => {
-                                    live.set(op.vreg().vreg(), false);
+                                    live.set(op.vreg().vreg(), false, self.ctx.bump());
                                 }
                             }
                             self.observe_vreg_class(op.vreg());
@@ -331,12 +331,13 @@ impl<'a, F: Function> Env<'a, F> {
                 }
             }
             for &blockparam in self.func.block_params(block) {
-                live.set(blockparam.vreg(), false);
+                live.set(blockparam.vreg(), false, self.ctx.bump());
                 self.observe_vreg_class(blockparam);
             }
 
             for &pred in self.func.block_preds(block) {
-                if self.liveouts[pred.index()].union_with(&live) {
+                let ctx = self.ctx.bump();
+                if self.ctx.liveouts[pred.index()].union_with(&live, ctx) {
                     if !workqueue_set.contains(&pred) {
                         workqueue_set.insert(pred);
                         workqueue.push_back(pred);
@@ -356,6 +357,9 @@ impl<'a, F: Function> Env<'a, F> {
             );
             return Err(RegAllocError::EntryLivein);
         }
+
+        self.ctx.scratch_workqueue = workqueue;
+        self.ctx.scratch_workqueue_set = workqueue_set;
 
         Ok(())
     }
@@ -404,7 +408,7 @@ impl<'a, F: Function> Env<'a, F> {
                         });
 
                         // Include outgoing blockparams in the initial live set.
-                        live.set(blockparam_out.index(), true);
+                        live.set(blockparam_out.index(), true, self.ctx.bump());
                     }
                 }
             }
@@ -474,7 +478,8 @@ impl<'a, F: Function> Env<'a, F> {
                 // register can be used multiple times in the same
                 // instruction is with an early-use and a late-def. Anything
                 // else is a user error.
-                let mut operand_rewrites: FxHashMap<usize, Operand> = FxHashMap::default();
+                let mut operand_rewrites = std::mem::take(&mut self.ctx.scratch_operand_rewrites);
+                operand_rewrites.clear();
                 let mut late_def_fixed: SmallVec<[PReg; 8]> = smallvec![];
                 for &operand in self.func.inst_operands(inst) {
                     if let OperandConstraint::FixedReg(preg) = operand.constraint() {
@@ -632,7 +637,7 @@ impl<'a, F: Function> Env<'a, F> {
                                     );
                                     trace!(" -> invalid; created {:?}", lr);
                                     vreg_ranges[operand.vreg().vreg()] = lr;
-                                    live.set(operand.vreg().vreg(), true);
+                                    live.set(operand.vreg().vreg(), true, self.ctx.bump());
                                 }
                                 // Create the use in the LiveRange.
                                 self.insert_use_into_liverange(lr, Use::new(operand, pos, i as u8));
@@ -654,7 +659,7 @@ impl<'a, F: Function> Env<'a, F> {
                                     self.ranges[lr].set_flag(LiveRangeFlag::StartsAtDef);
 
                                     // Remove from live-set.
-                                    live.set(operand.vreg().vreg(), false);
+                                    live.set(operand.vreg().vreg(), false, self.ctx.bump());
                                     vreg_ranges[operand.vreg().vreg()] = LiveRangeIndex::invalid();
                                 }
                             }
@@ -681,11 +686,12 @@ impl<'a, F: Function> Env<'a, F> {
                                 self.insert_use_into_liverange(lr, Use::new(operand, pos, i as u8));
 
                                 // Add to live-set.
-                                live.set(operand.vreg().vreg(), true);
+                                live.set(operand.vreg().vreg(), true, self.ctx.bump());
                             }
                         }
                     }
                 }
+                self.ctx.scratch_operand_rewrites = operand_rewrites;
             }
 
             // Block parameters define vregs at the very beginning of
@@ -693,7 +699,7 @@ impl<'a, F: Function> Env<'a, F> {
             // here.
             for vreg in self.func.block_params(block) {
                 if live.get(vreg.vreg()) {
-                    live.set(vreg.vreg(), false);
+                    live.set(vreg.vreg(), false, self.ctx.bump());
                 } else {
                     // Create trivial liverange if blockparam is dead.
                     let start = self.cfginfo.block_entry[block.index()];

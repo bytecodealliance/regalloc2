@@ -29,7 +29,8 @@ use core::cmp::Ordering;
 use core::convert::identity;
 use core::fmt::Debug;
 use core::ops::{Deref, DerefMut};
-use smallvec::{smallvec, SmallVec};
+use smallvec::SmallVec;
+use std::collections::VecDeque;
 
 #[derive(Clone, Debug)]
 pub struct BTreeMap<K, V> {
@@ -169,7 +170,7 @@ pub struct LiveRangeListEntry {
 }
 
 pub type LiveRangeList = bumpalo::collections::vec::Vec<'static, LiveRangeListEntry>;
-pub type UseList = SmallVec<[Use; 4]>;
+pub type UseList = bumpalo::collections::vec::Vec<'static, Use>;
 
 #[derive(Clone, Debug)]
 pub struct LiveRange {
@@ -438,14 +439,14 @@ impl BlockparamIn {
 }
 
 impl LiveRanges {
-    pub fn add(&mut self, range: CodeRange) -> LiveRangeIndex {
+    pub fn add(&mut self, range: CodeRange, bump: &'static bumpalo::Bump) -> LiveRangeIndex {
         self.push(LiveRange {
             range,
             vreg: VRegIndex::invalid(),
             bundle: LiveBundleIndex::invalid(),
             uses_spill_weight_and_flags: 0,
 
-            uses: smallvec![],
+            uses: UseList::new_in(bump),
         })
     }
 }
@@ -532,7 +533,10 @@ pub struct Ctx {
     // Output:
     pub output: Output,
 
+    pub(crate) scratch_operand_rewrites: FxHashMap<usize, Operand>,
     pub(crate) scratch_conflicts: Vec<LiveBundleIndex>,
+    pub(crate) scratch_workqueue: VecDeque<Block>,
+    pub(crate) scratch_workqueue_set: FxHashSet<Block>,
     pub(crate) scratch_bundle: Vec<LiveBundleIndex>,
     pub(crate) scratch_spillset_pool: Vec<SpillSetRanges>,
     pub(crate) scratch_moves: MoveCtx,
