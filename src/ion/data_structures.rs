@@ -23,6 +23,7 @@ use crate::{
 };
 //use alloc::collections::BTreeMap;
 use alloc::boxed::Box;
+use alloc::collections::VecDeque;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::cmp::Ordering;
@@ -30,7 +31,8 @@ use core::convert::identity;
 use core::fmt::Debug;
 use core::ops::{Deref, DerefMut};
 use smallvec::SmallVec;
-use std::collections::VecDeque;
+
+pub type Bump = &'static bumpalo::Bump;
 
 #[derive(Clone, Debug)]
 pub struct BTreeMap<K, V> {
@@ -439,7 +441,7 @@ impl BlockparamIn {
 }
 
 impl LiveRanges {
-    pub fn add(&mut self, range: CodeRange, bump: &'static bumpalo::Bump) -> LiveRangeIndex {
+    pub fn add(&mut self, range: CodeRange, bump: Bump) -> LiveRangeIndex {
         self.push(LiveRange {
             range,
             vreg: VRegIndex::invalid(),
@@ -452,7 +454,7 @@ impl LiveRanges {
 }
 
 impl LiveBundles {
-    pub fn add(&mut self, bump: &'static bumpalo::Bump) -> LiveBundleIndex {
+    pub fn add(&mut self, bump: Bump) -> LiveBundleIndex {
         self.push(LiveBundle {
             allocation: Allocation::none(),
             ranges: LiveRangeList::new_in(bump),
@@ -545,9 +547,10 @@ pub struct Ctx {
     pub(crate) scratch_vreg_ranges: Vec<LiveRangeIndex>,
     pub(crate) scratch_bump: Box<bumpalo::Bump>,
 }
+
 impl Ctx {
-    // This is temporary
-    pub(crate) fn bump(&self) -> &'static bumpalo::Bump {
+    // TODO: turn this into `Rc<_>`, it should not be that horrible
+    pub(crate) fn bump(&self) -> Bump {
         unsafe { &*(&*self.scratch_bump as *const _) }
     }
 }

@@ -1062,8 +1062,8 @@ impl<'a, F: Function> Env<'a, F> {
 
         // Try to allocate!
         let mut attempts = 0;
-        let mut scratch = std::mem::take(&mut self.ctx.scratch_conflicts);
-        let mut lowest_cost_evict_conflict_set = std::mem::take(&mut self.ctx.scratch_bundle);
+        let mut scratch = core::mem::take(&mut self.ctx.scratch_conflicts);
+        let mut lowest_cost_evict_conflict_set = core::mem::take(&mut self.ctx.scratch_bundle);
         'o: loop {
             attempts += 1;
             trace!("attempt {}, req {:?}", attempts, req);

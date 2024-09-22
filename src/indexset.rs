@@ -6,10 +6,9 @@
 //! Index sets: sets of integers that represent indices into a space.
 
 use alloc::vec::Vec;
-use bumpalo::Bump;
 use core::cell::Cell;
-use core::hash::BuildHasherDefault;
-use rustc_hash::FxHasher;
+
+use crate::FxHashMap;
 
 const SMALL_ELEMS: usize = 12;
 
@@ -25,7 +24,7 @@ enum AdaptiveMap {
         keys: [u32; SMALL_ELEMS],
         values: [u64; SMALL_ELEMS],
     },
-    Large(hashbrown::HashMap<u32, u64, BuildHasherDefault<FxHasher>, &'static bumpalo::Bump>),
+    Large(FxHashMap<u32, u64>),
 }
 
 const INVALID: u32 = 0xffff_ffff;
@@ -39,15 +38,8 @@ impl AdaptiveMap {
         }
     }
 
-    fn clear(&mut self) {
-        match self {
-            AdaptiveMap::Small { .. } => *self = Self::new(),
-            AdaptiveMap::Large(hash_map) => hash_map.clear(),
-        }
-    }
-
     #[inline(always)]
-    fn get_or_insert<'a>(&'a mut self, key: u32, bump: &'static Bump) -> &'a mut u64 {
+    fn get_or_insert<'a>(&'a mut self, key: u32) -> &'a mut u64 {
         // Check whether the key is present and we are in small mode;
         // if no to both, we need to expand first.
         let small_mode_idx = match self {
@@ -72,13 +64,7 @@ impl AdaptiveMap {
                     keys[i] = key;
                     Some(i)
                 } else {
-                    let mut hmap = hashbrown::HashMap::with_capacity_and_hasher_in(
-                        values.len() * 2,
-                        Default::default(),
-                        bump,
-                    );
-                    hmap.extend(keys.iter().copied().zip(values.iter().copied()));
-                    *self = Self::Large(hmap);
+                    *self = Self::Large(keys.iter().copied().zip(values.iter().copied()).collect());
                     None
                 }
             }
@@ -209,18 +195,13 @@ impl IndexSet {
         }
     }
 
-    pub fn clear(&mut self) {
-        self.elems.clear();
-        self.cache = Cell::new((INVALID, 0));
-    }
-
     #[inline(always)]
-    fn elem(&mut self, bit_index: usize, bump: &'static Bump) -> &mut u64 {
+    fn elem(&mut self, bit_index: usize) -> &mut u64 {
         let word_index = (bit_index / BITS_PER_WORD) as u32;
         if self.cache.get().0 == word_index {
             self.cache.set((INVALID, 0));
         }
-        self.elems.get_or_insert(word_index, bump)
+        self.elems.get_or_insert(word_index)
     }
 
     #[inline(always)]
@@ -243,10 +224,10 @@ impl IndexSet {
     }
 
     #[inline(always)]
-    pub fn set(&mut self, idx: usize, val: bool, bump: &'static Bump) {
+    pub fn set(&mut self, idx: usize, val: bool) {
         let bit = idx % BITS_PER_WORD;
         if val {
-            *self.elem(idx, bump) |= 1 << bit;
+            *self.elem(idx) |= 1 << bit;
         } else if let Some(word) = self.maybe_elem_mut(idx) {
             *word &= !(1 << bit);
         }
@@ -267,14 +248,14 @@ impl IndexSet {
         }
     }
 
-    pub fn union_with(&mut self, other: &Self, bump: &'static Bump) -> bool {
+    pub fn union_with(&mut self, other: &Self) -> bool {
         let mut changed = 0;
         for (word_idx, bits) in other.elems.iter() {
             if bits == 0 {
                 continue;
             }
             let word_idx = word_idx as usize;
-            let self_word = self.elem(word_idx * BITS_PER_WORD, bump);
+            let self_word = self.elem(word_idx * BITS_PER_WORD);
             changed |= bits & !*self_word;
             *self_word |= bits;
         }
@@ -330,18 +311,15 @@ impl core::fmt::Debug for IndexSet {
 
 #[cfg(test)]
 mod test {
-    use std::boxed::Box;
-
     use super::IndexSet;
 
     #[test]
     fn test_set_bits_iter() {
         let mut vec = IndexSet::new();
-        let bump = Box::leak(Box::new(bumpalo::Bump::new()));
         let mut sum = 0;
         for i in 0..1024 {
             if i % 17 == 0 {
-                vec.set(i, true, bump);
+                vec.set(i, true);
                 sum += i;
             }
         }
@@ -358,15 +336,14 @@ mod test {
     #[test]
     fn test_expand_remove_zero_elems() {
         let mut vec = IndexSet::new();
-        let bump = Box::leak(Box::new(bumpalo::Bump::new()));
         // Set 12 different words (this is the max small-mode size).
         for i in 0..12 {
-            vec.set(64 * i, true, bump);
+            vec.set(64 * i, true);
         }
         // Now clear a bit, and set a bit in a different word. We
         // should still be in small mode.
-        vec.set(64 * 5, false, bump);
-        vec.set(64 * 100, true, bump);
+        vec.set(64 * 5, false);
+        vec.set(64 * 100, true);
         debug_assert!(vec.is_small());
     }
 }
