@@ -14,11 +14,13 @@
 
 use super::{Env, LiveBundleIndex, SpillSet, SpillSlotIndex, VRegIndex};
 use crate::{
-    ion::data_structures::{BlockparamOut, CodeRange},
+    ion::{
+        data_structures::{BlockparamOut, CodeRange},
+        LiveRangeList,
+    },
     Function, Inst, OperandConstraint, OperandKind, PReg, ProgPoint,
 };
 use alloc::format;
-use smallvec::smallvec;
 
 impl<'a, F: Function> Env<'a, F> {
     pub fn merge_bundles(&mut self, from: LiveBundleIndex, to: LiveBundleIndex) -> bool {
@@ -132,7 +134,8 @@ impl<'a, F: Function> Env<'a, F> {
             // `to` bundle is empty -- just move the list over from
             // `from` and set `bundle` up-link on all ranges.
             trace!(" -> to bundle{} is empty; trivial merge", to.index());
-            let list = core::mem::replace(&mut self.bundles[from].ranges, smallvec![]);
+            let vc = LiveRangeList::new_in(self.ctx.bump());
+            let list = core::mem::replace(&mut self.bundles[from].ranges, vc);
             for entry in &list {
                 self.ranges[entry.index].bundle = to;
 
@@ -170,7 +173,8 @@ impl<'a, F: Function> Env<'a, F> {
         // Two non-empty lists of LiveRanges: concatenate and
         // sort. This is faster than a mergesort-like merge into a new
         // list, empirically.
-        let from_list = core::mem::replace(&mut self.bundles[from].ranges, smallvec![]);
+        let vc = LiveRangeList::new_in(self.ctx.bump());
+        let from_list = core::mem::replace(&mut self.bundles[from].ranges, vc);
         for entry in &from_list {
             self.ranges[entry.index].bundle = to;
         }
@@ -236,7 +240,7 @@ impl<'a, F: Function> Env<'a, F> {
                 continue;
             }
 
-            let bundle = self.bundles.add();
+            let bundle = self.ctx.bundles.add(self.ctx.bump());
             let mut range = self.vregs[vreg].ranges.first().unwrap().range;
 
             self.bundles[bundle].ranges = self.vregs[vreg].ranges.clone();

@@ -22,6 +22,7 @@ use crate::{
     Output, PReg, ProgPoint, RegClass, VReg, VecExt,
 };
 //use alloc::collections::BTreeMap;
+use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::cmp::Ordering;
@@ -159,7 +160,7 @@ define_index!(PRegIndex);
 define_index!(SpillSlotIndex);
 
 /// Used to carry small sets of bundles, e.g. for conflict sets.
-pub type LiveBundleVec = SmallVec<[LiveBundleIndex; 4]>;
+//pub type LiveBundleVec = SmallVec<[LiveBundleIndex; 4]>;
 
 #[derive(Clone, Copy, Debug)]
 pub struct LiveRangeListEntry {
@@ -167,7 +168,7 @@ pub struct LiveRangeListEntry {
     pub index: LiveRangeIndex,
 }
 
-pub type LiveRangeList = SmallVec<[LiveRangeListEntry; 4]>;
+pub type LiveRangeList = bumpalo::collections::vec::Vec<'static, LiveRangeListEntry>;
 pub type UseList = SmallVec<[Use; 4]>;
 
 #[derive(Clone, Debug)]
@@ -450,10 +451,10 @@ impl LiveRanges {
 }
 
 impl LiveBundles {
-    pub fn add(&mut self) -> LiveBundleIndex {
+    pub fn add(&mut self, bump: &'static bumpalo::Bump) -> LiveBundleIndex {
         self.push(LiveBundle {
             allocation: Allocation::none(),
-            ranges: smallvec![],
+            ranges: LiveRangeList::new_in(bump),
             spillset: SpillSetIndex::invalid(),
             prio: 0,
             spill_weight_and_props: 0,
@@ -531,11 +532,20 @@ pub struct Ctx {
     // Output:
     pub output: Output,
 
+    pub(crate) scratch_conflicts: Vec<LiveBundleIndex>,
+    pub(crate) scratch_bundle: Vec<LiveBundleIndex>,
     pub(crate) scratch_spillset_pool: Vec<SpillSetRanges>,
     pub(crate) scratch_moves: MoveCtx,
     pub(crate) scratch_removed_lrs: FxHashSet<LiveRangeIndex>,
     pub(crate) scratch_removed_lrs_vregs: FxHashSet<VRegIndex>,
     pub(crate) scratch_vreg_ranges: Vec<LiveRangeIndex>,
+    pub(crate) scratch_bump: Box<bumpalo::Bump>,
+}
+impl Ctx {
+    // This is temporary
+    pub(crate) fn bump(&self) -> &'static bumpalo::Bump {
+        unsafe { &*(&*self.scratch_bump as *const _) }
+    }
 }
 
 #[derive(Debug)]

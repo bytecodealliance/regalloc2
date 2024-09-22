@@ -21,6 +21,7 @@ use crate::{Allocation, Function, SpillSlot};
 impl<'a, F: Function> Env<'a, F> {
     pub fn try_allocating_regs_for_spilled_bundles(&mut self) {
         trace!("allocating regs for spilled bundles");
+        let mut scratch = std::mem::take(&mut self.ctx.scratch_conflicts);
         for i in 0..self.ctx.spilled_bundles.len() {
             let bundle = self.ctx.spilled_bundles[i]; // don't borrow self
 
@@ -44,8 +45,9 @@ impl<'a, F: Function> Env<'a, F> {
             {
                 trace!("trying bundle {:?} to preg {:?}", bundle, preg);
                 let preg_idx = PRegIndex::new(preg.index());
+                scratch.clear();
                 if let AllocRegResult::Allocated(_) =
-                    self.try_to_allocate_bundle_to_reg(bundle, preg_idx, None)
+                    self.try_to_allocate_bundle_to_reg(bundle, preg_idx, None, &mut scratch)
                 {
                     self.ctx.output.stats.spill_bundle_reg_success += 1;
                     success = true;
@@ -61,6 +63,7 @@ impl<'a, F: Function> Env<'a, F> {
                 self.ctx.spillsets[self.ctx.bundles[bundle].spillset].required = true;
             }
         }
+        self.ctx.scratch_conflicts = scratch;
     }
 
     pub fn spillslot_can_fit_spillset(

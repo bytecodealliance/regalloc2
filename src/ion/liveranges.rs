@@ -13,8 +13,8 @@
 //! Live-range computation.
 
 use super::{
-    CodeRange, Env, LiveRangeFlag, LiveRangeIndex, LiveRangeKey, LiveRangeListEntry, LiveRangeSet,
-    PRegData, PRegIndex, RegClass, Use, VRegData, VRegIndex,
+    CodeRange, Env, LiveRangeFlag, LiveRangeIndex, LiveRangeKey, LiveRangeList, LiveRangeListEntry,
+    LiveRangeSet, PRegData, PRegIndex, RegClass, Use, VRegData, VRegIndex,
 };
 use crate::indexset::IndexSet;
 use crate::ion::data_structures::{
@@ -119,10 +119,10 @@ impl<'a, F: Function> Env<'a, F> {
         // Create VRegs from the vreg count.
         for idx in 0..self.func.num_vregs() {
             // We'll fill in the real details when we see the def.
-            self.vregs.add(
+            self.ctx.vregs.add(
                 VReg::new(idx, RegClass::Int),
                 VRegData {
-                    ranges: smallvec![],
+                    ranges: LiveRangeList::new_in(self.ctx.bump()),
                     blockparam: Block::invalid(),
                     // We'll learn the RegClass as we scan the code.
                     class: None,

@@ -13,9 +13,9 @@
 //! Main allocation loop that processes bundles.
 
 use super::{
-    spill_weight_from_constraint, Env, LiveBundleIndex, LiveBundleVec, LiveRangeFlag,
-    LiveRangeIndex, LiveRangeKey, LiveRangeList, LiveRangeListEntry, PRegIndex, RegTraversalIter,
-    Requirement, SpillWeight, UseList, VRegIndex,
+    spill_weight_from_constraint, Env, LiveBundleIndex, LiveRangeFlag, LiveRangeIndex,
+    LiveRangeKey, LiveRangeList, LiveRangeListEntry, PRegIndex, RegTraversalIter, Requirement,
+    SpillWeight, UseList, VRegIndex,
 };
 use crate::{
     ion::data_structures::{
@@ -25,13 +25,14 @@ use crate::{
     Allocation, Function, Inst, InstPosition, OperandConstraint, OperandKind, PReg, ProgPoint,
     RegAllocError,
 };
+use alloc::vec::Vec;
 use core::fmt::Debug;
 use smallvec::{smallvec, SmallVec};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum AllocRegResult {
+pub enum AllocRegResult<'a> {
     Allocated(Allocation),
-    Conflict(LiveBundleVec, ProgPoint),
+    Conflict(&'a [LiveBundleIndex], ProgPoint),
     ConflictWithFixed(u32, ProgPoint),
     ConflictHighCost,
 }
@@ -49,7 +50,7 @@ impl<'a, F: Function> Env<'a, F> {
         Ok(())
     }
 
-    pub fn try_to_allocate_bundle_to_reg(
+    pub fn try_to_allocate_bundle_to_reg<'b>(
         &mut self,
         bundle: LiveBundleIndex,
         reg: PRegIndex,
@@ -57,9 +58,10 @@ impl<'a, F: Function> Env<'a, F> {
         // cost (if provided), just return
         // `AllocRegResult::ConflictHighCost`.
         max_allowable_cost: Option<u32>,
-    ) -> AllocRegResult {
+        conflicts: &'b mut Vec<LiveBundleIndex>,
+    ) -> AllocRegResult<'b> {
         trace!("try_to_allocate_bundle_to_reg: {:?} -> {:?}", bundle, reg);
-        let mut conflicts = smallvec![];
+        conflicts.clear();
         self.ctx.conflict_set.clear();
         let mut max_conflict_weight = 0;
         // Traverse the BTreeMap in order by requesting the whole
@@ -190,7 +192,7 @@ impl<'a, F: Function> Env<'a, F> {
         drop(preg_range_iter);
 
         if conflicts.len() > 0 {
-            return AllocRegResult::Conflict(conflicts, first_conflict.unwrap());
+            return AllocRegResult::Conflict(&*conflicts, first_conflict.unwrap());
         }
 
         // We can allocate! Add our ranges to the preg's BTree.
@@ -247,7 +249,7 @@ impl<'a, F: Function> Env<'a, F> {
         self.ctx.bundles[bundle].cached_spill_weight()
     }
 
-    pub fn maximum_spill_weight_in_bundle_set(&self, bundles: &LiveBundleVec) -> u32 {
+    pub fn maximum_spill_weight_in_bundle_set(&self, bundles: &[LiveBundleIndex]) -> u32 {
         trace!("maximum_spill_weight_in_bundle_set: {:?}", bundles);
         let m = bundles
             .iter()
@@ -376,7 +378,7 @@ impl<'a, F: Function> Env<'a, F> {
         if idx.is_valid() {
             Some(idx)
         } else if create_if_absent {
-            let idx = self.ctx.bundles.add();
+            let idx = self.ctx.bundles.add(self.ctx.bump());
             self.ctx.spillsets[ssidx].spill_bundle = idx;
             self.ctx.bundles[idx].spillset = ssidx;
             self.ctx.spilled_bundles.push(idx);
@@ -531,12 +533,14 @@ impl<'a, F: Function> Env<'a, F> {
         );
 
         // Take the sublist of LRs that will go in the new bundle.
-        let mut new_lr_list: LiveRangeList = self.ctx.bundles[bundle]
-            .ranges
-            .iter()
-            .cloned()
-            .skip(first_lr_in_new_bundle_idx)
-            .collect();
+        let mut new_lr_list: LiveRangeList = LiveRangeList::new_in(self.ctx.bump());
+        new_lr_list.extend(
+            self.ctx.bundles[bundle]
+                .ranges
+                .iter()
+                .cloned()
+                .skip(first_lr_in_new_bundle_idx),
+        );
         self.ctx.bundles[bundle]
             .ranges
             .truncate(last_lr_in_old_bundle_idx + 1);
@@ -590,7 +594,7 @@ impl<'a, F: Function> Env<'a, F> {
                 });
         }
 
-        let new_bundle = self.ctx.bundles.add();
+        let new_bundle = self.ctx.bundles.add(self.ctx.bump());
         trace!(" -> creating new bundle {:?}", new_bundle);
         self.ctx.bundles[new_bundle].spillset = spillset;
         for entry in &new_lr_list {
@@ -801,7 +805,8 @@ impl<'a, F: Function> Env<'a, F> {
 
         let mut spill_uses = UseList::new();
 
-        for entry in core::mem::take(&mut self.ctx.bundles[bundle].ranges) {
+        let vc = LiveRangeList::new_in(self.ctx.bump());
+        for entry in core::mem::replace(&mut self.ctx.bundles[bundle].ranges, vc) {
             let lr_from = entry.range.from;
             let lr_to = entry.range.to;
             let vreg = self.ctx.ranges[entry.index].vreg;
@@ -901,7 +906,7 @@ impl<'a, F: Function> Env<'a, F> {
                 self.ctx.ranges[lr].vreg = vreg;
 
                 // Create a new bundle that contains only this LR.
-                let new_bundle = self.ctx.bundles.add();
+                let new_bundle = self.ctx.bundles.add(self.ctx.bump());
                 self.ctx.ranges[lr].bundle = new_bundle;
                 self.ctx.bundles[new_bundle].spillset = spillset;
                 self.ctx.bundles[new_bundle]
@@ -1037,8 +1042,8 @@ impl<'a, F: Function> Env<'a, F> {
                 if let Some(spill) =
                     self.get_or_create_spill_bundle(bundle, /* create_if_absent = */ false)
                 {
-                    let mut list =
-                        core::mem::replace(&mut self.ctx.bundles[bundle].ranges, smallvec![]);
+                    let vc = LiveRangeList::new_in(self.ctx.bump());
+                    let mut list = core::mem::replace(&mut self.ctx.bundles[bundle].ranges, vc);
                     for entry in &list {
                         self.ctx.ranges[entry.index].bundle = spill;
                     }
@@ -1051,6 +1056,8 @@ impl<'a, F: Function> Env<'a, F> {
 
         // Try to allocate!
         let mut attempts = 0;
+        let mut scratch = Vec::<LiveBundleIndex>::new();
+        let mut lowest_cost_evict_conflict_set = Vec::<LiveBundleIndex>::new();
         loop {
             attempts += 1;
             trace!("attempt {}, req {:?}", attempts, req);
@@ -1067,7 +1074,6 @@ impl<'a, F: Function> Env<'a, F> {
             };
             // Scan all pregs, or the one fixed preg, and attempt to allocate.
 
-            let mut lowest_cost_evict_conflict_set: Option<LiveBundleVec> = None;
             let mut lowest_cost_evict_conflict_cost: Option<u32> = None;
 
             let mut lowest_cost_split_conflict_cost: Option<u32> = None;
@@ -1106,7 +1112,12 @@ impl<'a, F: Function> Env<'a, F> {
                     (Some(a), Some(b)) => Some(core::cmp::max(a, b)),
                     _ => None,
                 };
-                match self.try_to_allocate_bundle_to_reg(bundle, preg_idx, scan_limit_cost) {
+                match self.try_to_allocate_bundle_to_reg(
+                    bundle,
+                    preg_idx,
+                    scan_limit_cost,
+                    &mut scratch,
+                ) {
                     AllocRegResult::Allocated(alloc) => {
                         self.ctx.output.stats.process_bundle_reg_success_any += 1;
                         trace!(" -> allocated to any {:?}", preg_idx);
@@ -1121,13 +1132,14 @@ impl<'a, F: Function> Env<'a, F> {
                             first_conflict_point
                         );
 
-                        let conflict_cost = self.maximum_spill_weight_in_bundle_set(&bundles);
+                        let conflict_cost = self.maximum_spill_weight_in_bundle_set(bundles);
 
                         if lowest_cost_evict_conflict_cost.is_none()
                             || conflict_cost < lowest_cost_evict_conflict_cost.unwrap()
                         {
                             lowest_cost_evict_conflict_cost = Some(conflict_cost);
-                            lowest_cost_evict_conflict_set = Some(bundles);
+                            lowest_cost_evict_conflict_set.clear();
+                            lowest_cost_evict_conflict_set.extend(bundles);
                         }
 
                         let loop_depth =
@@ -1325,7 +1337,7 @@ impl<'a, F: Function> Env<'a, F> {
             } else {
                 // Evict all bundles in `conflicting bundles` and try again.
                 self.ctx.output.stats.evict_bundle_event += 1;
-                for &bundle in &lowest_cost_evict_conflict_set.unwrap() {
+                for &bundle in &lowest_cost_evict_conflict_set {
                     trace!(" -> evicting {:?}", bundle);
                     self.evict_bundle(bundle);
                     self.ctx.output.stats.evict_bundle_count += 1;

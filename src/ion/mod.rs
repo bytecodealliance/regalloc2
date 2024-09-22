@@ -66,6 +66,7 @@ impl<'a, F: Function> Env<'a, F> {
         ctx.allocated_bundle_count = 0;
         ctx.debug_annotations.clear();
         ctx.conflict_set.clear();
+        ctx.scratch_bump.reset();
 
         ctx.output.allocs.prepare(4 * ninstrs);
         ctx.output.inst_alloc_offsets.clear();
