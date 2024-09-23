@@ -14,7 +14,7 @@
 
 use super::liveranges::SpillWeight;
 use super::moves::MoveCtx;
-use crate::cfg::CompactCFGInfo;
+use crate::cfg::CFGInfo;
 use crate::index::ContainerComparator;
 use crate::indexset::IndexSet;
 use crate::{
@@ -546,7 +546,7 @@ impl core::ops::IndexMut<VReg> for VRegs {
 
 #[derive(Default)]
 pub struct Ctx {
-    pub(crate) cfginfo: CompactCFGInfo,
+    pub(crate) cfginfo: CFGInfo,
     pub(crate) liveins: Vec<IndexSet>,
     pub(crate) liveouts: Vec<IndexSet>,
     pub(crate) blockparam_outs: Vec<BlockparamOut>,

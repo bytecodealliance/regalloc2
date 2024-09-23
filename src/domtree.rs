@@ -50,27 +50,13 @@ pub fn calculate<'a, PredFn: Fn(Block) -> &'a [Block]>(
     start: Block,
 ) {
     // We have post_ord, which is the postorder sequence.
-
     // Compute maps from RPO to block number and vice-versa.
     let block_to_rpo = block_to_rpo_scratch.repopuate(num_blocks, u32::MAX);
-    let out = out.repopuate(num_blocks, Block::invalid());
-    calculate_soa(preds, post_ord, block_to_rpo, out, start);
-}
-
-pub fn calculate_soa<'a, PredFn: Fn(Block) -> &'a [Block]>(
-    preds: PredFn,
-    post_ord: &[Block],
-    block_to_rpo: &mut [u32],
-    idom: &mut [Block],
-    start: Block,
-) {
-    // We have post_ord, which is the postorder sequence.
-
-    // Compute maps from RPO to block number and vice-versa.
     for (i, rpo_block) in post_ord.iter().rev().enumerate() {
         block_to_rpo[rpo_block.index()] = i as u32;
     }
 
+    let idom = out.repopuate(num_blocks, Block::invalid());
     // The start node must have itself as a parent.
     idom[start.index()] = start;
 

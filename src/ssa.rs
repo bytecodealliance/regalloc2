@@ -7,10 +7,10 @@
 
 use alloc::vec;
 
-use crate::cfg::CompactCFGInfo;
+use crate::cfg::CFGInfo;
 use crate::{Block, Function, FxHashSet, Inst, OperandKind, RegAllocError, VReg};
 
-pub fn validate_ssa<F: Function>(f: &F, cfginfo: &CompactCFGInfo) -> Result<(), RegAllocError> {
+pub fn validate_ssa<F: Function>(f: &F, cfginfo: &CFGInfo) -> Result<(), RegAllocError> {
     // For every block param and inst def, check that this is the only def.
     let mut defined_in = vec![Block::invalid(); f.num_vregs()];
     for block in 0..f.num_blocks() {

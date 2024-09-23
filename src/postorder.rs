@@ -16,25 +16,15 @@ pub fn calculate<'a, SuccFn: Fn(Block) -> &'a [Block]>(
     out: &mut Vec<Block>,
     succ_blocks: SuccFn,
 ) {
-    let out = out.repopuate(num_blocks, Block::invalid());
     // State: visited-block map, and explicit DFS stack.
-    let visited = visited_scratch.repopuate(num_blocks, false);
-    calculate_soa(entry, visited, out, succ_blocks);
-}
-
-pub fn calculate_soa<'a, SuccFn: Fn(Block) -> &'a [Block]>(
-    entry: Block,
-    visited: &mut [bool],
-    out: &mut [Block],
-    succ_blocks: SuccFn,
-) {
     struct State<'a> {
         block: Block,
         succs: core::slice::Iter<'a, Block>,
     }
 
+    let visited = visited_scratch.repopuate(num_blocks, false);
     let mut stack: SmallVec<[State; 64]> = smallvec![];
-    let mut out_iter = out.iter_mut();
+    out.clear();
 
     visited[entry.index()] = true;
     stack.push(State {
@@ -53,7 +43,7 @@ pub fn calculate_soa<'a, SuccFn: Fn(Block) -> &'a [Block]>(
                 });
             }
         } else {
-            *out_iter.next().unwrap() = state.block;
+            out.push(state.block);
             stack.pop();
         }
     }

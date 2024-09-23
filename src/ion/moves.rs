@@ -34,11 +34,11 @@ use smallvec::{smallvec, SmallVec};
 impl<'a, F: Function> Env<'a, F> {
     pub fn is_start_of_block(&self, pos: ProgPoint) -> bool {
         let block = self.ctx.cfginfo.insn_block[pos.inst().index()];
-        pos == self.ctx.cfginfo.slice().block_entry[block.index()]
+        pos == self.ctx.cfginfo.block_entry[block.index()]
     }
     pub fn is_end_of_block(&self, pos: ProgPoint) -> bool {
         let block = self.ctx.cfginfo.insn_block[pos.inst().index()];
-        pos == self.ctx.cfginfo.slice().block_exit[block.index()]
+        pos == self.ctx.cfginfo.block_exit[block.index()]
     }
 
     pub fn get_alloc(&self, inst: Inst, slot: usize) -> Allocation {
@@ -207,7 +207,7 @@ impl<'a, F: Function> Env<'a, F> {
                 // Source half-move.
                 let mut block = self.ctx.cfginfo.insn_block[range.from.inst().index()];
                 while block.is_valid() && block.index() < self.func.num_blocks() {
-                    if range.to < self.ctx.cfginfo.slice().block_exit[block.index()].next() {
+                    if range.to < self.ctx.cfginfo.block_exit[block.index()].next() {
                         break;
                     }
                     trace!("examining block with end in range: block{}", block.index());
@@ -269,7 +269,7 @@ impl<'a, F: Function> Env<'a, F> {
 
                             if self.ctx.annotations_enabled {
                                 self.annotate(
-                                    self.ctx.cfginfo.slice().block_exit[block.index()],
+                                    self.ctx.cfginfo.block_exit[block.index()],
                                     format!(
                                         "blockparam-out: block{} to block{}: v{} to v{} in {}",
                                         from_block.index(),
@@ -293,11 +293,11 @@ impl<'a, F: Function> Env<'a, F> {
                 // start of the block. For each, for each predecessor,
                 // add a Dest half-move.
                 let mut block = self.ctx.cfginfo.insn_block[range.from.inst().index()];
-                if self.ctx.cfginfo.slice().block_entry[block.index()] < range.from {
+                if self.ctx.cfginfo.block_entry[block.index()] < range.from {
                     block = block.next();
                 }
                 while block.is_valid() && block.index() < self.func.num_blocks() {
-                    if self.ctx.cfginfo.slice().block_entry[block.index()] >= range.to {
+                    if self.ctx.cfginfo.block_entry[block.index()] >= range.to {
                         break;
                     }
 
@@ -335,7 +335,7 @@ impl<'a, F: Function> Env<'a, F> {
                             #[cfg(debug_assertions)]
                             if self.ctx.annotations_enabled {
                                 self.annotate(
-                                    self.ctx.cfginfo.slice().block_entry[block.index()],
+                                    self.ctx.cfginfo.block_entry[block.index()],
                                     format!(
                                         "blockparam-in: block{} to block{}:into v{} in {}",
                                         from_block.index(),
@@ -368,9 +368,9 @@ impl<'a, F: Function> Env<'a, F> {
                         trace!(
                             "pred block {} has exit {:?}",
                             pred.index(),
-                            self.ctx.cfginfo.slice().block_exit[pred.index()]
+                            self.ctx.cfginfo.block_exit[pred.index()]
                         );
-                        if range.contains_point(self.ctx.cfginfo.slice().block_exit[pred.index()]) {
+                        if range.contains_point(self.ctx.cfginfo.block_exit[pred.index()]) {
                             continue;
                         }
 
