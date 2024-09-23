@@ -65,7 +65,6 @@ impl<'a, F: Function> Env<'a, F> {
         ctx.multi_fixed_reg_fixups.clear();
         ctx.allocated_bundle_count = 0;
         ctx.debug_annotations.clear();
-        ctx.conflict_set.clear();
         ctx.scratch_bump
             .get_mut()
             .expect("we dropped all refs to this")

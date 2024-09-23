@@ -91,7 +91,7 @@ unsafe impl allocator_api2::alloc::Allocator for Bump {
 
 #[derive(Clone, Debug)]
 pub struct BTreeMap<K, V> {
-    values: Vec<(K, V)>,
+    pub values: Vec<(K, V)>,
 }
 
 impl<K: Eq + Ord + Copy, V> BTreeMap<K, V> {
@@ -126,12 +126,16 @@ impl<K: Eq + Ord + Copy, V> BTreeMap<K, V> {
             .map(|i| self.values.remove(i).1)
     }
 
-    pub fn range(&self, range: core::ops::RangeFrom<K>) -> impl Iterator<Item = (&K, &V)> {
+    pub fn range(&self, range: core::ops::RangeFrom<K>) -> &[(K, V)] {
+        if self.values.last().map(|e| e.0) < Some(range.start) {
+            return &[];
+        }
+
         let start = self
             .values
             .binary_search_by_key(&range.start, |e| e.0)
             .unwrap_or_else(identity);
-        self.values[start..].iter().map(|(k, v)| (k, v))
+        &self.values[start..]
     }
 }
 
@@ -236,7 +240,7 @@ pub struct LiveRange {
     pub vreg: VRegIndex,
     pub bundle: LiveBundleIndex,
     pub uses_spill_weight_and_flags: u32,
-
+    pub not_removed_lrs: bool,
     pub uses: UseList,
 }
 
@@ -418,6 +422,7 @@ pub struct VRegData {
     pub blockparam: Block,
     // We don't initially know the RegClass until we observe a use of the VReg.
     pub class: Option<RegClass>,
+    pub not_removed_lrs: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -502,7 +507,7 @@ impl LiveRanges {
             vreg: VRegIndex::invalid(),
             bundle: LiveBundleIndex::invalid(),
             uses_spill_weight_and_flags: 0,
-
+            not_removed_lrs: true,
             uses: UseList::new_in(bump),
         })
     }
@@ -585,7 +590,7 @@ pub struct Ctx {
 
     // Cached allocation for `try_to_allocate_bundle_to_reg` to avoid allocating
     // a new HashSet on every call.
-    pub(crate) conflict_set: FxHashSet<LiveBundleIndex>,
+    pub(crate) conflict_set: Vec<bool>,
 
     // Output:
     pub output: Output,
@@ -598,8 +603,8 @@ pub struct Ctx {
     pub(crate) scratch_workqueue: VecDeque<Block>,
 
     pub(crate) scratch_operand_rewrites: FxHashMap<usize, Operand>,
-    pub(crate) scratch_removed_lrs: FxHashSet<LiveRangeIndex>,
-    pub(crate) scratch_removed_lrs_vregs: FxHashSet<VRegIndex>,
+    pub(crate) scratch_removed_lrs: Vec<LiveRangeIndex>,
+    pub(crate) scratch_removed_lrs_vregs: Vec<VRegIndex>,
     pub(crate) scratch_workqueue_set: FxHashSet<Block>,
 
     pub(crate) scratch_moves: MoveCtx,

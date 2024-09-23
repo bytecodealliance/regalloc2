@@ -26,7 +26,7 @@ use crate::{
     RegAllocError,
 };
 use alloc::vec::Vec;
-use core::fmt::Debug;
+use core::{convert::identity, fmt::Debug};
 use smallvec::{smallvec, SmallVec};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -62,7 +62,7 @@ impl<'a, F: Function> Env<'a, F> {
     ) -> AllocRegResult<'b> {
         trace!("try_to_allocate_bundle_to_reg: {:?} -> {:?}", bundle, reg);
         conflicts.clear();
-        self.ctx.conflict_set.clear();
+        self.ctx.conflict_set.resize(self.ctx.bundles.len(), true);
         let mut max_conflict_weight = 0;
         // Traverse the BTreeMap in order by requesting the whole
         // range spanned by the bundle and iterating over that
@@ -86,7 +86,7 @@ impl<'a, F: Function> Env<'a, F> {
             .allocations
             .btree
             .range(from_key..)
-            .peekable();
+            .iter();
         trace!(
             "alloc map for {:?} in range {:?}..: {:?}",
             reg,
@@ -101,17 +101,18 @@ impl<'a, F: Function> Env<'a, F> {
 
             let mut skips = 0;
             'alloc: loop {
-                trace!("  -> PReg range {:?}", preg_range_iter.peek());
+                let Some(next) = preg_range_iter.as_slice().first() else {
+                    trace!(" -> no more PReg allocations; so no conflict possible!");
+                    break 'ranges;
+                };
+                trace!("  -> PReg range {:?}", next);
 
                 // Advance our BTree traversal until it is >= this bundle
                 // range (i.e., skip PReg allocations in the BTree that
                 // are completely before this bundle range).
 
-                if preg_range_iter.peek().is_some() && *preg_range_iter.peek().unwrap().0 < key {
-                    trace!(
-                        "Skipping PReg range {:?}",
-                        preg_range_iter.peek().unwrap().0
-                    );
+                if next.0 < key {
+                    trace!("Skipping PReg range {:?}", next.0);
                     preg_range_iter.next();
                     skips += 1;
                     if skips >= 16 {
@@ -120,45 +121,40 @@ impl<'a, F: Function> Env<'a, F> {
                             from: from_pos,
                             to: from_pos,
                         });
-                        preg_range_iter = self.ctx.pregs[reg.index()]
-                            .allocations
-                            .btree
-                            .range(from_key..)
-                            .peekable();
+
+                        preg_range_iter = preg_range_iter.as_slice()[preg_range_iter
+                            .as_slice()
+                            .binary_search_by_key(&from_key, |e| e.0)
+                            .unwrap_or_else(identity)..]
+                            .iter();
                         skips = 0;
                     }
                     continue 'alloc;
                 }
                 skips = 0;
 
-                // If there are no more PReg allocations, we're done!
-                if preg_range_iter.peek().is_none() {
-                    trace!(" -> no more PReg allocations; so no conflict possible!");
-                    break 'ranges;
-                }
-
                 // If the current PReg range is beyond this range, there is no conflict; continue.
-                if *preg_range_iter.peek().unwrap().0 > key {
+                if next.0 > key {
                     trace!(
                         " -> next PReg allocation is at {:?}; moving to next VReg range",
-                        preg_range_iter.peek().unwrap().0
+                        next.0
                     );
                     break 'alloc;
                 }
 
                 // Otherwise, there is a conflict.
-                let preg_key = *preg_range_iter.peek().unwrap().0;
+                let preg_key = next.0;
                 debug_assert_eq!(preg_key, key); // Assert that this range overlaps.
                 let preg_range = preg_range_iter.next().unwrap().1;
 
                 trace!(" -> btree contains range {:?} that overlaps", preg_range);
                 if preg_range.is_valid() {
-                    trace!("   -> from vreg {:?}", self.ctx.ranges[*preg_range].vreg);
+                    trace!("   -> from vreg {:?}", self.ctx.ranges[preg_range].vreg);
                     // range from an allocated bundle: find the bundle and add to
                     // conflicts list.
-                    let conflict_bundle = self.ctx.ranges[*preg_range].bundle;
+                    let conflict_bundle = self.ctx.ranges[preg_range].bundle;
                     trace!("   -> conflict bundle {:?}", conflict_bundle);
-                    if self.ctx.conflict_set.insert(conflict_bundle) {
+                    if core::mem::take(&mut self.ctx.conflict_set[conflict_bundle.index()]) {
                         conflicts.push(conflict_bundle);
                         max_conflict_weight = core::cmp::max(
                             max_conflict_weight,
@@ -168,6 +164,9 @@ impl<'a, F: Function> Env<'a, F> {
                             && max_conflict_weight > max_allowable_cost.unwrap()
                         {
                             trace!("   -> reached high cost, retrying early");
+                            conflicts
+                                .iter()
+                                .for_each(|&i| self.ctx.conflict_set[i.index()] = true);
                             return AllocRegResult::ConflictHighCost;
                         }
                     }
@@ -181,6 +180,9 @@ impl<'a, F: Function> Env<'a, F> {
                 } else {
                     trace!("   -> conflict with fixed reservation");
                     // range from a direct use of the PReg (due to clobber).
+                    conflicts
+                        .iter()
+                        .for_each(|&i| self.ctx.conflict_set[i.index()] = true);
                     return AllocRegResult::ConflictWithFixed(
                         max_conflict_weight,
                         ProgPoint::from_index(preg_key.from),
@@ -192,6 +194,9 @@ impl<'a, F: Function> Env<'a, F> {
         drop(preg_range_iter);
 
         if conflicts.len() > 0 {
+            conflicts
+                .iter()
+                .for_each(|&i| self.ctx.conflict_set[i.index()] = true);
             return AllocRegResult::Conflict(&*conflicts, first_conflict.unwrap());
         }
 
@@ -816,8 +821,12 @@ impl<'a, F: Function> Env<'a, F> {
             let lr_to = entry.range.to;
             let vreg = self.ctx.ranges[entry.index].vreg;
 
-            self.ctx.scratch_removed_lrs.insert(entry.index);
-            self.ctx.scratch_removed_lrs_vregs.insert(vreg);
+            if core::mem::take(&mut self.ctx.ranges[entry.index].not_removed_lrs) {
+                self.ctx.scratch_removed_lrs.push(entry.index);
+            }
+            if core::mem::take(&mut self.ctx.vregs[vreg].not_removed_lrs) {
+                self.ctx.scratch_removed_lrs_vregs.push(vreg);
+            }
             trace!(" -> removing old LR {:?} for vreg {:?}", entry.index, vreg);
 
             let mut spill_range = entry.range;
@@ -974,11 +983,16 @@ impl<'a, F: Function> Env<'a, F> {
         }
 
         // Remove all of the removed LRs from respective vregs' lists.
-        let rlrs = &self.ctx.scratch_removed_lrs;
-        for vreg in self.ctx.scratch_removed_lrs_vregs.drain() {
+        for vreg in self.ctx.scratch_removed_lrs_vregs.drain(..) {
+            let ranges = &mut self.ctx.ranges;
             self.ctx.vregs[vreg]
                 .ranges
-                .retain(|entry| !rlrs.contains(&entry.index));
+                .retain(|entry| ranges[entry.index].not_removed_lrs);
+            self.ctx.vregs[vreg].not_removed_lrs = true;
+        }
+
+        for rls in self.ctx.scratch_removed_lrs.drain(..) {
+            self.ctx.ranges[rls].not_removed_lrs = true;
         }
 
         // Add the new LRs to their respective vreg lists.
