@@ -33,11 +33,11 @@ use smallvec::{smallvec, SmallVec};
 
 impl<'a, F: Function> Env<'a, F> {
     pub fn is_start_of_block(&self, pos: ProgPoint) -> bool {
-        let block = self.ctx.cfginfo.slice().insn_block[pos.inst().index()];
+        let block = self.ctx.cfginfo.insn_block[pos.inst().index()];
         pos == self.ctx.cfginfo.slice().block_entry[block.index()]
     }
     pub fn is_end_of_block(&self, pos: ProgPoint) -> bool {
-        let block = self.ctx.cfginfo.slice().insn_block[pos.inst().index()];
+        let block = self.ctx.cfginfo.insn_block[pos.inst().index()];
         pos == self.ctx.cfginfo.slice().block_exit[block.index()]
     }
 
@@ -205,7 +205,7 @@ impl<'a, F: Function> Env<'a, F> {
                 // already in this range (hence guaranteed to have the
                 // same allocation) and if the vreg is live, add a
                 // Source half-move.
-                let mut block = self.ctx.cfginfo.slice().insn_block[range.from.inst().index()];
+                let mut block = self.ctx.cfginfo.insn_block[range.from.inst().index()];
                 while block.is_valid() && block.index() < self.func.num_blocks() {
                     if range.to < self.ctx.cfginfo.slice().block_exit[block.index()].next() {
                         break;
@@ -292,7 +292,7 @@ impl<'a, F: Function> Env<'a, F> {
                 // this range and for which the vreg is live at the
                 // start of the block. For each, for each predecessor,
                 // add a Dest half-move.
-                let mut block = self.ctx.cfginfo.slice().insn_block[range.from.inst().index()];
+                let mut block = self.ctx.cfginfo.insn_block[range.from.inst().index()];
                 if self.ctx.cfginfo.slice().block_entry[block.index()] < range.from {
                     block = block.next();
                 }
@@ -622,8 +622,8 @@ impl<'a, F: Function> Env<'a, F> {
             to: ProgPoint,
         ) {
             // If we cross a block boundary, clear and return.
-            if this.cfginfo.slice().insn_block[from.inst().index()]
-                != this.cfginfo.slice().insn_block[to.inst().index()]
+            if this.cfginfo.insn_block[from.inst().index()]
+                != this.cfginfo.insn_block[to.inst().index()]
             {
                 redundant_moves.clear();
                 return;

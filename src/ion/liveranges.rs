@@ -211,7 +211,7 @@ impl<'a, F: Function> Env<'a, F> {
     pub fn insert_use_into_liverange(&mut self, into: LiveRangeIndex, mut u: Use) {
         let operand = u.operand;
         let constraint = operand.constraint();
-        let block = self.cfginfo.slice().insn_block[u.pos.inst().index()];
+        let block = self.cfginfo.insn_block[u.pos.inst().index()];
         let loop_depth = self.cfginfo.slice().approx_loop_depth[block.index()] as usize;
         let weight = spill_weight_from_constraint(
             constraint,
