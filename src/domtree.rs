@@ -12,6 +12,8 @@
 //   TR-06-33870
 //   https://www.cs.rice.edu/~keith/EMBED/dom.pdf
 
+use core::u32;
+
 use alloc::vec::Vec;
 
 use crate::{Block, VecExt};
@@ -19,7 +21,7 @@ use crate::{Block, VecExt};
 // Helper
 fn merge_sets(
     idom: &[Block], // map from Block to Block
-    block_to_rpo: &[Option<u32>],
+    block_to_rpo: &[u32],
     mut node1: Block,
     mut node2: Block,
 ) -> Block {
@@ -27,8 +29,8 @@ fn merge_sets(
         if node1.is_invalid() || node2.is_invalid() {
             return Block::invalid();
         }
-        let rpo1 = block_to_rpo[node1.index()].unwrap();
-        let rpo2 = block_to_rpo[node2.index()].unwrap();
+        let rpo1 = block_to_rpo[node1.index()];
+        let rpo2 = block_to_rpo[node2.index()];
         if rpo1 > rpo2 {
             node1 = idom[node1.index()];
         } else if rpo2 > rpo1 {
@@ -43,19 +45,31 @@ pub fn calculate<'a, PredFn: Fn(Block) -> &'a [Block]>(
     num_blocks: usize,
     preds: PredFn,
     post_ord: &[Block],
-    block_to_rpo_scratch: &mut Vec<Option<u32>>,
+    block_to_rpo_scratch: &mut Vec<u32>,
     out: &mut Vec<Block>,
     start: Block,
 ) {
     // We have post_ord, which is the postorder sequence.
 
     // Compute maps from RPO to block number and vice-versa.
-    let block_to_rpo = block_to_rpo_scratch.repopuate(num_blocks, None);
-    for (i, rpo_block) in post_ord.iter().rev().enumerate() {
-        block_to_rpo[rpo_block.index()] = Some(i as u32);
-    }
+    let block_to_rpo = block_to_rpo_scratch.repopuate(num_blocks, u32::MAX);
+    let out = out.repopuate(num_blocks, Block::invalid());
+    calculate_soa(preds, post_ord, block_to_rpo, out, start);
+}
 
-    let idom = out.repopuate(num_blocks, Block::invalid());
+pub fn calculate_soa<'a, PredFn: Fn(Block) -> &'a [Block]>(
+    preds: PredFn,
+    post_ord: &[Block],
+    block_to_rpo: &mut [u32],
+    idom: &mut [Block],
+    start: Block,
+) {
+    // We have post_ord, which is the postorder sequence.
+
+    // Compute maps from RPO to block number and vice-versa.
+    for (i, rpo_block) in post_ord.iter().rev().enumerate() {
+        block_to_rpo[rpo_block.index()] = i as u32;
+    }
 
     // The start node must have itself as a parent.
     idom[start.index()] = start;
@@ -65,16 +79,16 @@ pub fn calculate<'a, PredFn: Fn(Block) -> &'a [Block]>(
         changed = false;
         // Consider blocks in reverse postorder. Skip any that are unreachable.
         for &node in post_ord.iter().rev() {
-            let rponum = block_to_rpo[node.index()].unwrap();
+            let rponum = block_to_rpo[node.index()];
 
             let mut parent = Block::invalid();
             for &pred in preds(node).iter() {
                 let pred_rpo = match block_to_rpo[pred.index()] {
-                    Some(r) => r,
-                    None => {
+                    u32::MAX => {
                         // Skip unreachable preds.
                         continue;
                     }
+                    r => r,
                 };
                 if pred_rpo < rponum {
                     parent = pred;

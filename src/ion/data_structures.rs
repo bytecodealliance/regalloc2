@@ -14,7 +14,7 @@
 
 use super::liveranges::SpillWeight;
 use super::moves::MoveCtx;
-use crate::cfg::CFGInfo;
+use crate::cfg::{CFGInfo, CompactCFGInfo};
 use crate::index::ContainerComparator;
 use crate::indexset::IndexSet;
 use crate::{
@@ -22,8 +22,8 @@ use crate::{
     Output, PReg, ProgPoint, RegClass, VReg, VecExt,
 };
 //use alloc::collections::BTreeMap;
-use alloc::boxed::Box;
 use alloc::collections::VecDeque;
+use alloc::rc::Rc;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::cmp::Ordering;
@@ -32,7 +32,62 @@ use core::fmt::Debug;
 use core::ops::{Deref, DerefMut};
 use smallvec::SmallVec;
 
-pub type Bump = &'static bumpalo::Bump;
+#[derive(Debug, Clone, Default)]
+pub struct Bump(Rc<bumpalo::Bump>);
+
+impl Bump {
+    pub(crate) fn get_mut(&mut self) -> Option<&mut bumpalo::Bump> {
+        Rc::get_mut(&mut self.0)
+    }
+}
+
+// simply delegating beause `Rc<bumpalo::Bump>` does not implement `Allocator`
+unsafe impl allocator_api2::alloc::Allocator for Bump {
+    fn allocate(
+        &self,
+        layout: core::alloc::Layout,
+    ) -> Result<core::ptr::NonNull<[u8]>, allocator_api2::alloc::AllocError> {
+        self.0.deref().allocate(layout)
+    }
+
+    unsafe fn deallocate(&self, ptr: core::ptr::NonNull<u8>, layout: core::alloc::Layout) {
+        self.0.deref().deallocate(ptr, layout);
+    }
+
+    fn allocate_zeroed(
+        &self,
+        layout: core::alloc::Layout,
+    ) -> Result<core::ptr::NonNull<[u8]>, allocator_api2::alloc::AllocError> {
+        self.0.deref().allocate_zeroed(layout)
+    }
+
+    unsafe fn grow(
+        &self,
+        ptr: core::ptr::NonNull<u8>,
+        old_layout: core::alloc::Layout,
+        new_layout: core::alloc::Layout,
+    ) -> Result<core::ptr::NonNull<[u8]>, allocator_api2::alloc::AllocError> {
+        self.0.deref().grow(ptr, old_layout, new_layout)
+    }
+
+    unsafe fn grow_zeroed(
+        &self,
+        ptr: core::ptr::NonNull<u8>,
+        old_layout: core::alloc::Layout,
+        new_layout: core::alloc::Layout,
+    ) -> Result<core::ptr::NonNull<[u8]>, allocator_api2::alloc::AllocError> {
+        self.0.deref().grow_zeroed(ptr, old_layout, new_layout)
+    }
+
+    unsafe fn shrink(
+        &self,
+        ptr: core::ptr::NonNull<u8>,
+        old_layout: core::alloc::Layout,
+        new_layout: core::alloc::Layout,
+    ) -> Result<core::ptr::NonNull<[u8]>, allocator_api2::alloc::AllocError> {
+        self.0.deref().shrink(ptr, old_layout, new_layout)
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct BTreeMap<K, V> {
@@ -171,8 +226,8 @@ pub struct LiveRangeListEntry {
     pub index: LiveRangeIndex,
 }
 
-pub type LiveRangeList = bumpalo::collections::vec::Vec<'static, LiveRangeListEntry>;
-pub type UseList = bumpalo::collections::vec::Vec<'static, Use>;
+pub type LiveRangeList = allocator_api2::vec::Vec<LiveRangeListEntry, Bump>;
+pub type UseList = allocator_api2::vec::Vec<Use, Bump>;
 
 #[derive(Clone, Debug)]
 pub struct LiveRange {
@@ -489,9 +544,9 @@ impl core::ops::IndexMut<VReg> for VRegs {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct Ctx {
-    pub(crate) cfginfo: CFGInfo,
+    pub(crate) cfginfo: CompactCFGInfo,
     pub(crate) liveins: Vec<IndexSet>,
     pub(crate) liveouts: Vec<IndexSet>,
     pub(crate) blockparam_outs: Vec<BlockparamOut>,
@@ -535,27 +590,29 @@ pub struct Ctx {
     // Output:
     pub output: Output,
 
-    pub(crate) scratch_operand_rewrites: FxHashMap<usize, Operand>,
     pub(crate) scratch_conflicts: Vec<LiveBundleIndex>,
-    pub(crate) scratch_workqueue: VecDeque<Block>,
-    pub(crate) scratch_workqueue_set: FxHashSet<Block>,
     pub(crate) scratch_bundle: Vec<LiveBundleIndex>,
+    pub(crate) scratch_vreg_ranges: Vec<LiveRangeIndex>,
     pub(crate) scratch_spillset_pool: Vec<SpillSetRanges>,
-    pub(crate) scratch_moves: MoveCtx,
+
+    pub(crate) scratch_workqueue: VecDeque<Block>,
+
+    pub(crate) scratch_operand_rewrites: FxHashMap<usize, Operand>,
     pub(crate) scratch_removed_lrs: FxHashSet<LiveRangeIndex>,
     pub(crate) scratch_removed_lrs_vregs: FxHashSet<VRegIndex>,
-    pub(crate) scratch_vreg_ranges: Vec<LiveRangeIndex>,
-    pub(crate) scratch_bump: Box<bumpalo::Bump>,
+    pub(crate) scratch_workqueue_set: FxHashSet<Block>,
+
+    pub(crate) scratch_moves: MoveCtx,
+
+    pub(crate) scratch_bump: Bump,
 }
 
 impl Ctx {
-    // TODO: turn this into `Rc<_>`, it should not be that horrible
     pub(crate) fn bump(&self) -> Bump {
-        unsafe { &*(&*self.scratch_bump as *const _) }
+        self.scratch_bump.clone()
     }
 }
 
-#[derive(Debug)]
 pub struct Env<'a, F: Function> {
     pub func: &'a F,
     pub env: &'a MachineEnv,

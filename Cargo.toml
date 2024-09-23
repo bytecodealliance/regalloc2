@@ -28,7 +28,8 @@ serde = { version = "1.0.136", features = [
 
 # The below are only needed for fuzzing.
 libfuzzer-sys = { version = "0.4.2", optional = true }
-bumpalo = { version = "3.16.0", features = ["allocator-api2", "collections"] }
+bumpalo = { version = "3.16.0", features = ["allocator-api2"] }
+allocator-api2 = { version = "0.2.18", default-features = false, features = ["alloc"] }
 
 # When testing regalloc2 by itself, enable debug assertions and overflow checks
 [profile.release]

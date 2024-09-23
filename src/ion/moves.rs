@@ -849,12 +849,12 @@ impl<'a, F: Function> Env<'a, F> {
 #[derive(Default, Debug)]
 pub struct MoveCtx {
     inserted_moves: InsertedMoves,
+    edits: Edits,
     inter_block_sources: FxHashMap<Block, Allocation>,
-    inter_block_dests: Vec<InterBlockDest>,
     block_param_sources: FxHashMap<BlockparamSourceKey, Allocation>,
+    inter_block_dests: Vec<InterBlockDest>,
     block_param_dests: Vec<BlockparamDest>,
     reuse_input_insts: Vec<Inst>,
-    edits: Edits,
 }
 
 /// Buffered information about the previous liverange that was processed.
