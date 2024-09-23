@@ -64,7 +64,7 @@ macro_rules! decl_soa {
                 }
             }
 
-            fn slice(&self) -> $slice_name {
+            $vis fn slice(&self) -> $slice_name {
                 unsafe {
                     $slice_name {
                         $($field: core::slice::from_raw_parts(self.$field, self.len),)*
@@ -72,7 +72,7 @@ macro_rules! decl_soa {
                 }
             }
 
-            fn slice_mut(&mut self) -> $slice_mut_name {
+            $vis fn slice_mut(&mut self) -> $slice_mut_name {
                 unsafe {
                     $slice_mut_name {
                         $($field: core::slice::from_raw_parts_mut(self.$field, self.len),)*
@@ -117,16 +117,13 @@ decl_soa! {
     #[derive(Soa)]
     #[soa(slice = CfgInfoSlice)]
     #[soa(slice_mut = CfgInfoSliceMut)]
-    pub struct CompactCFGInfo {
+    pub struct CFGInfoSoa {
         #[soa(default = Block::invalid())]
         /// Postorder traversal of blocks.
         postorder: Block,
         #[soa(default = Block::invalid())]
         /// Domtree parents, indexed by block.
         domtree: Block,
-        #[soa(default = Block::invalid())]
-        /// For each instruction, the block it belongs to.
-        insn_block: Block,
         #[soa(default = ProgPoint::before(Inst::invalid()))]
         /// For each block, the first instruction.
         block_entry: ProgPoint,
@@ -154,13 +151,19 @@ decl_soa! {
     }
 }
 
+#[derive(Default)]
+pub struct CompactCFGInfo {
+    soa: CFGInfoSoa,
+    /// For each instruction, the block it belongs to.
+    pub insn_block: Vec<Block>,
+}
+
 impl CompactCFGInfo {
     pub fn init<F: Function>(&mut self, f: &F) -> Result<(), RegAllocError> {
-        self.resize(f.num_blocks());
+        self.soa.resize(f.num_blocks());
         let CfgInfoSliceMut {
             postorder,
             domtree,
-            insn_block,
             block_entry,
             block_exit,
             approx_loop_depth,
@@ -168,7 +171,7 @@ impl CompactCFGInfo {
             backedge_out,
             block_to_rpo_scratch,
             visited_scratch,
-        } = self.slice_mut();
+        } = self.soa.slice_mut();
 
         postorder::calculate_soa(f.entry_block(), visited_scratch, postorder, |block| {
             f.block_succs(block)
@@ -181,6 +184,8 @@ impl CompactCFGInfo {
             domtree,
             f.entry_block(),
         );
+
+        let insn_block = self.insn_block.repopuate(f.num_insts(), Block::invalid());
 
         for block in 0..f.num_blocks() {
             let block = Block::new(block);
@@ -253,6 +258,14 @@ impl CompactCFGInfo {
         }
 
         Ok(())
+    }
+
+    pub fn slice(&self) -> CfgInfoSlice {
+        self.soa.slice()
+    }
+
+    pub fn dominates(&self, a: Block, b: Block) -> bool {
+        domtree::dominates(&self.slice().domtree[..], a, b)
     }
 }
 

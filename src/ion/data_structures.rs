@@ -14,7 +14,7 @@
 
 use super::liveranges::SpillWeight;
 use super::moves::MoveCtx;
-use crate::cfg::{CFGInfo, CompactCFGInfo};
+use crate::cfg::CompactCFGInfo;
 use crate::index::ContainerComparator;
 use crate::indexset::IndexSet;
 use crate::{

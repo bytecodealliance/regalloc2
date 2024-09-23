@@ -211,8 +211,8 @@ impl<'a, F: Function> Env<'a, F> {
     pub fn insert_use_into_liverange(&mut self, into: LiveRangeIndex, mut u: Use) {
         let operand = u.operand;
         let constraint = operand.constraint();
-        let block = self.cfginfo.insn_block[u.pos.inst().index()];
-        let loop_depth = self.cfginfo.approx_loop_depth[block.index()] as usize;
+        let block = self.cfginfo.slice().insn_block[u.pos.inst().index()];
+        let loop_depth = self.cfginfo.slice().approx_loop_depth[block.index()] as usize;
         let weight = spill_weight_from_constraint(
             constraint,
             loop_depth,
@@ -282,7 +282,7 @@ impl<'a, F: Function> Env<'a, F> {
         let mut workqueue_set = core::mem::take(&mut self.ctx.scratch_workqueue_set);
         workqueue_set.clear();
         // Initialize workqueue with postorder traversal.
-        for &block in &self.cfginfo.postorder[..] {
+        for &block in &self.cfginfo.slice().postorder[..] {
             workqueue.push_back(block);
             workqueue_set.insert(block);
         }
@@ -415,8 +415,8 @@ impl<'a, F: Function> Env<'a, F> {
             // Initially, registers are assumed live for the whole block.
             for vreg in live.iter() {
                 let range = CodeRange {
-                    from: self.cfginfo.block_entry[block.index()],
-                    to: self.cfginfo.block_exit[block.index()].next(),
+                    from: self.cfginfo.slice().block_entry[block.index()],
+                    to: self.cfginfo.slice().block_exit[block.index()].next(),
                 };
                 trace!(
                     "vreg {:?} live at end of block --> create range {:?}",
@@ -649,7 +649,7 @@ impl<'a, F: Function> Env<'a, F> {
                                     // merged into some larger LiveRange due
                                     // to out-of-order blocks).
                                     if self.ranges[lr].range.from
-                                        == self.cfginfo.block_entry[block.index()]
+                                        == self.cfginfo.slice().block_entry[block.index()]
                                     {
                                         trace!(" -> started at block start; trimming to {:?}", pos);
                                         self.ranges[lr].range.from = pos;
@@ -669,7 +669,7 @@ impl<'a, F: Function> Env<'a, F> {
                                 let mut lr = vreg_ranges[operand.vreg().vreg()];
                                 if !live.get(operand.vreg().vreg()) {
                                     let range = CodeRange {
-                                        from: self.cfginfo.block_entry[block.index()],
+                                        from: self.cfginfo.slice().block_entry[block.index()],
                                         to: pos.next(),
                                     };
                                     lr = self.add_liverange_to_vreg(
@@ -701,7 +701,7 @@ impl<'a, F: Function> Env<'a, F> {
                     live.set(vreg.vreg(), false);
                 } else {
                     // Create trivial liverange if blockparam is dead.
-                    let start = self.cfginfo.block_entry[block.index()];
+                    let start = self.cfginfo.slice().block_entry[block.index()];
                     self.add_liverange_to_vreg(
                         VRegIndex::new(vreg.vreg()),
                         CodeRange {

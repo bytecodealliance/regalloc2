@@ -1149,10 +1149,12 @@ impl<'a, F: Function> Env<'a, F> {
                             lowest_cost_evict_conflict_set.extend(bundles);
                         }
 
-                        let loop_depth =
-                            self.ctx.cfginfo.approx_loop_depth[self.ctx.cfginfo.insn_block
-                                [first_conflict_point.inst().index()]
-                            .index()];
+                        let loop_depth = self.ctx.cfginfo.slice().approx_loop_depth[self
+                            .ctx
+                            .cfginfo
+                            .slice()
+                            .insn_block[first_conflict_point.inst().index()]
+                        .index()];
                         let move_cost = spill_weight_from_constraint(
                             OperandConstraint::Reg,
                             loop_depth as usize,
@@ -1171,8 +1173,8 @@ impl<'a, F: Function> Env<'a, F> {
                     AllocRegResult::ConflictWithFixed(max_cost, point) => {
                         trace!(" -> conflict with fixed alloc; cost of other bundles up to point is {}, conflict at {:?}", max_cost, point);
 
-                        let loop_depth = self.ctx.cfginfo.approx_loop_depth
-                            [self.ctx.cfginfo.insn_block[point.inst().index()].index()];
+                        let loop_depth = self.ctx.cfginfo.slice().approx_loop_depth
+                            [self.ctx.cfginfo.slice().insn_block[point.inst().index()].index()];
                         let move_cost = spill_weight_from_constraint(
                             OperandConstraint::Reg,
                             loop_depth as usize,
@@ -1318,17 +1320,19 @@ impl<'a, F: Function> Env<'a, F> {
                 // Adjust `split_at_point` if it is within a deeper loop
                 // than the bundle start -- hoist it to just before the
                 // first loop header it encounters.
-                let bundle_start_depth = self.ctx.cfginfo.approx_loop_depth
-                    [self.ctx.cfginfo.insn_block[bundle_start.inst().index()].index()];
-                let split_at_depth = self.ctx.cfginfo.approx_loop_depth
-                    [self.ctx.cfginfo.insn_block[split_at_point.inst().index()].index()];
+                let bundle_start_depth = self.ctx.cfginfo.slice().approx_loop_depth
+                    [self.ctx.cfginfo.slice().insn_block[bundle_start.inst().index()].index()];
+                let split_at_depth = self.ctx.cfginfo.slice().approx_loop_depth
+                    [self.ctx.cfginfo.slice().insn_block[split_at_point.inst().index()].index()];
                 if split_at_depth > bundle_start_depth {
-                    for block in (self.ctx.cfginfo.insn_block[bundle_start.inst().index()].index()
+                    for block in (self.ctx.cfginfo.slice().insn_block[bundle_start.inst().index()]
+                        .index()
                         + 1)
-                        ..=self.ctx.cfginfo.insn_block[split_at_point.inst().index()].index()
+                        ..=self.ctx.cfginfo.slice().insn_block[split_at_point.inst().index()]
+                            .index()
                     {
-                        if self.ctx.cfginfo.approx_loop_depth[block] > bundle_start_depth {
-                            split_at_point = self.ctx.cfginfo.block_entry[block];
+                        if self.ctx.cfginfo.slice().approx_loop_depth[block] > bundle_start_depth {
+                            split_at_point = self.ctx.cfginfo.slice().block_entry[block];
                             break;
                         }
                     }
