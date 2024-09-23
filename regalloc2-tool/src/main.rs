@@ -2,8 +2,8 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use regalloc2::{
-    checker::Checker, serialize::SerializableFunction, Block, Edit, Function, InstOrEdit, Output,
-    RegallocOptions,
+    checker::Checker, serialize::SerializableFunction, Algorithm, Block, Edit, Function,
+    InstOrEdit, Output, RegallocOptions,
 };
 
 #[derive(Parser)]
@@ -15,6 +15,24 @@ struct Args {
 
     /// Input file containing a bincode-encoded SerializedFunction.
     input: PathBuf,
+
+    /// Which register allocation algorithm to use.
+    algorithm: CliAlgorithm,
+}
+
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+enum CliAlgorithm {
+    Ion,
+    Fastalloc,
+}
+
+impl From<CliAlgorithm> for Algorithm {
+    fn from(cli_algo: CliAlgorithm) -> Algorithm {
+        match cli_algo {
+            CliAlgorithm::Ion => Algorithm::Ion,
+            CliAlgorithm::Fastalloc => Algorithm::Fastalloc,
+        }
+    }
 }
 
 fn main() {
@@ -32,6 +50,7 @@ fn main() {
     let options = RegallocOptions {
         verbose_log: true,
         validate_ssa: true,
+        algorithm: args.algorithm.into(),
     };
     let output = match regalloc2::run(&function, function.machine_env(), &options) {
         Ok(output) => output,
