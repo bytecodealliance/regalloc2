@@ -1610,7 +1610,12 @@ pub fn run_with_ctx<F: Function>(
     options: &RegallocOptions,
     ctx: &mut Ctx,
 ) -> Result<(), RegAllocError> {
-    ion::run(func, env, ctx, options.verbose_log, options.validate_ssa)
+    Ok(match options.algorithm {
+        Algorithm::Ion => ion::run(func, env, ctx, options.verbose_log, options.validate_ssa)?,
+        Algorithm::Fastalloc => {
+            ctx.output = fastalloc::run(func, env, options.verbose_log, options.validate_ssa)?
+        }
+    })
 }
 
 #[derive(Clone, Copy, Debug, Default)]
