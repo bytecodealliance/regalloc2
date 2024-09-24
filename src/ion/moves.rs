@@ -89,12 +89,14 @@ impl<'a, F: Function> Env<'a, F> {
 
         let inserted_moves = &mut moves.inserted_moves;
         inserted_moves.moves.clear();
-        let inter_block_sources = &mut moves.inter_block_sources;
-        inter_block_sources.clear();
+        let inter_block_sources = moves.inter_block_sources.repopuate(
+            self.func.num_blocks(),
+            (VRegIndex::invalid(), Allocation::none()),
+        );
         let inter_block_dests = moves.inter_block_dests.prepare(self.func.num_blocks());
         let block_param_sources = &mut moves.block_param_sources;
         block_param_sources.clear();
-        block_param_sources.reserve(3 * self.func.num_insts());
+        //block_param_sources.reserve(3 * self.func.num_insts());
         let block_param_dests = moves.block_param_dests.prepare(3 * self.func.num_insts());
         let reuse_input_insts = moves.reuse_input_insts.prepare(self.func.num_insts() / 2);
 
@@ -107,8 +109,6 @@ impl<'a, F: Function> Env<'a, F> {
             if !self.is_vreg_used(vreg) {
                 continue;
             }
-
-            inter_block_sources.clear();
 
             // For each range in each vreg, insert moves or
             // half-moves.  We also scan over `blockparam_ins` and
@@ -212,17 +212,9 @@ impl<'a, F: Function> Env<'a, F> {
                     }
                     trace!("examining block with end in range: block{}", block.index());
 
-                    match inter_block_sources.entry(block) {
-                        // If the entry is already present in the map, we'll try to prefer a
-                        // register allocation.
-                        Entry::Occupied(mut entry) => {
-                            if !entry.get().is_reg() {
-                                entry.insert(alloc);
-                            }
-                        }
-                        Entry::Vacant(entry) => {
-                            entry.insert(alloc);
-                        }
+                    let entry = &mut inter_block_sources[block.index()];
+                    if entry.0 != vreg || !entry.1.is_reg() {
+                        *entry = (vreg, alloc);
                     }
 
                     // Scan forward in `blockparam_outs`, adding all
@@ -455,7 +447,7 @@ impl<'a, F: Function> Env<'a, F> {
                 let vreg = self.vreg(vreg);
                 trace!("processing inter-block moves for {}", vreg);
                 for dest in inter_block_dests.drain(..) {
-                    let src = inter_block_sources[&dest.from];
+                    let (_, src) = inter_block_sources[dest.from.index()];
 
                     trace!(
                         " -> moving from {} to {} between {:?} and {:?}",
@@ -850,7 +842,7 @@ impl<'a, F: Function> Env<'a, F> {
 pub struct MoveCtx {
     inserted_moves: InsertedMoves,
     edits: Edits,
-    inter_block_sources: FxHashMap<Block, Allocation>,
+    inter_block_sources: Vec<(VRegIndex, Allocation)>,
     block_param_sources: FxHashMap<BlockparamSourceKey, Allocation>,
     inter_block_dests: Vec<InterBlockDest>,
     block_param_dests: Vec<BlockparamDest>,

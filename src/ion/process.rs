@@ -204,15 +204,37 @@ impl<'a, F: Function> Env<'a, F> {
         let preg = PReg::from_index(reg.index());
         trace!("  -> bundle {:?} assigned to preg {:?}", bundle, preg);
         self.ctx.bundles[bundle].allocation = Allocation::reg(preg);
-        for entry in &self.ctx.bundles[bundle].ranges {
-            let key = LiveRangeKey::from_range(&entry.range);
-            let res = self.ctx.pregs[reg.index()]
-                .allocations
-                .btree
-                .insert(key, entry.index);
 
-            // We disallow LR overlap within bundles, so this should never be possible.
-            debug_assert!(res.is_none());
+        {
+            let from_list = &mut self.ctx.bundles[bundle].ranges;
+            let to_ranges = &mut self.ctx.pregs[reg.index()].allocations.btree.values;
+            to_ranges.resize(
+                to_ranges.len() + from_list.len(),
+                (LiveRangeKey { from: 0, to: 0 }, LiveRangeIndex(0)), // zero out
+            );
+
+            let mut reader = to_ranges.len() - from_list.len();
+            let mut writer = to_ranges.len();
+
+            for entry in from_list.into_iter().rev() {
+                let prev_reader = reader;
+                while reader != 0 {
+                    match entry
+                        .range
+                        .from
+                        .to_index()
+                        .cmp(&to_ranges[reader - 1].0.from)
+                    {
+                        core::cmp::Ordering::Less => reader -= 1,
+                        core::cmp::Ordering::Equal => unreachable!(),
+                        core::cmp::Ordering::Greater => break,
+                    }
+                }
+                writer -= prev_reader - reader;
+                to_ranges.copy_within(reader..prev_reader, writer);
+                writer -= 1;
+                to_ranges[writer] = (LiveRangeKey::from_range(&entry.range), entry.index);
+            }
         }
 
         AllocRegResult::Allocated(Allocation::reg(preg))
