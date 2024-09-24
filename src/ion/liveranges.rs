@@ -24,7 +24,6 @@ use crate::{
     Allocation, Block, Function, Inst, InstPosition, Operand, OperandConstraint, OperandKind,
     OperandPos, PReg, ProgPoint, RegAllocError, VReg, VecExt,
 };
-use slice_group_by::GroupByMut;
 use smallvec::{smallvec, SmallVec};
 
 /// A spill weight computed for a certain Use.
@@ -781,7 +780,7 @@ impl<'a, F: Function> Env<'a, F> {
                 // Find groups of uses that occur in at the same program point.
                 for uses in self.ctx.ranges[range]
                     .uses
-                    .linear_group_by_key_mut(|u| u.pos)
+                    .chunk_by_mut(|a, b| a.pos == b.pos)
                 {
                     if uses.len() < 2 {
                         continue;
