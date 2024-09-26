@@ -1062,7 +1062,7 @@ impl<'a, F: Function> Env<'a, F> {
         let mut attempts = 0;
         let mut scratch = core::mem::take(&mut self.ctx.scratch_conflicts);
         let mut lowest_cost_evict_conflict_set = core::mem::take(&mut self.ctx.scratch_bundle);
-        'o: loop {
+        'outer: loop {
             attempts += 1;
             trace!("attempt {}, req {:?}", attempts, req);
             debug_assert!(attempts < 100 * self.func.num_insts());
@@ -1128,7 +1128,8 @@ impl<'a, F: Function> Env<'a, F> {
                         trace!(" -> allocated to any {:?}", preg_idx);
                         self.ctx.spillsets[self.ctx.bundles[bundle].spillset].reg_hint =
                             alloc.as_reg().unwrap();
-                        break 'o;
+                        // Success, return scratch memory to context and finish
+                        break 'outer;
                     }
                     AllocRegResult::Conflict(bundles, first_conflict_point) => {
                         trace!(
@@ -1256,7 +1257,8 @@ impl<'a, F: Function> Env<'a, F> {
                                 continue;
                             }
                             if preg_range.from >= range.to {
-                                break 'o;
+                                // Success, return scratch memory to context and finish
+                                break 'outer;
                             }
                             if lr.is_valid() {
                                 if self.minimal_bundle(self.ranges[*lr].bundle) {
@@ -1338,7 +1340,9 @@ impl<'a, F: Function> Env<'a, F> {
                     requeue_with_reg,
                     /* should_trim = */ true,
                 );
-                break 'o;
+
+                // Success, return scratch memory to context and finish
+                break 'outer;
             } else {
                 // Evict all bundles in `conflicting bundles` and try again.
                 self.ctx.output.stats.evict_bundle_event += 1;

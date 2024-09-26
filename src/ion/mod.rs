@@ -93,13 +93,12 @@ impl<'a, F: Function> Env<'a, F> {
         Ok(())
     }
 
-    pub(crate) fn run(&mut self) -> Result<(), RegAllocError> {
+    pub(crate) fn run(&mut self) -> Result<Edits, RegAllocError> {
         self.process_bundles()?;
         self.try_allocating_regs_for_spilled_bundles();
         self.allocate_spillslots();
-        self.apply_allocations_and_insert_moves();
-        self.resolve_inserted_moves();
-        Ok(())
+        let moves = self.apply_allocations_and_insert_moves();
+        Ok(self.resolve_inserted_moves(moves))
     }
 }
 
@@ -120,11 +119,13 @@ pub fn run<F: Function>(
     let mut env = Env::new(func, mach_env, ctx);
     env.init()?;
 
-    env.run()?;
+    let mut moves = env.run()?;
 
     if enable_annotations {
         env.dump_results();
     }
+
+    ctx.output.edits.extend(moves.drain_edits());
 
     Ok(())
 }

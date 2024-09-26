@@ -13,14 +13,13 @@
 //! Data structures for backtracking allocator.
 
 use super::liveranges::SpillWeight;
-use super::moves::MoveCtx;
 use crate::cfg::{CFGInfo, CFGInfoCtx};
 use crate::index::ContainerComparator;
 use crate::indexset::IndexSet;
 use crate::Vec2;
 use crate::{
     define_index, Allocation, Block, Bump, Edit, Function, FxHashMap, FxHashSet, MachineEnv,
-    Operand, Output, PReg, ProgPoint, RegClass, VReg, VecExt,
+    Operand, Output, PReg, ProgPoint, RegClass, VReg,
 };
 use alloc::collections::BTreeMap;
 use alloc::collections::VecDeque;
@@ -490,8 +489,6 @@ pub struct Ctx {
     pub(crate) scratch_removed_lrs_vregs: FxHashSet<VRegIndex>,
     pub(crate) scratch_workqueue_set: FxHashSet<Block>,
 
-    pub(crate) scratch_moves: MoveCtx,
-
     pub(crate) scratch_bump: Bump,
 }
 
@@ -752,9 +749,10 @@ pub struct Edits {
 
 impl Edits {
     #[inline(always)]
-    pub fn prepare(&mut self, n: usize) -> &mut Self {
-        self.edits.preallocate(n);
-        self
+    pub fn with_capacity(n: usize) -> Self {
+        Self {
+            edits: Vec::with_capacity(n),
+        }
     }
 
     #[inline(always)]
