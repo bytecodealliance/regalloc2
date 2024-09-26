@@ -43,7 +43,7 @@ fuzz_target!(|testcase: TestCase| {
     }
 
     CTX.with(|ctx| {
-        let out = regalloc2::fuzzing::ion::run(&func, &env, &mut *ctx.borrow_mut(), true, false)
+        regalloc2::fuzzing::ion::run(&func, &env, &mut *ctx.borrow_mut(), true, false)
             .expect("regalloc did not succeed");
 
         let mut checker = Checker::new(&func, &env);
