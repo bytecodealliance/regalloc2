@@ -12,7 +12,7 @@
 
 //! Move resolution.
 
-use std::vec;
+use alloc::vec;
 
 use super::{
     Env, InsertMovePrio, InsertedMove, InsertedMoves, LiveRangeFlag, LiveRangeIndex,
