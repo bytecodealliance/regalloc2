@@ -125,7 +125,6 @@ pub struct LiveRange {
     pub vreg: VRegIndex,
     pub bundle: LiveBundleIndex,
     pub uses_spill_weight_and_flags: u32,
-    pub not_removed_lrs: bool,
     pub uses: UseList,
 }
 
@@ -307,7 +306,6 @@ pub struct VRegData {
     pub blockparam: Block,
     // We don't initially know the RegClass until we observe a use of the VReg.
     pub class: Option<RegClass>,
-    pub not_removed_lrs: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -392,7 +390,6 @@ impl LiveRanges {
             vreg: VRegIndex::invalid(),
             bundle: LiveBundleIndex::invalid(),
             uses_spill_weight_and_flags: 0,
-            not_removed_lrs: true,
             uses: UseList::new_in(bump),
         })
     }
@@ -489,8 +486,8 @@ pub struct Ctx {
     pub(crate) scratch_workqueue: VecDeque<Block>,
 
     pub(crate) scratch_operand_rewrites: FxHashMap<usize, Operand>,
-    pub(crate) scratch_removed_lrs: Vec<LiveRangeIndex>,
-    pub(crate) scratch_removed_lrs_vregs: Vec<VRegIndex>,
+    pub(crate) scratch_removed_lrs: FxHashSet<LiveRangeIndex>,
+    pub(crate) scratch_removed_lrs_vregs: FxHashSet<VRegIndex>,
     pub(crate) scratch_workqueue_set: FxHashSet<Block>,
 
     pub(crate) scratch_moves: MoveCtx,

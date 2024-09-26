@@ -124,7 +124,6 @@ impl<'a, F: Function> Env<'a, F> {
                     blockparam: Block::invalid(),
                     // We'll learn the RegClass as we scan the code.
                     class: None,
-                    not_removed_lrs: true,
                 },
             );
         }

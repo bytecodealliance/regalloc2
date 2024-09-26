@@ -813,12 +813,9 @@ impl<'a, F: Function> Env<'a, F> {
             let lr_to = entry.range.to;
             let vreg = self.ctx.ranges[entry.index].vreg;
 
-            if core::mem::take(&mut self.ctx.ranges[entry.index].not_removed_lrs) {
-                self.ctx.scratch_removed_lrs.push(entry.index);
-            }
-            if core::mem::take(&mut self.ctx.vregs[vreg].not_removed_lrs) {
-                self.ctx.scratch_removed_lrs_vregs.push(vreg);
-            }
+            self.ctx.scratch_removed_lrs.insert(entry.index);
+            self.ctx.scratch_removed_lrs_vregs.insert(vreg);
+
             trace!(" -> removing old LR {:?} for vreg {:?}", entry.index, vreg);
 
             let mut spill_range = entry.range;
@@ -975,16 +972,11 @@ impl<'a, F: Function> Env<'a, F> {
         }
 
         // Remove all of the removed LRs from respective vregs' lists.
-        for vreg in self.ctx.scratch_removed_lrs_vregs.drain(..) {
-            let ranges = &mut self.ctx.ranges;
+        for vreg in self.ctx.scratch_removed_lrs_vregs.drain() {
+            let lrs = &mut self.ctx.scratch_removed_lrs;
             self.ctx.vregs[vreg]
                 .ranges
-                .retain(|entry| ranges[entry.index].not_removed_lrs);
-            self.ctx.vregs[vreg].not_removed_lrs = true;
-        }
-
-        for rls in self.ctx.scratch_removed_lrs.drain(..) {
-            self.ctx.ranges[rls].not_removed_lrs = true;
+                .retain(|entry| !lrs.contains(&entry.index));
         }
 
         // Add the new LRs to their respective vreg lists.
