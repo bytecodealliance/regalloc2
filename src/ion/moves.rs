@@ -89,16 +89,20 @@ impl<'a, F: Function> Env<'a, F> {
 
         let inserted_moves = &mut moves.inserted_moves;
         inserted_moves.moves.clear();
-        let inter_block_sources = moves.inter_block_sources.repopuate(
+        let inter_block_sources = moves.inter_block_sources.repopulate(
             self.func.num_blocks(),
             (VRegIndex::invalid(), Allocation::none()),
         );
-        let inter_block_dests = moves.inter_block_dests.prepare(self.func.num_blocks());
+        let inter_block_dests = moves.inter_block_dests.preallocate(self.func.num_blocks());
         let block_param_sources = &mut moves.block_param_sources;
         block_param_sources.clear();
         //block_param_sources.reserve(3 * self.func.num_insts());
-        let block_param_dests = moves.block_param_dests.prepare(3 * self.func.num_insts());
-        let reuse_input_insts = moves.reuse_input_insts.prepare(self.func.num_insts() / 2);
+        let block_param_dests = moves
+            .block_param_dests
+            .preallocate(3 * self.func.num_insts());
+        let reuse_input_insts = moves
+            .reuse_input_insts
+            .preallocate(self.func.num_insts() / 2);
 
         let debug_labels = self.func.debug_value_labels();
 

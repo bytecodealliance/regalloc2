@@ -34,7 +34,7 @@ impl Arbitrary<'_> for TestCase {
 
 fuzz_target!(|t: TestCase| {
     thread_local! {
-        // we thets that ctx is cleared properly between runs
+        // We test that ctx is cleared properly between runs.
         static CFG_INFO: std::cell::RefCell<CFGInfo> = std::cell::RefCell::default();
     }
 

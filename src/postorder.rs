@@ -22,7 +22,7 @@ pub fn calculate<'a, SuccFn: Fn(Block) -> &'a [Block]>(
         succs: core::slice::Iter<'a, Block>,
     }
 
-    let visited = visited_scratch.repopuate(num_blocks, false);
+    let visited = visited_scratch.repopulate(num_blocks, false);
     let mut stack: SmallVec<[State; 64]> = smallvec![];
     out.clear();
 

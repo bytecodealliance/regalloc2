@@ -38,7 +38,7 @@ fuzz_target!(|testcase: TestCase| {
     let env = regalloc2::fuzzing::func::machine_env();
 
     thread_local! {
-        // we thets that ctx is cleared properly between runs
+        // We test that ctx is cleared properly between runs.
         static CTX: std::cell::RefCell<regalloc2::fuzzing::ion::Ctx> = std::cell::RefCell::default();
     }
 

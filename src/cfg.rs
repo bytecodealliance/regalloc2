@@ -11,6 +11,13 @@ use crate::{domtree, postorder, Block, Function, Inst, ProgPoint, RegAllocError,
 use smallvec::{smallvec, SmallVec};
 
 #[derive(Debug, Default)]
+pub struct CFGInfoCtx {
+    visited: Vec<bool>,
+    block_to_rpo: Vec<Option<u32>>,
+    backedge: Vec<u32>,
+}
+
+#[derive(Debug, Default)]
 pub struct CFGInfo {
     /// Postorder traversal of blocks.
     pub postorder: Vec<Block>,
@@ -30,20 +37,23 @@ pub struct CFGInfo {
     /// indices. Otherwise, it will be approximate, but should still
     /// be usable for heuristic purposes.
     pub approx_loop_depth: Vec<u32>,
-
-    visited_scratch: Vec<bool>,
-    block_to_rpo_scratch: Vec<u32>,
-    backedge_scratch: Vec<u32>,
 }
 
 impl CFGInfo {
-    pub fn init<F: Function>(&mut self, f: &F) -> Result<(), RegAllocError> {
+    pub fn new<F: Function>(f: &F) -> Result<Self, RegAllocError> {
+        let mut ctx = CFGInfoCtx::default();
+        let mut this = Self::default();
+        this.init(f, &mut ctx)?;
+        Ok(this)
+    }
+
+    pub fn init<F: Function>(&mut self, f: &F, ctx: &mut CFGInfoCtx) -> Result<(), RegAllocError> {
         let nb = f.num_blocks();
 
         postorder::calculate(
             nb,
             f.entry_block(),
-            &mut self.visited_scratch,
+            &mut ctx.visited,
             &mut self.postorder,
             |block| f.block_succs(block),
         );
@@ -52,20 +62,19 @@ impl CFGInfo {
             nb,
             |block| f.block_preds(block),
             &self.postorder,
-            &mut self.block_to_rpo_scratch,
+            &mut ctx.block_to_rpo,
             &mut self.domtree,
             f.entry_block(),
         );
 
-        let insn_block = self.insn_block.repopuate(f.num_insts(), Block::invalid());
+        let insn_block = self.insn_block.repopulate(f.num_insts(), Block::invalid());
         let block_entry = self
             .block_entry
-            .repopuate(nb, ProgPoint::before(Inst::invalid()));
+            .repopulate(nb, ProgPoint::before(Inst::invalid()));
         let block_exit = self
             .block_exit
-            .repopuate(nb, ProgPoint::before(Inst::invalid()));
-        let (backedge_in, backedge_out) =
-            self.backedge_scratch.repopuate(nb * 2, 0).split_at_mut(nb);
+            .repopulate(nb, ProgPoint::before(Inst::invalid()));
+        let (backedge_in, backedge_out) = ctx.backedge.repopulate(nb * 2, 0).split_at_mut(nb);
 
         for block in 0..f.num_blocks() {
             let block = Block::new(block);

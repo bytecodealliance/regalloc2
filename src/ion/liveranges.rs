@@ -377,7 +377,7 @@ impl<'a, F: Function> Env<'a, F> {
         // Invariant: a stale range may be present here; ranges are
         // only valid if `live.get(vreg)` is true.
         let mut vreg_ranges = core::mem::take(&mut self.ctx.scratch_vreg_ranges);
-        vreg_ranges.repopuate(self.func.num_vregs(), LiveRangeIndex::invalid());
+        vreg_ranges.repopulate(self.func.num_vregs(), LiveRangeIndex::invalid());
 
         for i in (0..self.func.num_blocks()).rev() {
             let block = Block::new(i);

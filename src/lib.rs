@@ -35,6 +35,9 @@ macro_rules! trace_enabled {
     };
 }
 
+use alloc::rc::Rc;
+use allocator_api2::vec::Vec as Vec2;
+use core::ops::Deref as _;
 use core::{hash::BuildHasherDefault, iter::FromIterator};
 use rustc_hash::FxHasher;
 type FxHashMap<K, V> = hashbrown::HashMap<K, V, BuildHasherDefault<FxHasher>>;
@@ -1639,15 +1642,18 @@ pub struct RegallocOptions {
 }
 
 pub(crate) trait VecExt<T> {
-    fn repopuate(&mut self, len: usize, value: T) -> &mut [T]
+    /// Fills `self` with `value` up to `len` and return the mutable slice to the values.
+    fn repopulate(&mut self, len: usize, value: T) -> &mut [T]
     where
         T: Clone;
+    /// Clears the `self` and returns a mutable reference to it.
     fn cleared(&mut self) -> &mut Self;
-    fn prepare(&mut self, cap: usize) -> &mut Self;
+    /// Makes sure `self` is empty and has at least `cap` capacity.
+    fn preallocate(&mut self, cap: usize) -> &mut Self;
 }
 
 impl<T> VecExt<T> for Vec<T> {
-    fn repopuate(&mut self, len: usize, value: T) -> &mut [T]
+    fn repopulate(&mut self, len: usize, value: T) -> &mut [T]
     where
         T: Clone,
     {
@@ -1661,9 +1667,66 @@ impl<T> VecExt<T> for Vec<T> {
         self
     }
 
-    fn prepare(&mut self, cap: usize) -> &mut Self {
+    fn preallocate(&mut self, cap: usize) -> &mut Self {
         self.clear();
         self.reserve(cap);
         self
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct Bump(Rc<bumpalo::Bump>);
+
+impl Bump {
+    pub(crate) fn get_mut(&mut self) -> Option<&mut bumpalo::Bump> {
+        Rc::get_mut(&mut self.0)
+    }
+}
+
+// Simply delegating because `Rc<bumpalo::Bump>` does not implement `Allocator`.
+unsafe impl allocator_api2::alloc::Allocator for Bump {
+    fn allocate(
+        &self,
+        layout: core::alloc::Layout,
+    ) -> Result<core::ptr::NonNull<[u8]>, allocator_api2::alloc::AllocError> {
+        self.0.deref().allocate(layout)
+    }
+
+    unsafe fn deallocate(&self, ptr: core::ptr::NonNull<u8>, layout: core::alloc::Layout) {
+        self.0.deref().deallocate(ptr, layout);
+    }
+
+    fn allocate_zeroed(
+        &self,
+        layout: core::alloc::Layout,
+    ) -> Result<core::ptr::NonNull<[u8]>, allocator_api2::alloc::AllocError> {
+        self.0.deref().allocate_zeroed(layout)
+    }
+
+    unsafe fn grow(
+        &self,
+        ptr: core::ptr::NonNull<u8>,
+        old_layout: core::alloc::Layout,
+        new_layout: core::alloc::Layout,
+    ) -> Result<core::ptr::NonNull<[u8]>, allocator_api2::alloc::AllocError> {
+        self.0.deref().grow(ptr, old_layout, new_layout)
+    }
+
+    unsafe fn grow_zeroed(
+        &self,
+        ptr: core::ptr::NonNull<u8>,
+        old_layout: core::alloc::Layout,
+        new_layout: core::alloc::Layout,
+    ) -> Result<core::ptr::NonNull<[u8]>, allocator_api2::alloc::AllocError> {
+        self.0.deref().grow_zeroed(ptr, old_layout, new_layout)
+    }
+
+    unsafe fn shrink(
+        &self,
+        ptr: core::ptr::NonNull<u8>,
+        old_layout: core::alloc::Layout,
+        new_layout: core::alloc::Layout,
+    ) -> Result<core::ptr::NonNull<[u8]>, allocator_api2::alloc::AllocError> {
+        self.0.deref().shrink(ptr, old_layout, new_layout)
     }
 }

@@ -14,138 +14,22 @@
 
 use super::liveranges::SpillWeight;
 use super::moves::MoveCtx;
-use crate::cfg::CFGInfo;
+use crate::cfg::{CFGInfo, CFGInfoCtx};
 use crate::index::ContainerComparator;
 use crate::indexset::IndexSet;
+use crate::Vec2;
 use crate::{
-    define_index, Allocation, Block, Edit, Function, FxHashMap, FxHashSet, MachineEnv, Operand,
-    Output, PReg, ProgPoint, RegClass, VReg, VecExt,
+    define_index, Allocation, Block, Bump, Edit, Function, FxHashMap, FxHashSet, MachineEnv,
+    Operand, Output, PReg, ProgPoint, RegClass, VReg, VecExt,
 };
-//use alloc::collections::BTreeMap;
+use alloc::collections::BTreeMap;
 use alloc::collections::VecDeque;
-use alloc::rc::Rc;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::cmp::Ordering;
-use core::convert::identity;
 use core::fmt::Debug;
 use core::ops::{Deref, DerefMut};
 use smallvec::SmallVec;
-
-#[derive(Debug, Clone, Default)]
-pub struct Bump(Rc<bumpalo::Bump>);
-
-impl Bump {
-    pub(crate) fn get_mut(&mut self) -> Option<&mut bumpalo::Bump> {
-        Rc::get_mut(&mut self.0)
-    }
-}
-
-// simply delegating beause `Rc<bumpalo::Bump>` does not implement `Allocator`
-unsafe impl allocator_api2::alloc::Allocator for Bump {
-    fn allocate(
-        &self,
-        layout: core::alloc::Layout,
-    ) -> Result<core::ptr::NonNull<[u8]>, allocator_api2::alloc::AllocError> {
-        self.0.deref().allocate(layout)
-    }
-
-    unsafe fn deallocate(&self, ptr: core::ptr::NonNull<u8>, layout: core::alloc::Layout) {
-        self.0.deref().deallocate(ptr, layout);
-    }
-
-    fn allocate_zeroed(
-        &self,
-        layout: core::alloc::Layout,
-    ) -> Result<core::ptr::NonNull<[u8]>, allocator_api2::alloc::AllocError> {
-        self.0.deref().allocate_zeroed(layout)
-    }
-
-    unsafe fn grow(
-        &self,
-        ptr: core::ptr::NonNull<u8>,
-        old_layout: core::alloc::Layout,
-        new_layout: core::alloc::Layout,
-    ) -> Result<core::ptr::NonNull<[u8]>, allocator_api2::alloc::AllocError> {
-        self.0.deref().grow(ptr, old_layout, new_layout)
-    }
-
-    unsafe fn grow_zeroed(
-        &self,
-        ptr: core::ptr::NonNull<u8>,
-        old_layout: core::alloc::Layout,
-        new_layout: core::alloc::Layout,
-    ) -> Result<core::ptr::NonNull<[u8]>, allocator_api2::alloc::AllocError> {
-        self.0.deref().grow_zeroed(ptr, old_layout, new_layout)
-    }
-
-    unsafe fn shrink(
-        &self,
-        ptr: core::ptr::NonNull<u8>,
-        old_layout: core::alloc::Layout,
-        new_layout: core::alloc::Layout,
-    ) -> Result<core::ptr::NonNull<[u8]>, allocator_api2::alloc::AllocError> {
-        self.0.deref().shrink(ptr, old_layout, new_layout)
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct BTreeMap<K, V> {
-    pub values: Vec<(K, V)>,
-}
-
-impl<K: Eq + Ord + Copy, V> BTreeMap<K, V> {
-    pub fn clear(&mut self) {
-        self.values.clear();
-    }
-
-    pub fn contains_key(&self, key: &K) -> bool {
-        self.values.binary_search_by_key(key, |e| e.0).is_ok()
-    }
-
-    pub fn insert(&mut self, key: K, value: V) -> Option<V> {
-        // this is woth it becuase we often insert later liveranges
-        if self.values.last().map(|e| e.0) < Some(key) {
-            self.values.push((key, value));
-            return None;
-        }
-
-        match self.values.binary_search_by_key(&key, |e| e.0) {
-            Ok(i) => Some(core::mem::replace(&mut self.values[i], (key, value)).1),
-            Err(i) => {
-                self.values.insert(i, (key, value));
-                None
-            }
-        }
-    }
-
-    pub fn remove(&mut self, key: &K) -> Option<V> {
-        self.values
-            .binary_search_by_key(key, |e| e.0)
-            .ok()
-            .map(|i| self.values.remove(i).1)
-    }
-
-    pub fn range(&self, range: core::ops::RangeFrom<K>) -> &[(K, V)] {
-        if self.values.last().map(|e| e.0) < Some(range.start) {
-            return &[];
-        }
-
-        let start = self
-            .values
-            .binary_search_by_key(&range.start, |e| e.0)
-            .unwrap_or_else(identity);
-        &self.values[start..]
-    }
-}
-
-impl<K, V> Default for BTreeMap<K, V> {
-    fn default() -> Self {
-        Self {
-            values: Default::default(),
-        }
-    }
-}
 
 /// A range from `from` (inclusive) to `to` (exclusive).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -223,6 +107,7 @@ define_index!(SpillSlotIndex);
 
 /// Used to carry small sets of bundles, e.g. for conflict sets.
 //pub type LiveBundleVec = SmallVec<[LiveBundleIndex; 4]>;
+pub type LiveBundleVec = Vec<LiveBundleIndex>;
 
 #[derive(Clone, Copy, Debug)]
 pub struct LiveRangeListEntry {
@@ -230,8 +115,8 @@ pub struct LiveRangeListEntry {
     pub index: LiveRangeIndex,
 }
 
-pub type LiveRangeList = allocator_api2::vec::Vec<LiveRangeListEntry, Bump>;
-pub type UseList = allocator_api2::vec::Vec<Use, Bump>;
+pub type LiveRangeList = Vec2<LiveRangeListEntry, Bump>;
+pub type UseList = Vec2<Use, Bump>;
 
 #[derive(Clone, Debug)]
 pub struct LiveRange {
@@ -552,6 +437,7 @@ impl core::ops::IndexMut<VReg> for VRegs {
 #[derive(Default)]
 pub struct Ctx {
     pub(crate) cfginfo: CFGInfo,
+    pub(crate) cfginfo_ctx: CFGInfoCtx,
     pub(crate) liveins: Vec<IndexSet>,
     pub(crate) liveouts: Vec<IndexSet>,
     pub(crate) blockparam_outs: Vec<BlockparamOut>,
@@ -590,13 +476,13 @@ pub struct Ctx {
 
     // Cached allocation for `try_to_allocate_bundle_to_reg` to avoid allocating
     // a new HashSet on every call.
-    pub(crate) conflict_set: Vec<bool>,
+    pub(crate) conflict_set: FxHashSet<LiveBundleIndex>,
 
     // Output:
     pub output: Output,
 
-    pub(crate) scratch_conflicts: Vec<LiveBundleIndex>,
-    pub(crate) scratch_bundle: Vec<LiveBundleIndex>,
+    pub(crate) scratch_conflicts: LiveBundleVec,
+    pub(crate) scratch_bundle: LiveBundleVec,
     pub(crate) scratch_vreg_ranges: Vec<LiveRangeIndex>,
     pub(crate) scratch_spillset_pool: Vec<SpillSetRanges>,
 
@@ -870,7 +756,7 @@ pub struct Edits {
 impl Edits {
     #[inline(always)]
     pub fn prepare(&mut self, n: usize) -> &mut Self {
-        self.edits.prepare(n);
+        self.edits.preallocate(n);
         self
     }
 

@@ -40,14 +40,14 @@ impl<'a, F: Function> Env<'a, F> {
         let ninstrs = func.num_insts();
         let nblocks = func.num_blocks();
 
-        ctx.liveins.prepare(nblocks);
-        ctx.liveouts.prepare(nblocks);
+        ctx.liveins.preallocate(nblocks);
+        ctx.liveouts.preallocate(nblocks);
         ctx.blockparam_ins.clear();
         ctx.blockparam_outs.clear();
-        ctx.ranges.prepare(4 * ninstrs);
-        ctx.bundles.prepare(ninstrs);
-        ctx.spillsets.prepare(ninstrs);
-        ctx.vregs.prepare(ninstrs);
+        ctx.ranges.preallocate(4 * ninstrs);
+        ctx.bundles.preallocate(ninstrs);
+        ctx.spillsets.preallocate(ninstrs);
+        ctx.vregs.preallocate(ninstrs);
         for preg in ctx.pregs.iter_mut() {
             preg.is_stack = false;
             preg.allocations.btree.clear();
@@ -70,7 +70,7 @@ impl<'a, F: Function> Env<'a, F> {
             .expect("we dropped all refs to this")
             .reset();
 
-        ctx.output.allocs.prepare(4 * ninstrs);
+        ctx.output.allocs.preallocate(4 * ninstrs);
         ctx.output.inst_alloc_offsets.clear();
         ctx.output.num_spillslots = 0;
         ctx.output.debug_locations.clear();
@@ -110,7 +110,7 @@ pub fn run<F: Function>(
     enable_annotations: bool,
     enable_ssa_checker: bool,
 ) -> Result<(), RegAllocError> {
-    ctx.cfginfo.init(func)?;
+    ctx.cfginfo.init(func, &mut ctx.cfginfo_ctx)?;
 
     if enable_ssa_checker {
         validate_ssa(func, &ctx.cfginfo)?;

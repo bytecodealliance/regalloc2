@@ -1287,9 +1287,7 @@ pub fn run<F: Function>(
     enable_ssa_checker: bool,
 ) -> Result<Output, RegAllocError> {
     if enable_ssa_checker {
-        let mut cfginfo = CFGInfo::default();
-        cfginfo.init(func)?;
-        validate_ssa(func, &cfginfo)?;
+        validate_ssa(func, &CFGInfo::new(func)?)?;
     }
 
     if trace_enabled!() || verbose_log {

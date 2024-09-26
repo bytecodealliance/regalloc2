@@ -13,9 +13,9 @@
 //! Main allocation loop that processes bundles.
 
 use super::{
-    spill_weight_from_constraint, Env, LiveBundleIndex, LiveRangeFlag, LiveRangeIndex,
-    LiveRangeKey, LiveRangeList, LiveRangeListEntry, PRegIndex, RegTraversalIter, Requirement,
-    SpillWeight, UseList, VRegIndex,
+    spill_weight_from_constraint, Env, LiveBundleIndex, LiveBundleVec, LiveRangeFlag,
+    LiveRangeIndex, LiveRangeKey, LiveRangeList, LiveRangeListEntry, PRegIndex, RegTraversalIter,
+    Requirement, SpillWeight, UseList, VRegIndex,
 };
 use crate::{
     ion::data_structures::{
@@ -25,8 +25,7 @@ use crate::{
     Allocation, Function, Inst, InstPosition, OperandConstraint, OperandKind, PReg, ProgPoint,
     RegAllocError,
 };
-use alloc::vec::Vec;
-use core::{convert::identity, fmt::Debug};
+use core::fmt::Debug;
 use smallvec::{smallvec, SmallVec};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -58,11 +57,11 @@ impl<'a, F: Function> Env<'a, F> {
         // cost (if provided), just return
         // `AllocRegResult::ConflictHighCost`.
         max_allowable_cost: Option<u32>,
-        conflicts: &'b mut Vec<LiveBundleIndex>,
+        conflicts: &'b mut LiveBundleVec,
     ) -> AllocRegResult<'b> {
         trace!("try_to_allocate_bundle_to_reg: {:?} -> {:?}", bundle, reg);
         conflicts.clear();
-        self.ctx.conflict_set.resize(self.ctx.bundles.len(), true);
+        self.ctx.conflict_set.clear();
         let mut max_conflict_weight = 0;
         // Traverse the BTreeMap in order by requesting the whole
         // range spanned by the bundle and iterating over that
@@ -86,7 +85,7 @@ impl<'a, F: Function> Env<'a, F> {
             .allocations
             .btree
             .range(from_key..)
-            .iter();
+            .peekable();
         trace!(
             "alloc map for {:?} in range {:?}..: {:?}",
             reg,
@@ -101,18 +100,17 @@ impl<'a, F: Function> Env<'a, F> {
 
             let mut skips = 0;
             'alloc: loop {
-                let Some(next) = preg_range_iter.as_slice().first() else {
-                    trace!(" -> no more PReg allocations; so no conflict possible!");
-                    break 'ranges;
-                };
-                trace!("  -> PReg range {:?}", next);
+                trace!("  -> PReg range {:?}", preg_range_iter.peek());
 
                 // Advance our BTree traversal until it is >= this bundle
                 // range (i.e., skip PReg allocations in the BTree that
                 // are completely before this bundle range).
 
-                if next.0 < key {
-                    trace!("Skipping PReg range {:?}", next.0);
+                if preg_range_iter.peek().is_some() && *preg_range_iter.peek().unwrap().0 < key {
+                    trace!(
+                        "Skipping PReg range {:?}",
+                        preg_range_iter.peek().unwrap().0
+                    );
                     preg_range_iter.next();
                     skips += 1;
                     if skips >= 16 {
@@ -121,40 +119,45 @@ impl<'a, F: Function> Env<'a, F> {
                             from: from_pos,
                             to: from_pos,
                         });
-
-                        preg_range_iter = preg_range_iter.as_slice()[preg_range_iter
-                            .as_slice()
-                            .binary_search_by_key(&from_key, |e| e.0)
-                            .unwrap_or_else(identity)..]
-                            .iter();
+                        preg_range_iter = self.ctx.pregs[reg.index()]
+                            .allocations
+                            .btree
+                            .range(from_key..)
+                            .peekable();
                         skips = 0;
                     }
                     continue 'alloc;
                 }
                 skips = 0;
 
+                // If there are no more PReg allocations, we're done!
+                if preg_range_iter.peek().is_none() {
+                    trace!(" -> no more PReg allocations; so no conflict possible!");
+                    break 'ranges;
+                }
+
                 // If the current PReg range is beyond this range, there is no conflict; continue.
-                if next.0 > key {
+                if *preg_range_iter.peek().unwrap().0 > key {
                     trace!(
                         " -> next PReg allocation is at {:?}; moving to next VReg range",
-                        next.0
+                        preg_range_iter.peek().unwrap().0
                     );
                     break 'alloc;
                 }
 
                 // Otherwise, there is a conflict.
-                let preg_key = next.0;
+                let preg_key = *preg_range_iter.peek().unwrap().0;
                 debug_assert_eq!(preg_key, key); // Assert that this range overlaps.
                 let preg_range = preg_range_iter.next().unwrap().1;
 
                 trace!(" -> btree contains range {:?} that overlaps", preg_range);
                 if preg_range.is_valid() {
-                    trace!("   -> from vreg {:?}", self.ctx.ranges[preg_range].vreg);
+                    trace!("   -> from vreg {:?}", self.ctx.ranges[*preg_range].vreg);
                     // range from an allocated bundle: find the bundle and add to
                     // conflicts list.
-                    let conflict_bundle = self.ctx.ranges[preg_range].bundle;
+                    let conflict_bundle = self.ctx.ranges[*preg_range].bundle;
                     trace!("   -> conflict bundle {:?}", conflict_bundle);
-                    if core::mem::take(&mut self.ctx.conflict_set[conflict_bundle.index()]) {
+                    if self.ctx.conflict_set.insert(conflict_bundle) {
                         conflicts.push(conflict_bundle);
                         max_conflict_weight = core::cmp::max(
                             max_conflict_weight,
@@ -164,9 +167,6 @@ impl<'a, F: Function> Env<'a, F> {
                             && max_conflict_weight > max_allowable_cost.unwrap()
                         {
                             trace!("   -> reached high cost, retrying early");
-                            conflicts
-                                .iter()
-                                .for_each(|&i| self.ctx.conflict_set[i.index()] = true);
                             return AllocRegResult::ConflictHighCost;
                         }
                     }
@@ -180,9 +180,6 @@ impl<'a, F: Function> Env<'a, F> {
                 } else {
                     trace!("   -> conflict with fixed reservation");
                     // range from a direct use of the PReg (due to clobber).
-                    conflicts
-                        .iter()
-                        .for_each(|&i| self.ctx.conflict_set[i.index()] = true);
                     return AllocRegResult::ConflictWithFixed(
                         max_conflict_weight,
                         ProgPoint::from_index(preg_key.from),
@@ -191,50 +188,23 @@ impl<'a, F: Function> Env<'a, F> {
             }
         }
 
-        drop(preg_range_iter);
-
         if conflicts.len() > 0 {
-            conflicts
-                .iter()
-                .for_each(|&i| self.ctx.conflict_set[i.index()] = true);
-            return AllocRegResult::Conflict(&*conflicts, first_conflict.unwrap());
+            return AllocRegResult::Conflict(conflicts, first_conflict.unwrap());
         }
 
         // We can allocate! Add our ranges to the preg's BTree.
         let preg = PReg::from_index(reg.index());
         trace!("  -> bundle {:?} assigned to preg {:?}", bundle, preg);
         self.ctx.bundles[bundle].allocation = Allocation::reg(preg);
+        for entry in &self.ctx.bundles[bundle].ranges {
+            let key = LiveRangeKey::from_range(&entry.range);
+            let res = self.ctx.pregs[reg.index()]
+                .allocations
+                .btree
+                .insert(key, entry.index);
 
-        {
-            let from_list = &mut self.ctx.bundles[bundle].ranges;
-            let to_ranges = &mut self.ctx.pregs[reg.index()].allocations.btree.values;
-            to_ranges.resize(
-                to_ranges.len() + from_list.len(),
-                (LiveRangeKey { from: 0, to: 0 }, LiveRangeIndex(0)), // zero out
-            );
-
-            let mut reader = to_ranges.len() - from_list.len();
-            let mut writer = to_ranges.len();
-
-            for entry in from_list.into_iter().rev() {
-                let prev_reader = reader;
-                while reader != 0 {
-                    match entry
-                        .range
-                        .from
-                        .to_index()
-                        .cmp(&to_ranges[reader - 1].0.from)
-                    {
-                        core::cmp::Ordering::Less => reader -= 1,
-                        core::cmp::Ordering::Equal => unreachable!(),
-                        core::cmp::Ordering::Greater => break,
-                    }
-                }
-                writer -= prev_reader - reader;
-                to_ranges.copy_within(reader..prev_reader, writer);
-                writer -= 1;
-                to_ranges[writer] = (LiveRangeKey::from_range(&entry.range), entry.index);
-            }
+            // We disallow LR overlap within bundles, so this should never be possible.
+            debug_assert!(res.is_none());
         }
 
         AllocRegResult::Allocated(Allocation::reg(preg))

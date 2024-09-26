@@ -10,9 +10,10 @@ macro_rules! define_index {
 
         impl $storage {
             #[inline(always)]
-            pub fn prepare(&mut self, n: usize) {
+            /// See `VecExt::preallocate`
+            pub fn preallocate(&mut self, cap: usize) {
                 use $crate::VecExt;
-                self.storage.prepare(n);
+                self.storage.preallocate(cap);
             }
 
             #[inline(always)]

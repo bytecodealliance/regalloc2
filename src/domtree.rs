@@ -21,7 +21,7 @@ use crate::{Block, VecExt};
 // Helper
 fn merge_sets(
     idom: &[Block], // map from Block to Block
-    block_to_rpo: &[u32],
+    block_to_rpo: &[Option<u32>],
     mut node1: Block,
     mut node2: Block,
 ) -> Block {
@@ -29,8 +29,8 @@ fn merge_sets(
         if node1.is_invalid() || node2.is_invalid() {
             return Block::invalid();
         }
-        let rpo1 = block_to_rpo[node1.index()];
-        let rpo2 = block_to_rpo[node2.index()];
+        let rpo1 = block_to_rpo[node1.index()].unwrap();
+        let rpo2 = block_to_rpo[node2.index()].unwrap();
         if rpo1 > rpo2 {
             node1 = idom[node1.index()];
         } else if rpo2 > rpo1 {
@@ -45,18 +45,18 @@ pub fn calculate<'a, PredFn: Fn(Block) -> &'a [Block]>(
     num_blocks: usize,
     preds: PredFn,
     post_ord: &[Block],
-    block_to_rpo_scratch: &mut Vec<u32>,
+    block_to_rpo_scratch: &mut Vec<Option<u32>>,
     out: &mut Vec<Block>,
     start: Block,
 ) {
     // We have post_ord, which is the postorder sequence.
     // Compute maps from RPO to block number and vice-versa.
-    let block_to_rpo = block_to_rpo_scratch.repopuate(num_blocks, u32::MAX);
+    let block_to_rpo = block_to_rpo_scratch.repopulate(num_blocks, None);
     for (i, rpo_block) in post_ord.iter().rev().enumerate() {
-        block_to_rpo[rpo_block.index()] = i as u32;
+        block_to_rpo[rpo_block.index()] = Some(i as u32);
     }
 
-    let idom = out.repopuate(num_blocks, Block::invalid());
+    let idom = out.repopulate(num_blocks, Block::invalid());
     // The start node must have itself as a parent.
     idom[start.index()] = start;
 
@@ -65,16 +65,16 @@ pub fn calculate<'a, PredFn: Fn(Block) -> &'a [Block]>(
         changed = false;
         // Consider blocks in reverse postorder. Skip any that are unreachable.
         for &node in post_ord.iter().rev() {
-            let rponum = block_to_rpo[node.index()];
+            let rponum = block_to_rpo[node.index()].unwrap();
 
             let mut parent = Block::invalid();
             for &pred in preds(node).iter() {
                 let pred_rpo = match block_to_rpo[pred.index()] {
-                    u32::MAX => {
+                    None => {
                         // Skip unreachable preds.
                         continue;
                     }
-                    r => r,
+                    Some(r) => r,
                 };
                 if pred_rpo < rponum {
                     parent = pred;

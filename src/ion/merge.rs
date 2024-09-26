@@ -16,7 +16,7 @@ use super::{Env, LiveBundleIndex, SpillSet, SpillSlotIndex, VRegIndex};
 use crate::{
     ion::{
         data_structures::{BlockparamOut, CodeRange},
-        LiveRangeIndex, LiveRangeList, LiveRangeListEntry,
+        LiveRangeList,
     },
     Function, Inst, OperandConstraint, OperandKind, PReg, ProgPoint,
 };
@@ -178,44 +178,11 @@ impl<'a, F: Function> Env<'a, F> {
         for entry in &from_list {
             self.ranges[entry.index].bundle = to;
         }
-        {
-            //self.bundles[to].ranges.extend_from_slice(&from_list[..]);
-            //self.bundles[to]
-            //    .ranges
-            //    .sort_unstable_by_key(|entry| entry.range.from);
 
-            // quicksord does not know both arrays are sorted
-
-            let to_ranges = &mut self.bundles[to].ranges;
-            to_ranges.resize(
-                to_ranges.len() + from_list.len(),
-                LiveRangeListEntry {
-                    range: CodeRange {
-                        from: ProgPoint::from_index(0),
-                        to: ProgPoint::from_index(0),
-                    },
-                    index: LiveRangeIndex::invalid(),
-                },
-            );
-
-            let mut reader = to_ranges.len() - from_list.len();
-            let mut writer = to_ranges.len();
-
-            for entry in from_list.into_iter().rev() {
-                let prev_reader = reader;
-                while reader != 0 {
-                    match entry.range.from.cmp(&to_ranges[reader - 1].range.from) {
-                        core::cmp::Ordering::Less => reader -= 1,
-                        core::cmp::Ordering::Equal => unreachable!(),
-                        core::cmp::Ordering::Greater => break,
-                    }
-                }
-                writer -= prev_reader - reader;
-                to_ranges.copy_within(reader..prev_reader, writer);
-                writer -= 1;
-                to_ranges[writer] = entry;
-            }
-        }
+        self.bundles[to].ranges.extend_from_slice(&from_list[..]);
+        self.bundles[to]
+            .ranges
+            .sort_unstable_by_key(|entry| entry.range.from);
 
         if self.annotations_enabled {
             trace!("merging: merged = {:?}", self.bundles[to].ranges);
