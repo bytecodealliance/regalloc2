@@ -1,13 +1,3 @@
-## fastalloc: a sample implementation of SSRA
-
-In the `RegallocOptions`, setting `use_fastalloc` will run a sample SSRA
-(https://www.mattkeeter.com/blog/2022-10-04-ssra/) implementation.
-
-It only supports registers of class int and it can handle multiple basic
-blocks.
-
-To test it out on a toy language: https://github.com/d-sonuga/reverse-linear-scan-regalloc-concept-2.
-
 ## regalloc2: another register allocator
 
 This is a register allocator that started life as, and is about 50%
