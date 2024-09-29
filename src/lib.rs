@@ -34,19 +34,19 @@ macro_rules! trace_enabled {
     };
 }
 
-use core::hash::BuildHasherDefault;
+use core::{hash::BuildHasherDefault, iter::FromIterator};
 use rustc_hash::FxHasher;
 type FxHashMap<K, V> = hashbrown::HashMap<K, V, BuildHasherDefault<FxHasher>>;
 type FxHashSet<V> = hashbrown::HashSet<V, BuildHasherDefault<FxHasher>>;
 
 pub(crate) mod cfg;
 pub(crate) mod domtree;
+pub(crate) mod fastalloc;
 pub mod indexset;
 pub(crate) mod ion;
 pub(crate) mod moves;
 pub(crate) mod postorder;
 pub mod ssa;
-pub(crate) mod fastalloc;
 
 #[macro_use]
 mod index;
@@ -251,6 +251,44 @@ impl PRegSet {
             self.bits[i] |= other.bits[i];
         }
     }
+
+    pub fn intersect_from(&mut self, other: PRegSet) {
+        for i in 0..self.bits.len() {
+            self.bits[i] &= other.bits[i];
+        }
+    }
+
+    pub fn invert(&self) -> PRegSet {
+        let mut set = self.bits;
+        for i in 0..self.bits.len() {
+            set[i] = !self.bits[i];
+        }
+        PRegSet { bits: set }
+    }
+
+    pub fn is_empty(&self, regclass: RegClass) -> bool {
+        self.bits[regclass as usize] == 0
+    }
+}
+
+impl core::ops::BitAnd<PRegSet> for PRegSet {
+    type Output = PRegSet;
+
+    fn bitand(self, rhs: PRegSet) -> Self::Output {
+        let mut out = self;
+        out.intersect_from(rhs);
+        out
+    }
+}
+
+impl core::ops::BitOr<PRegSet> for PRegSet {
+    type Output = PRegSet;
+
+    fn bitor(self, rhs: PRegSet) -> Self::Output {
+        let mut out = self;
+        out.union_from(rhs);
+        out
+    }
 }
 
 impl IntoIterator for PRegSet {
@@ -305,6 +343,26 @@ impl From<&MachineEnv> for PRegSet {
     }
 }
 
+impl FromIterator<PReg> for PRegSet {
+    fn from_iter<T: IntoIterator<Item = PReg>>(iter: T) -> Self {
+        let mut set = Self::default();
+        for preg in iter {
+            set.add(preg);
+        }
+        set
+    }
+}
+
+impl core::fmt::Display for PRegSet {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{{")?;
+        for preg in self.into_iter() {
+            write!(f, "{preg}, ")?;
+        }
+        write!(f, "}}")
+    }
+}
+
 /// A virtual register. Contains a virtual register number and a
 /// class.
 ///
@@ -351,6 +409,17 @@ impl VReg {
     #[inline(always)]
     pub const fn invalid() -> Self {
         VReg::new(Self::MAX, RegClass::Int)
+    }
+
+    #[inline(always)]
+    pub const fn bits(self) -> usize {
+        self.bits as usize
+    }
+}
+
+impl From<u32> for VReg {
+    fn from(value: u32) -> Self {
+        Self { bits: value }
     }
 }
 
@@ -1289,6 +1358,11 @@ impl ProgPoint {
     pub fn from_index(index: u32) -> Self {
         Self { bits: index }
     }
+
+    #[inline(always)]
+    pub fn invalid() -> Self {
+        Self::before(Inst::new(usize::MAX))
+    }
 }
 
 /// An instruction to insert into the program to perform some data movement.
@@ -1505,11 +1579,19 @@ pub fn run<F: Function>(
     env: &MachineEnv,
     options: &RegallocOptions,
 ) -> Result<Output, RegAllocError> {
-    if options.use_fastalloc {
-        fastalloc::run(func, env, options.verbose_log, options.validate_ssa)
-    } else {
-        ion::run(func, env, options.verbose_log, options.validate_ssa)
+    match options.algorithm {
+        Algorithm::Ion => ion::run(func, env, options.verbose_log, options.validate_ssa),
+        Algorithm::Fastalloc => {
+            fastalloc::run(func, env, options.verbose_log, options.validate_ssa)
+        }
     }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub enum Algorithm {
+    #[default]
+    Ion,
+    Fastalloc,
 }
 
 /// Options for allocation.
@@ -1521,6 +1603,6 @@ pub struct RegallocOptions {
     /// Run the SSA validator before allocating registers.
     pub validate_ssa: bool,
 
-    /// Run the SSRA algorithm
-    pub use_fastalloc: bool,
+    /// The register allocation algorithm to be used.
+    pub algorithm: Algorithm,
 }
