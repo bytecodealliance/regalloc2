@@ -162,15 +162,6 @@ pub enum CheckerError {
         op: Operand,
         alloc: Allocation,
     },
-    ConflictedValueInStackmap {
-        inst: Inst,
-        alloc: Allocation,
-    },
-    NonRefValuesInStackmap {
-        inst: Inst,
-        alloc: Allocation,
-        vregs: FxHashSet<VReg>,
-    },
     StackToStackMove {
         into: Allocation,
         from: Allocation,

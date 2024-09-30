@@ -78,21 +78,21 @@ consists of the following fields:
 - VReg, or virtual register. *Every* operand mentions a virtual
   register, even if it is constrained to a single physical register in
   practice. This is because we track liveranges uniformly by vreg.
-  
+
 - Policy, or "constraint". Every reference to a vreg can apply some
   constraint to the vreg at that point in the program. Valid policies are:
-  
+
   - Any location;
   - Any register of the vreg's class;
   - Any stack slot;
   - A particular fixed physical register; or
   - For a def (output), a *reuse* of an input register.
-  
+
 - The "kind" of reference to this vreg: Def, Use, Mod. A def
   (definition) writes to the vreg, and disregards any possible earlier
   value. A mod (modify) reads the current value then writes a new
   one. A use simply reads the vreg's value.
-  
+
 - The position: before or after the instruction.
   - Note that to have a def (output) register available in a way that
     does not conflict with inputs, the def should be placed at the
@@ -157,7 +157,7 @@ block parameters must provide values for those parameters via
 operands. When a branch has more than one successor, it provides
 separate operands for each possible successor. These block parameters
 are equivalent to phi-nodes; we chose this representation because they
-are in many ways a more consistent representation of SSA. 
+are in many ways a more consistent representation of SSA.
 
 To see why we believe block parameters are a slightly nicer design
 choice than use of phi nodes, consider: phis are special
@@ -174,8 +174,8 @@ reasonable to handle.
 ## Output
 
 The allocator produces two main data structures as output: an array of
-`Allocation`s and a sequence of edits. Some other data, such as
-stackmap slot info, is also provided.
+`Allocation`s and a sequence of edits. Some other miscellaneous data is also
+provided.
 
 ### Allocations
 

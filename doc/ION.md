@@ -24,8 +24,7 @@ The livein and liveout bitsets (`liveins` and `liveouts` on the `Env`)
 are allocated one per basic block and record, per block, which vregs
 are live entering and leaving that block. They are computed using a
 standard backward iterative dataflow analysis and are exact; they do
-not over-approximate (this turns out to be important for performance,
-and is also necessary for correctness in the case of stackmaps).
+not over-approximate (this turns out to be important for performance).
 
 ### Blockparam Vectors: Source-Side and Dest-Side
 
@@ -426,7 +425,7 @@ them all here.
   across its entire range. This has the effect of causing bundles to
   be more important (more likely to evict others) the more they are
   split.
-  
+
 - Requirement: a bundle's requirement is a value in a lattice that we
   have defined, where top is "Unknown" and bottom is
   "Conflict". Between these two, we have: any register (of a class);
@@ -435,7 +434,7 @@ them all here.
   different requirements meets to Conflict. Requirements are derived
   from the operand constraints for all uses in all liveranges in a
   bundle, and then merged with the lattice meet-function.
-  
+
 The lattice is as follows (diagram simplified to remove multiple
 classes and multiple fixed registers which parameterize nodes; any two
 differently-parameterized values are unordered with respect to each
@@ -971,13 +970,13 @@ similarities than the differences.
 
 * The core abstractions of "liverange", "bundle", "vreg", "preg", and
   "operand" (with policies/constraints) are the same.
-  
+
 * The overall allocator pipeline is the same, and the top-level
   structure of each stage should look similar. Both allocators begin
   by computing liveranges, then merging bundles, then handling bundles
   and splitting/evicting as necessary, then doing second-chance
   allocation, then reifying the decisions.
-  
+
 * The cost functions are very similar, though the heuristics that make
   decisions based on them are not.
 
@@ -999,7 +998,7 @@ Several notable high-level differences are:
   and does not depend on scanning the code at all. In general, we
   should be able to state simple invariants and see by inspection (as
   well as fuzzing -- see above) that they hold.
-  
+
 * The data structures themselves are simplified. Where IonMonkey uses
   linked lists in many places, this allocator stores simple inline
   smallvecs of liveranges on bundles and vregs, and smallvecs of uses
@@ -1007,25 +1006,25 @@ Several notable high-level differences are:
   in-order immediately, without any need for splicing, unlike
   IonMonkey, and (ii) relax sorting invariants where possible to allow
   for cheap append operations in many cases.
-  
+
 * The splitting heuristics are significantly reworked. Whereas
   IonMonkey has an all-at-once approach to splitting an entire bundle,
   and has a list of complex heuristics to choose where to split, this
   allocator does conflict-based splitting, and tries to decide whether
   to split or evict and which split to take based on cost heuristics.
-  
+
 * The liverange computation is exact, whereas IonMonkey approximates
   using a single-pass algorithm that makes vregs live across entire
   loop bodies. We have found that precise liveness improves allocation
   performance and generated code quality, even though the liveness
   itself is slightly more expensive to compute.
-  
+
 * Many of the algorithms in the IonMonkey allocator are built with
   helper functions that do linear scans. These "small quadratic" loops
   are likely not a huge issue in practice, but nevertheless have the
   potential to be in corner cases. As much as possible, all work in
   this allocator is done in linear scans.
-  
+
 * There are novel schemes for solving certain interesting design
   challenges. One example: in IonMonkey, liveranges are connected
   across blocks by, when reaching one end of a control-flow edge in a
@@ -1041,7 +1040,7 @@ Several notable high-level differences are:
   for the core regalloc. Ion instead has to tweak its definition of
   minimal bundles and create two liveranges that overlap (!) to
   represent the two uses.
-  
+
 * Using block parameters rather than phi-nodes significantly
   simplifies handling of inter-block data movement. IonMonkey had to
   special-case phis in many ways because they are actually quite
@@ -1052,7 +1051,7 @@ Several notable high-level differences are:
 * The allocator supports irreducible control flow and arbitrary block
   ordering (its only CFG requirement is that critical edges are
   split).
-  
+
 * The allocator supports non-SSA code, and has native support for
   handling program moves specially.
 
@@ -1073,7 +1072,7 @@ number of general principles:
   an allocation map for each PReg. This turned out to be significantly
   (!) less efficient than Rust's built-in BTree data structures, for
   the usual cache-efficiency vs. pointer-chasing reasons.
-  
+
 * We initially used dense bitvecs, as IonMonkey does, for
   livein/liveout bits. It turned out that a chunked sparse design (see
   below) was much more efficient.
@@ -1097,7 +1096,7 @@ number of general principles:
   append liveranges to in-progress vreg liverange vectors and then
   reverse at the end. The expensive part is a single pass; only the
   bitset computation is a fixpoint loop.
-  
+
 * Sorts are better than always-sorted data structures (like btrees):
   they amortize all the comparison and update cost to one phase, and
   this phase is much more cache-friendly than a bunch of spread-out
