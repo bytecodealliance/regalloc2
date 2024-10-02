@@ -1102,10 +1102,6 @@ impl Allocation {
         debug_assert!(bits >> 29 >= 5);
         Self { bits }
     }
-
-    fn invalid() -> Allocation {
-        todo!()
-    }
 }
 
 /// An allocation is one of two "kinds" (or "none"): register or
