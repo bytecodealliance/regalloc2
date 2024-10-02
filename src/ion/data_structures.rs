@@ -105,7 +105,6 @@ define_index!(PRegIndex);
 define_index!(SpillSlotIndex);
 
 /// Used to carry small sets of bundles, e.g. for conflict sets.
-//pub type LiveBundleVec = SmallVec<[LiveBundleIndex; 4]>;
 pub type LiveBundleVec = Vec<LiveBundleIndex>;
 
 #[derive(Clone, Copy, Debug)]
