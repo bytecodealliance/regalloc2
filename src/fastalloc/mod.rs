@@ -2,8 +2,8 @@ use crate::moves::{MoveAndScratchResolver, ParallelMoves};
 use crate::{cfg::CFGInfo, ion::Stats, Allocation, RegAllocError};
 use crate::{ssa::validate_ssa, Edit, Function, MachineEnv, Output, ProgPoint};
 use crate::{
-    AllocationKind, Block, Inst, InstPosition, Operand, OperandConstraint, OperandKind, OperandPos,
-    PReg, PRegSet, RegClass, SpillSlot, VReg,
+    AllocationKind, Block, FxHashMap, Inst, InstPosition, Operand, OperandConstraint, OperandKind,
+    OperandPos, PReg, PRegSet, RegClass, SpillSlot, VReg,
 };
 use alloc::vec::Vec;
 use core::convert::TryInto;
@@ -1150,17 +1150,16 @@ impl<'a, F: Function> Env<'a, F> {
 
     fn log_post_reload_at_begin_state(&self, block: Block) {
         use alloc::format;
-        use hashbrown::HashMap;
         trace!("");
         trace!("State after instruction reload_at_begin of {:?}", block);
-        let mut map = HashMap::new();
+        let mut map = FxHashMap::default();
         for (vreg_idx, alloc) in self.vreg_allocs.iter().enumerate() {
             if *alloc != Allocation::none() {
                 map.insert(format!("vreg{vreg_idx}"), alloc);
             }
         }
         trace!("vreg_allocs: {:?}", map);
-        let mut map = HashMap::new();
+        let mut map = FxHashMap::default();
         for i in 0..self.vreg_in_preg.len() {
             if self.vreg_in_preg[i] != VReg::invalid() {
                 map.insert(PReg::from_index(i), self.vreg_in_preg[i]);
@@ -1174,10 +1173,9 @@ impl<'a, F: Function> Env<'a, F> {
 
     fn log_post_inst_processing_state(&self, inst: Inst) {
         use alloc::format;
-        use hashbrown::HashMap;
         trace!("");
         trace!("State after instruction {:?}", inst);
-        let mut map = HashMap::new();
+        let mut map = FxHashMap::default();
         for (vreg_idx, alloc) in self.vreg_allocs.iter().enumerate() {
             if *alloc != Allocation::none() {
                 map.insert(format!("vreg{vreg_idx}"), alloc);
@@ -1289,8 +1287,7 @@ pub fn run<F: Function>(
     enable_ssa_checker: bool,
 ) -> Result<Output, RegAllocError> {
     if enable_ssa_checker {
-        let cfginfo = CFGInfo::new(func)?;
-        validate_ssa(func, &cfginfo)?;
+        validate_ssa(func, &CFGInfo::new(func)?)?;
     }
 
     if trace_enabled!() || verbose_log {

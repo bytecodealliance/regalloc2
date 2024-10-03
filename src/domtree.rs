@@ -12,10 +12,11 @@
 //   TR-06-33870
 //   https://www.cs.rice.edu/~keith/EMBED/dom.pdf
 
-use alloc::vec;
+use core::u32;
+
 use alloc::vec::Vec;
 
-use crate::Block;
+use crate::{Block, VecExt};
 
 // Helper
 fn merge_sets(
@@ -44,19 +45,18 @@ pub fn calculate<'a, PredFn: Fn(Block) -> &'a [Block]>(
     num_blocks: usize,
     preds: PredFn,
     post_ord: &[Block],
+    block_to_rpo_scratch: &mut Vec<Option<u32>>,
+    out: &mut Vec<Block>,
     start: Block,
-) -> Vec<Block> {
+) {
     // We have post_ord, which is the postorder sequence.
-
     // Compute maps from RPO to block number and vice-versa.
-    let mut block_to_rpo = vec![None; num_blocks];
-    block_to_rpo.resize(num_blocks, None);
+    let block_to_rpo = block_to_rpo_scratch.repopulate(num_blocks, None);
     for (i, rpo_block) in post_ord.iter().rev().enumerate() {
         block_to_rpo[rpo_block.index()] = Some(i as u32);
     }
 
-    let mut idom = vec![Block::invalid(); num_blocks];
-
+    let idom = out.repopulate(num_blocks, Block::invalid());
     // The start node must have itself as a parent.
     idom[start.index()] = start;
 
@@ -70,11 +70,11 @@ pub fn calculate<'a, PredFn: Fn(Block) -> &'a [Block]>(
             let mut parent = Block::invalid();
             for &pred in preds(node).iter() {
                 let pred_rpo = match block_to_rpo[pred.index()] {
-                    Some(r) => r,
                     None => {
                         // Skip unreachable preds.
                         continue;
                     }
+                    Some(r) => r,
                 };
                 if pred_rpo < rponum {
                     parent = pred;
@@ -104,8 +104,6 @@ pub fn calculate<'a, PredFn: Fn(Block) -> &'a [Block]>(
     // Now set the start node's dominator-tree parent to "invalid";
     // this allows the loop in `dominates` to terminate.
     idom[start.index()] = Block::invalid();
-
-    idom
 }
 
 pub fn dominates(idom: &[Block], a: Block, mut b: Block) -> bool {

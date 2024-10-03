@@ -13,13 +13,10 @@
 //! Backtracking register allocator. See doc/DESIGN.md for details of
 //! its design.
 
-use crate::cfg::CFGInfo;
 use crate::ssa::validate_ssa;
-use crate::{Function, MachineEnv, Output, PReg, RegAllocError, RegClass};
-use alloc::vec;
-use alloc::vec::Vec;
-
+use crate::{Function, MachineEnv, PReg, RegAllocError, RegClass, VecExt};
 pub(crate) mod data_structures;
+pub use data_structures::Ctx;
 pub use data_structures::Stats;
 use data_structures::*;
 pub(crate) mod reg_traversal;
@@ -39,53 +36,48 @@ pub(crate) mod moves;
 pub(crate) mod spill;
 
 impl<'a, F: Function> Env<'a, F> {
-    pub(crate) fn new(
-        func: &'a F,
-        env: &'a MachineEnv,
-        cfginfo: CFGInfo,
-        annotations_enabled: bool,
-    ) -> Self {
-        let n = func.num_insts();
-        Self {
-            func,
-            env,
-            cfginfo,
+    pub(crate) fn new(func: &'a F, env: &'a MachineEnv, ctx: &'a mut Ctx) -> Self {
+        let ninstrs = func.num_insts();
+        let nblocks = func.num_blocks();
 
-            liveins: Vec::with_capacity(func.num_blocks()),
-            liveouts: Vec::with_capacity(func.num_blocks()),
-            blockparam_outs: vec![],
-            blockparam_ins: vec![],
-            bundles: LiveBundles::with_capacity(n),
-            ranges: LiveRanges::with_capacity(4 * n),
-            spillsets: SpillSets::with_capacity(n),
-            vregs: VRegs::with_capacity(n),
-            pregs: vec![],
-            allocation_queue: PrioQueue::new(),
-            spilled_bundles: vec![],
-            spillslots: vec![],
-            slots_by_class: [
-                SpillSlotList::new(),
-                SpillSlotList::new(),
-                SpillSlotList::new(),
-            ],
-            allocated_bundle_count: 0,
-
-            extra_spillslots_by_class: [smallvec![], smallvec![], smallvec![]],
-            preferred_victim_by_class: [PReg::invalid(), PReg::invalid(), PReg::invalid()],
-
-            multi_fixed_reg_fixups: vec![],
-            allocs: Vec::with_capacity(4 * n),
-            inst_alloc_offsets: vec![],
-            num_spillslots: 0,
-            debug_locations: vec![],
-
-            stats: Stats::default(),
-
-            debug_annotations: hashbrown::HashMap::new(),
-            annotations_enabled,
-
-            conflict_set: Default::default(),
+        ctx.liveins.preallocate(nblocks);
+        ctx.liveouts.preallocate(nblocks);
+        ctx.blockparam_ins.clear();
+        ctx.blockparam_outs.clear();
+        ctx.ranges.preallocate(4 * ninstrs);
+        ctx.bundles.preallocate(ninstrs);
+        ctx.spillsets.preallocate(ninstrs);
+        ctx.vregs.preallocate(ninstrs);
+        for preg in ctx.pregs.iter_mut() {
+            preg.is_stack = false;
+            preg.allocations.btree.clear();
         }
+        ctx.allocation_queue.heap.clear();
+        ctx.spilled_bundles.clear();
+        ctx.scratch_spillset_pool
+            .extend(ctx.spillslots.drain(..).map(|mut s| {
+                s.ranges.btree.clear();
+                s.ranges
+            }));
+        ctx.slots_by_class = core::array::from_fn(|_| SpillSlotList::default());
+        ctx.extra_spillslots_by_class = core::array::from_fn(|_| smallvec![]);
+        ctx.preferred_victim_by_class = [PReg::invalid(); 3];
+        ctx.multi_fixed_reg_fixups.clear();
+        ctx.allocated_bundle_count = 0;
+        ctx.debug_annotations.clear();
+        ctx.scratch_bump
+            .get_mut()
+            .expect("we dropped all refs to this")
+            .reset();
+
+        ctx.output.allocs.preallocate(4 * ninstrs);
+        ctx.output.inst_alloc_offsets.clear();
+        ctx.output.num_spillslots = 0;
+        ctx.output.debug_locations.clear();
+        ctx.output.edits.clear();
+        ctx.output.stats = Stats::default();
+
+        Self { func, env, ctx }
     }
 
     pub(crate) fn init(&mut self) -> Result<(), RegAllocError> {
@@ -106,38 +98,34 @@ impl<'a, F: Function> Env<'a, F> {
         self.try_allocating_regs_for_spilled_bundles();
         self.allocate_spillslots();
         let moves = self.apply_allocations_and_insert_moves();
-        let edits = self.resolve_inserted_moves(moves);
-        Ok(edits)
+        Ok(self.resolve_inserted_moves(moves))
     }
 }
 
 pub fn run<F: Function>(
     func: &F,
     mach_env: &MachineEnv,
+    ctx: &mut Ctx,
     enable_annotations: bool,
     enable_ssa_checker: bool,
-) -> Result<Output, RegAllocError> {
-    let cfginfo = CFGInfo::new(func)?;
+) -> Result<(), RegAllocError> {
+    ctx.cfginfo.init(func, &mut ctx.cfginfo_ctx)?;
 
     if enable_ssa_checker {
-        validate_ssa(func, &cfginfo)?;
+        validate_ssa(func, &ctx.cfginfo)?;
     }
 
-    let mut env = Env::new(func, mach_env, cfginfo, enable_annotations);
+    ctx.annotations_enabled = enable_annotations;
+    let mut env = Env::new(func, mach_env, ctx);
     env.init()?;
 
-    let edits = env.run()?;
+    let mut edits = env.run()?;
 
     if enable_annotations {
         env.dump_results();
     }
 
-    Ok(Output {
-        edits: edits.into_edits().collect(),
-        allocs: env.allocs,
-        inst_alloc_offsets: env.inst_alloc_offsets,
-        num_spillslots: env.num_spillslots as usize,
-        debug_locations: env.debug_locations,
-        stats: env.stats,
-    })
+    ctx.output.edits.extend(edits.drain_edits());
+
+    Ok(())
 }

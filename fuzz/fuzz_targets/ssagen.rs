@@ -5,7 +5,7 @@
 
 #![no_main]
 use regalloc2::fuzzing::arbitrary::{Arbitrary, Result, Unstructured};
-use regalloc2::fuzzing::cfg::CFGInfo;
+use regalloc2::fuzzing::cfg::{CFGInfo, CFGInfoCtx};
 use regalloc2::fuzzing::func::{Func, Options};
 use regalloc2::fuzzing::fuzz_target;
 use regalloc2::ssa::validate_ssa;
@@ -33,6 +33,13 @@ impl Arbitrary<'_> for TestCase {
 }
 
 fuzz_target!(|t: TestCase| {
-    let cfginfo = CFGInfo::new(&t.f).expect("could not create CFG info");
-    validate_ssa(&t.f, &cfginfo).expect("invalid SSA");
+    thread_local! {
+        // We test that ctx is cleared properly between runs.
+        static CFG_INFO: std::cell::RefCell<(CFGInfo, CFGInfoCtx)> = std::cell::RefCell::default();
+    }
+
+    CFG_INFO.with_borrow_mut(|(cfginfo, ctx)| {
+        cfginfo.init(&t.f, ctx).expect("could not create CFG info");
+        validate_ssa(&t.f, &cfginfo).expect("invalid SSA");
+    });
 });

@@ -188,13 +188,20 @@ impl FuncBuilder {
     }
 
     fn compute_doms(&mut self) {
-        self.postorder = postorder::calculate(self.f.blocks.len(), Block::new(0), |block| {
-            &self.f.block_succs[block.index()][..]
-        });
-        self.idom = domtree::calculate(
+        let f = &self.f;
+        postorder::calculate(
             self.f.blocks.len(),
-            |block| &self.f.block_preds[block.index()][..],
+            Block::new(0),
+            &mut vec![],
+            &mut self.postorder,
+            |block| &f.block_succs[block.index()][..],
+        );
+        domtree::calculate(
+            self.f.blocks.len(),
+            |block| &f.block_preds[block.index()][..],
             &self.postorder[..],
+            &mut vec![],
+            &mut self.idom,
             Block::new(0),
         );
     }

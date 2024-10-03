@@ -6,10 +6,9 @@
 //! SSA-related utilities.
 
 use alloc::vec;
-use hashbrown::HashSet;
 
 use crate::cfg::CFGInfo;
-use crate::{Block, Function, Inst, OperandKind, RegAllocError, VReg};
+use crate::{Block, Function, FxHashSet, Inst, OperandKind, RegAllocError, VReg};
 
 pub fn validate_ssa<F: Function>(f: &F, cfginfo: &CFGInfo) -> Result<(), RegAllocError> {
     // For every block param and inst def, check that this is the only def.
@@ -41,7 +40,7 @@ pub fn validate_ssa<F: Function>(f: &F, cfginfo: &CFGInfo) -> Result<(), RegAllo
     // the def is either in the same block in an earlier inst, or is
     // defined (by inst or blockparam) in some other block that
     // dominates this one.
-    let mut local = HashSet::new();
+    let mut local = FxHashSet::default();
     for block in 0..f.num_blocks() {
         let block = Block::new(block);
         local.clear();

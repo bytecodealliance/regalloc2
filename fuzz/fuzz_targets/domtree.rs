@@ -116,13 +116,21 @@ impl Arbitrary<'_> for TestCase {
 }
 
 fuzz_target!(|testcase: TestCase| {
-    let postord = postorder::calculate(testcase.cfg.num_blocks, Block::new(0), |block| {
-        &testcase.cfg.succs[block.index()]
-    });
-    let idom = domtree::calculate(
+    let mut postorder = vec![];
+    postorder::calculate(
+        testcase.cfg.num_blocks,
+        Block::new(0),
+        &mut vec![],
+        &mut postorder,
+        |block| &testcase.cfg.succs[block.index()],
+    );
+    let mut idom = vec![];
+    domtree::calculate(
         testcase.cfg.num_blocks,
         |block| &testcase.cfg.preds[block.index()],
-        &postord[..],
+        &postorder[..],
+        &mut vec![],
+        &mut idom,
         Block::new(0),
     );
     check_idom_violations(&idom[..], &testcase.path);
