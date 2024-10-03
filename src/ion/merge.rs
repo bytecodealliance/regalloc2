@@ -134,8 +134,8 @@ impl<'a, F: Function> Env<'a, F> {
             // `to` bundle is empty -- just move the list over from
             // `from` and set `bundle` up-link on all ranges.
             trace!(" -> to bundle{} is empty; trivial merge", to.index());
-            let vc = LiveRangeList::new_in(self.ctx.bump());
-            let list = core::mem::replace(&mut self.bundles[from].ranges, vc);
+            let empty_vec = LiveRangeList::new_in(self.ctx.bump());
+            let list = core::mem::replace(&mut self.bundles[from].ranges, empty_vec);
             for entry in &list {
                 self.ranges[entry.index].bundle = to;
 
@@ -173,8 +173,8 @@ impl<'a, F: Function> Env<'a, F> {
         // Two non-empty lists of LiveRanges: concatenate and
         // sort. This is faster than a mergesort-like merge into a new
         // list, empirically.
-        let vc = LiveRangeList::new_in(self.ctx.bump());
-        let from_list = core::mem::replace(&mut self.bundles[from].ranges, vc);
+        let empty_vec = LiveRangeList::new_in(self.ctx.bump());
+        let from_list = core::mem::replace(&mut self.bundles[from].ranges, empty_vec);
         for entry in &from_list {
             self.ranges[entry.index].bundle = to;
         }

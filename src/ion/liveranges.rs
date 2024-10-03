@@ -377,6 +377,7 @@ impl<'a, F: Function> Env<'a, F> {
         // only valid if `live.get(vreg)` is true.
         let mut vreg_ranges = core::mem::take(&mut self.ctx.scratch_vreg_ranges);
         vreg_ranges.repopulate(self.func.num_vregs(), LiveRangeIndex::invalid());
+        let mut operand_rewrites = core::mem::take(&mut self.ctx.scratch_operand_rewrites);
 
         for i in (0..self.func.num_blocks()).rev() {
             let block = Block::new(i);
@@ -476,7 +477,6 @@ impl<'a, F: Function> Env<'a, F> {
                 // register can be used multiple times in the same
                 // instruction is with an early-use and a late-def. Anything
                 // else is a user error.
-                let mut operand_rewrites = core::mem::take(&mut self.ctx.scratch_operand_rewrites);
                 operand_rewrites.clear();
                 let mut late_def_fixed: SmallVec<[PReg; 8]> = smallvec![];
                 for &operand in self.func.inst_operands(inst) {
@@ -689,7 +689,6 @@ impl<'a, F: Function> Env<'a, F> {
                         }
                     }
                 }
-                self.ctx.scratch_operand_rewrites = operand_rewrites;
             }
 
             // Block parameters define vregs at the very beginning of
@@ -756,6 +755,7 @@ impl<'a, F: Function> Env<'a, F> {
         self.output.stats.blockparam_ins_count = self.blockparam_ins.len();
         self.output.stats.blockparam_outs_count = self.blockparam_outs.len();
         self.ctx.scratch_vreg_ranges = vreg_ranges;
+        self.ctx.scratch_operand_rewrites = operand_rewrites;
     }
 
     pub fn fixup_multi_fixed_vregs(&mut self) {

@@ -807,8 +807,8 @@ impl<'a, F: Function> Env<'a, F> {
 
         let mut spill_uses = UseList::new_in(self.ctx.bump());
 
-        let vc = LiveRangeList::new_in(self.ctx.bump());
-        for entry in core::mem::replace(&mut self.ctx.bundles[bundle].ranges, vc) {
+        let empty_vec = LiveRangeList::new_in(self.ctx.bump());
+        for entry in core::mem::replace(&mut self.ctx.bundles[bundle].ranges, empty_vec) {
             let lr_from = entry.range.from;
             let lr_to = entry.range.to;
             let vreg = self.ctx.ranges[entry.index].vreg;
@@ -822,8 +822,8 @@ impl<'a, F: Function> Env<'a, F> {
             let mut spill_starts_def = false;
 
             let mut last_live_pos = entry.range.from;
-            let uc = UseList::new_in(self.ctx.bump());
-            for u in core::mem::replace(&mut self.ctx.ranges[entry.index].uses, uc) {
+            let empty_vec = UseList::new_in(self.ctx.bump());
+            for u in core::mem::replace(&mut self.ctx.ranges[entry.index].uses, empty_vec) {
                 trace!("   -> use {:?} (last_live_pos {:?})", u, last_live_pos);
 
                 let is_def = u.operand.kind() == OperandKind::Def;
@@ -1046,8 +1046,9 @@ impl<'a, F: Function> Env<'a, F> {
                 if let Some(spill) =
                     self.get_or_create_spill_bundle(bundle, /* create_if_absent = */ false)
                 {
-                    let vc = LiveRangeList::new_in(self.ctx.bump());
-                    let mut list = core::mem::replace(&mut self.ctx.bundles[bundle].ranges, vc);
+                    let empty_vec = LiveRangeList::new_in(self.ctx.bump());
+                    let mut list =
+                        core::mem::replace(&mut self.ctx.bundles[bundle].ranges, empty_vec);
                     for entry in &list {
                         self.ctx.ranges[entry.index].bundle = spill;
                     }

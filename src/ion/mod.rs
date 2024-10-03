@@ -119,13 +119,13 @@ pub fn run<F: Function>(
     let mut env = Env::new(func, mach_env, ctx);
     env.init()?;
 
-    let mut moves = env.run()?;
+    let mut edits = env.run()?;
 
     if enable_annotations {
         env.dump_results();
     }
 
-    ctx.output.edits.extend(moves.drain_edits());
+    ctx.output.edits.extend(edits.drain_edits());
 
     Ok(())
 }
