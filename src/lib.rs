@@ -1670,9 +1670,9 @@ impl<T> VecExt<T> for Vec<T> {
     }
 }
 
-#[derive(Debug, Clone, Default)]
 /// Bump is a wrapper around `bumpalo::Bump` that can be cloned and also
 /// implements `Allocator`. Using this avoids lifetime polution of `Ctx`.
+#[derive(Debug, Clone, Default)]
 pub struct Bump(Rc<bumpalo::Bump>);
 
 impl Bump {
