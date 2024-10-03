@@ -1670,10 +1670,8 @@ impl<T> VecExt<T> for Vec<T> {
     }
 }
 
-/// Bump is a wrapper around `bumpalo::Bump` that can be cloned and also
-/// implements `Allocator`. Using this avoids lifetime polution of `Ctx`.
 #[derive(Debug, Clone, Default)]
-pub struct Bump(Rc<bumpalo::Bump>);
+pub(crate) struct Bump(Rc<bumpalo::Bump>);
 
 impl Bump {
     pub(crate) fn get_mut(&mut self) -> Option<&mut bumpalo::Bump> {

@@ -123,7 +123,7 @@ pub struct LiveRange {
     pub vreg: VRegIndex,
     pub bundle: LiveBundleIndex,
     pub uses_spill_weight_and_flags: u32,
-    pub uses: UseList,
+    pub(crate) uses: UseList,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -198,7 +198,7 @@ impl Use {
 
 #[derive(Clone, Debug)]
 pub struct LiveBundle {
-    pub ranges: LiveRangeList,
+    pub(crate) ranges: LiveRangeList,
     pub spillset: SpillSetIndex,
     pub allocation: Allocation,
     pub prio: u32, // recomputed after every bulk update
@@ -300,7 +300,7 @@ pub(crate) const MAX_SPLITS_PER_SPILLSET: u8 = 2;
 
 #[derive(Clone, Debug)]
 pub struct VRegData {
-    pub ranges: LiveRangeList,
+    pub(crate) ranges: LiveRangeList,
     pub blockparam: Block,
     // We don't initially know the RegClass until we observe a use of the VReg.
     pub class: Option<RegClass>,
@@ -382,7 +382,7 @@ impl BlockparamIn {
 }
 
 impl LiveRanges {
-    pub fn add(&mut self, range: CodeRange, bump: Bump) -> LiveRangeIndex {
+    pub(crate) fn add(&mut self, range: CodeRange, bump: Bump) -> LiveRangeIndex {
         self.push(LiveRange {
             range,
             vreg: VRegIndex::invalid(),
@@ -394,7 +394,7 @@ impl LiveRanges {
 }
 
 impl LiveBundles {
-    pub fn add(&mut self, bump: Bump) -> LiveBundleIndex {
+    pub(crate) fn add(&mut self, bump: Bump) -> LiveBundleIndex {
         self.push(LiveBundle {
             allocation: Allocation::none(),
             ranges: LiveRangeList::new_in(bump),
