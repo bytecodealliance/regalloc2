@@ -1602,19 +1602,22 @@ pub fn run<F: Function>(
     }
 }
 
-/// Run the allocator.
-pub fn run_with_ctx<F: Function>(
+/// Run the allocator with reusable context.
+///
+/// Return value points to `ctx.output` that can be alternatively `std::mem::take`n.
+pub fn run_with_ctx<'a, F: Function>(
     func: &F,
     env: &MachineEnv,
     options: &RegallocOptions,
-    ctx: &mut Ctx,
-) -> Result<(), RegAllocError> {
-    Ok(match options.algorithm {
+    ctx: &'a mut Ctx,
+) -> Result<&'a Output, RegAllocError> {
+    match options.algorithm {
         Algorithm::Ion => ion::run(func, env, ctx, options.verbose_log, options.validate_ssa)?,
         Algorithm::Fastalloc => {
             ctx.output = fastalloc::run(func, env, options.verbose_log, options.validate_ssa)?
         }
-    })
+    }
+    Ok(&ctx.output)
 }
 
 #[derive(Clone, Copy, Debug, Default)]
