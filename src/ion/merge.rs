@@ -14,11 +14,13 @@
 
 use super::{Env, LiveBundleIndex, SpillSet, SpillSlotIndex, VRegIndex};
 use crate::{
-    ion::data_structures::{BlockparamOut, CodeRange},
+    ion::{
+        data_structures::{BlockparamOut, CodeRange},
+        LiveRangeList,
+    },
     Function, Inst, OperandConstraint, OperandKind, PReg, ProgPoint,
 };
 use alloc::format;
-use smallvec::smallvec;
 
 impl<'a, F: Function> Env<'a, F> {
     pub fn merge_bundles(&mut self, from: LiveBundleIndex, to: LiveBundleIndex) -> bool {
@@ -132,7 +134,8 @@ impl<'a, F: Function> Env<'a, F> {
             // `to` bundle is empty -- just move the list over from
             // `from` and set `bundle` up-link on all ranges.
             trace!(" -> to bundle{} is empty; trivial merge", to.index());
-            let list = core::mem::replace(&mut self.bundles[from].ranges, smallvec![]);
+            let empty_vec = LiveRangeList::new_in(self.ctx.bump());
+            let list = core::mem::replace(&mut self.bundles[from].ranges, empty_vec);
             for entry in &list {
                 self.ranges[entry.index].bundle = to;
 
@@ -170,10 +173,12 @@ impl<'a, F: Function> Env<'a, F> {
         // Two non-empty lists of LiveRanges: concatenate and
         // sort. This is faster than a mergesort-like merge into a new
         // list, empirically.
-        let from_list = core::mem::replace(&mut self.bundles[from].ranges, smallvec![]);
+        let empty_vec = LiveRangeList::new_in(self.ctx.bump());
+        let from_list = core::mem::replace(&mut self.bundles[from].ranges, empty_vec);
         for entry in &from_list {
             self.ranges[entry.index].bundle = to;
         }
+
         self.bundles[to].ranges.extend_from_slice(&from_list[..]);
         self.bundles[to]
             .ranges
@@ -213,7 +218,7 @@ impl<'a, F: Function> Env<'a, F> {
         if self.bundles[from].spillset != self.bundles[to].spillset {
             // Widen the range for the target spillset to include the one being merged in.
             let from_range = self.spillsets[self.bundles[from].spillset].range;
-            let to_range = &mut self.spillsets[self.bundles[to].spillset].range;
+            let to_range = &mut self.ctx.spillsets[self.ctx.bundles[to].spillset].range;
             *to_range = to_range.join(from_range);
         }
 
@@ -236,19 +241,19 @@ impl<'a, F: Function> Env<'a, F> {
                 continue;
             }
 
-            let bundle = self.bundles.add();
+            let bundle = self.ctx.bundles.add(self.ctx.bump());
             let mut range = self.vregs[vreg].ranges.first().unwrap().range;
 
             self.bundles[bundle].ranges = self.vregs[vreg].ranges.clone();
             trace!("vreg v{} gets bundle{}", vreg.index(), bundle.index());
-            for entry in &self.bundles[bundle].ranges {
+            for entry in &self.ctx.bundles[bundle].ranges {
                 trace!(
                     " -> with LR range{}: {:?}",
                     entry.index.index(),
                     entry.range
                 );
                 range = range.join(entry.range);
-                self.ranges[entry.index].bundle = bundle;
+                self.ctx.ranges[entry.index].bundle = bundle;
             }
 
             let mut fixed = false;
@@ -361,6 +366,6 @@ impl<'a, F: Function> Env<'a, F> {
             self.allocation_queue
                 .insert(bundle, prio as usize, PReg::invalid());
         }
-        self.stats.merged_bundle_count = self.allocation_queue.heap.len();
+        self.output.stats.merged_bundle_count = self.allocation_queue.heap.len();
     }
 }

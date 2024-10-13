@@ -1,11 +1,10 @@
-use crate::{PReg, PRegSet, RegClass};
+use crate::{FxHashSet, PReg, PRegSet, RegClass};
 use alloc::vec;
 use alloc::vec::Vec;
 use core::{
     fmt,
     ops::{Index, IndexMut},
 };
-use hashbrown::HashSet;
 
 /// A least-recently-used cache organized as a linked list based on a vector.
 pub struct Lru {
@@ -193,7 +192,7 @@ impl Lru {
         );
         if self.head != u8::MAX {
             let mut node = self.data[self.head as usize].next;
-            let mut seen = HashSet::new();
+            let mut seen = FxHashSet::default();
             while node != self.head {
                 if seen.contains(&node) {
                     panic!(
@@ -245,7 +244,7 @@ impl fmt::Debug for Lru {
         } else {
             let mut data_str = format!("p{}", self.head);
             let mut node = self.data[self.head as usize].next;
-            let mut seen = HashSet::new();
+            let mut seen = FxHashSet::default();
             while node != self.head {
                 if seen.contains(&node) {
                     panic!(

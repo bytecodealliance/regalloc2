@@ -3,17 +3,17 @@ macro_rules! define_index {
     ($ix:ident, $storage:ident, $elem:ident) => {
         define_index!($ix);
 
-        #[derive(Clone, Debug)]
+        #[derive(Clone, Debug, Default)]
         pub struct $storage {
             storage: Vec<$elem>,
         }
 
         impl $storage {
             #[inline(always)]
-            pub fn with_capacity(n: usize) -> Self {
-                Self {
-                    storage: Vec::with_capacity(n),
-                }
+            /// See `VecExt::preallocate`
+            pub fn preallocate(&mut self, cap: usize) {
+                use $crate::VecExt;
+                self.storage.preallocate(cap);
             }
 
             #[inline(always)]

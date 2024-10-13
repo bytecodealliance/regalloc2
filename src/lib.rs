@@ -11,6 +11,7 @@
  */
 
 #![allow(dead_code)]
+#![allow(clippy::all)]
 #![no_std]
 
 #[cfg(feature = "std")]
@@ -34,6 +35,9 @@ macro_rules! trace_enabled {
     };
 }
 
+use alloc::rc::Rc;
+use allocator_api2::vec::Vec as Vec2;
+use core::ops::Deref as _;
 use core::{hash::BuildHasherDefault, iter::FromIterator};
 use rustc_hash::FxHasher;
 type FxHashMap<K, V> = hashbrown::HashMap<K, V, BuildHasherDefault<FxHasher>>;
@@ -51,6 +55,7 @@ pub mod ssa;
 #[macro_use]
 mod index;
 
+pub use self::ion::data_structures::Ctx;
 use alloc::vec::Vec;
 pub use index::{Block, Inst, InstRange};
 
@@ -158,6 +163,12 @@ impl PReg {
     #[inline(always)]
     pub const fn invalid() -> Self {
         PReg::new(Self::MAX, RegClass::Int)
+    }
+}
+
+impl Default for PReg {
+    fn default() -> Self {
+        Self::invalid()
     }
 }
 
@@ -1469,7 +1480,7 @@ pub struct MachineEnv {
 }
 
 /// The output of the register allocator.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 #[cfg_attr(feature = "enable-serde", derive(Serialize, Deserialize))]
 pub struct Output {
     /// How many spillslots are needed in the frame?
@@ -1580,11 +1591,33 @@ pub fn run<F: Function>(
     options: &RegallocOptions,
 ) -> Result<Output, RegAllocError> {
     match options.algorithm {
-        Algorithm::Ion => ion::run(func, env, options.verbose_log, options.validate_ssa),
+        Algorithm::Ion => {
+            let mut ctx = Ctx::default();
+            run_with_ctx(func, env, options, &mut ctx)?;
+            Ok(ctx.output)
+        }
         Algorithm::Fastalloc => {
             fastalloc::run(func, env, options.verbose_log, options.validate_ssa)
         }
     }
+}
+
+/// Run the allocator with reusable context.
+///
+/// Return value points to `ctx.output` that can be alternatively `std::mem::take`n.
+pub fn run_with_ctx<'a, F: Function>(
+    func: &F,
+    env: &MachineEnv,
+    options: &RegallocOptions,
+    ctx: &'a mut Ctx,
+) -> Result<&'a Output, RegAllocError> {
+    match options.algorithm {
+        Algorithm::Ion => ion::run(func, env, ctx, options.verbose_log, options.validate_ssa)?,
+        Algorithm::Fastalloc => {
+            ctx.output = fastalloc::run(func, env, options.verbose_log, options.validate_ssa)?
+        }
+    }
+    Ok(&ctx.output)
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -1605,4 +1638,94 @@ pub struct RegallocOptions {
 
     /// The register allocation algorithm to be used.
     pub algorithm: Algorithm,
+}
+
+pub(crate) trait VecExt<T> {
+    /// Fills `self` with `value` up to `len` and return the mutable slice to the values.
+    fn repopulate(&mut self, len: usize, value: T) -> &mut [T]
+    where
+        T: Clone;
+    /// Clears the `self` and returns a mutable reference to it.
+    fn cleared(&mut self) -> &mut Self;
+    /// Makes sure `self` is empty and has at least `cap` capacity.
+    fn preallocate(&mut self, cap: usize) -> &mut Self;
+}
+
+impl<T> VecExt<T> for Vec<T> {
+    fn repopulate(&mut self, len: usize, value: T) -> &mut [T]
+    where
+        T: Clone,
+    {
+        self.clear();
+        self.resize(len, value);
+        self
+    }
+
+    fn cleared(&mut self) -> &mut Self {
+        self.clear();
+        self
+    }
+
+    fn preallocate(&mut self, cap: usize) -> &mut Self {
+        self.clear();
+        self.reserve(cap);
+        self
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Bump(Rc<bumpalo::Bump>);
+
+impl Bump {
+    pub(crate) fn get_mut(&mut self) -> Option<&mut bumpalo::Bump> {
+        Rc::get_mut(&mut self.0)
+    }
+}
+
+// Simply delegating because `Rc<bumpalo::Bump>` does not implement `Allocator`.
+unsafe impl allocator_api2::alloc::Allocator for Bump {
+    fn allocate(
+        &self,
+        layout: core::alloc::Layout,
+    ) -> Result<core::ptr::NonNull<[u8]>, allocator_api2::alloc::AllocError> {
+        self.0.deref().allocate(layout)
+    }
+
+    unsafe fn deallocate(&self, ptr: core::ptr::NonNull<u8>, layout: core::alloc::Layout) {
+        self.0.deref().deallocate(ptr, layout);
+    }
+
+    fn allocate_zeroed(
+        &self,
+        layout: core::alloc::Layout,
+    ) -> Result<core::ptr::NonNull<[u8]>, allocator_api2::alloc::AllocError> {
+        self.0.deref().allocate_zeroed(layout)
+    }
+
+    unsafe fn grow(
+        &self,
+        ptr: core::ptr::NonNull<u8>,
+        old_layout: core::alloc::Layout,
+        new_layout: core::alloc::Layout,
+    ) -> Result<core::ptr::NonNull<[u8]>, allocator_api2::alloc::AllocError> {
+        self.0.deref().grow(ptr, old_layout, new_layout)
+    }
+
+    unsafe fn grow_zeroed(
+        &self,
+        ptr: core::ptr::NonNull<u8>,
+        old_layout: core::alloc::Layout,
+        new_layout: core::alloc::Layout,
+    ) -> Result<core::ptr::NonNull<[u8]>, allocator_api2::alloc::AllocError> {
+        self.0.deref().grow_zeroed(ptr, old_layout, new_layout)
+    }
+
+    unsafe fn shrink(
+        &self,
+        ptr: core::ptr::NonNull<u8>,
+        old_layout: core::alloc::Layout,
+        new_layout: core::alloc::Layout,
+    ) -> Result<core::ptr::NonNull<[u8]>, allocator_api2::alloc::AllocError> {
+        self.0.deref().shrink(ptr, old_layout, new_layout)
+    }
 }

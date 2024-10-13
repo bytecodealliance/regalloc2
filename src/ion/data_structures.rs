@@ -13,19 +13,22 @@
 //! Data structures for backtracking allocator.
 
 use super::liveranges::SpillWeight;
-use crate::cfg::CFGInfo;
+use crate::cfg::{CFGInfo, CFGInfoCtx};
 use crate::index::ContainerComparator;
 use crate::indexset::IndexSet;
+use crate::Vec2;
 use crate::{
-    define_index, Allocation, Block, Edit, Function, FxHashSet, MachineEnv, Operand, PReg,
-    ProgPoint, RegClass, VReg,
+    define_index, Allocation, Block, Bump, Edit, Function, FxHashMap, FxHashSet, MachineEnv,
+    Operand, Output, PReg, ProgPoint, RegClass, VReg,
 };
 use alloc::collections::BTreeMap;
+use alloc::collections::VecDeque;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::cmp::Ordering;
 use core::fmt::Debug;
-use smallvec::{smallvec, SmallVec};
+use core::ops::{Deref, DerefMut};
+use smallvec::SmallVec;
 
 /// A range from `from` (inclusive) to `to` (exclusive).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -102,7 +105,7 @@ define_index!(PRegIndex);
 define_index!(SpillSlotIndex);
 
 /// Used to carry small sets of bundles, e.g. for conflict sets.
-pub type LiveBundleVec = SmallVec<[LiveBundleIndex; 4]>;
+pub type LiveBundleVec = Vec<LiveBundleIndex>;
 
 #[derive(Clone, Copy, Debug)]
 pub struct LiveRangeListEntry {
@@ -110,8 +113,8 @@ pub struct LiveRangeListEntry {
     pub index: LiveRangeIndex,
 }
 
-pub type LiveRangeList = SmallVec<[LiveRangeListEntry; 4]>;
-pub type UseList = SmallVec<[Use; 4]>;
+pub type LiveRangeList = Vec2<LiveRangeListEntry, Bump>;
+pub type UseList = Vec2<Use, Bump>;
 
 #[derive(Clone, Debug)]
 pub struct LiveRange {
@@ -120,8 +123,7 @@ pub struct LiveRange {
     pub vreg: VRegIndex,
     pub bundle: LiveBundleIndex,
     pub uses_spill_weight_and_flags: u32,
-
-    pub uses: UseList,
+    pub(crate) uses: UseList,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -196,7 +198,7 @@ impl Use {
 
 #[derive(Clone, Debug)]
 pub struct LiveBundle {
-    pub ranges: LiveRangeList,
+    pub(crate) ranges: LiveRangeList,
     pub spillset: SpillSetIndex,
     pub allocation: Allocation,
     pub prio: u32, // recomputed after every bulk update
@@ -298,7 +300,7 @@ pub(crate) const MAX_SPLITS_PER_SPILLSET: u8 = 2;
 
 #[derive(Clone, Debug)]
 pub struct VRegData {
-    pub ranges: LiveRangeList,
+    pub(crate) ranges: LiveRangeList,
     pub blockparam: Block,
     // We don't initially know the RegClass until we observe a use of the VReg.
     pub class: Option<RegClass>,
@@ -380,23 +382,22 @@ impl BlockparamIn {
 }
 
 impl LiveRanges {
-    pub fn add(&mut self, range: CodeRange) -> LiveRangeIndex {
+    pub(crate) fn add(&mut self, range: CodeRange, bump: Bump) -> LiveRangeIndex {
         self.push(LiveRange {
             range,
             vreg: VRegIndex::invalid(),
             bundle: LiveBundleIndex::invalid(),
             uses_spill_weight_and_flags: 0,
-
-            uses: smallvec![],
+            uses: UseList::new_in(bump),
         })
     }
 }
 
 impl LiveBundles {
-    pub fn add(&mut self) -> LiveBundleIndex {
+    pub(crate) fn add(&mut self, bump: Bump) -> LiveBundleIndex {
         self.push(LiveBundle {
             allocation: Allocation::none(),
-            ranges: smallvec![],
+            ranges: LiveRangeList::new_in(bump),
             spillset: SpillSetIndex::invalid(),
             prio: 0,
             spill_weight_and_props: 0,
@@ -428,29 +429,28 @@ impl core::ops::IndexMut<VReg> for VRegs {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct Env<'a, F: Function> {
-    pub func: &'a F,
-    pub env: &'a MachineEnv,
-    pub cfginfo: CFGInfo,
-    pub liveins: Vec<IndexSet>,
-    pub liveouts: Vec<IndexSet>,
-    pub blockparam_outs: Vec<BlockparamOut>,
-    pub blockparam_ins: Vec<BlockparamIn>,
+#[derive(Default)]
+pub struct Ctx {
+    pub(crate) cfginfo: CFGInfo,
+    pub(crate) cfginfo_ctx: CFGInfoCtx,
+    pub(crate) liveins: Vec<IndexSet>,
+    pub(crate) liveouts: Vec<IndexSet>,
+    pub(crate) blockparam_outs: Vec<BlockparamOut>,
+    pub(crate) blockparam_ins: Vec<BlockparamIn>,
 
-    pub ranges: LiveRanges,
-    pub bundles: LiveBundles,
-    pub spillsets: SpillSets,
-    pub vregs: VRegs,
-    pub pregs: Vec<PRegData>,
-    pub allocation_queue: PrioQueue,
+    pub(crate) ranges: LiveRanges,
+    pub(crate) bundles: LiveBundles,
+    pub(crate) spillsets: SpillSets,
+    pub(crate) vregs: VRegs,
+    pub(crate) pregs: Vec<PRegData>,
+    pub(crate) allocation_queue: PrioQueue,
 
-    pub spilled_bundles: Vec<LiveBundleIndex>,
-    pub spillslots: Vec<SpillSlotData>,
-    pub slots_by_class: [SpillSlotList; 3],
+    pub(crate) spilled_bundles: Vec<LiveBundleIndex>,
+    pub(crate) spillslots: Vec<SpillSlotData>,
+    pub(crate) slots_by_class: [SpillSlotList; 3],
 
-    pub extra_spillslots_by_class: [SmallVec<[Allocation; 2]>; 3],
-    pub preferred_victim_by_class: [PReg; 3],
+    pub(crate) extra_spillslots_by_class: [SmallVec<[Allocation; 2]>; 3],
+    pub(crate) preferred_victim_by_class: [PReg; 3],
 
     // When multiple fixed-register constraints are present on a
     // single VReg at a single program point (this can happen for,
@@ -460,26 +460,61 @@ pub struct Env<'a, F: Function> {
     // the register available. When we produce the final edit-list, we
     // will insert a copy from wherever the VReg's primary allocation
     // was to the approprate PReg.
-    pub multi_fixed_reg_fixups: Vec<MultiFixedRegFixup>,
+    pub(crate) multi_fixed_reg_fixups: Vec<MultiFixedRegFixup>,
 
-    // Output:
-    pub allocs: Vec<Allocation>,
-    pub inst_alloc_offsets: Vec<u32>,
-    pub num_spillslots: u32,
-    pub debug_locations: Vec<(u32, ProgPoint, ProgPoint, Allocation)>,
-
-    pub allocated_bundle_count: usize,
-
-    pub stats: Stats,
+    pub(crate) allocated_bundle_count: usize,
 
     // For debug output only: a list of textual annotations at every
     // ProgPoint to insert into the final allocated program listing.
-    pub debug_annotations: hashbrown::HashMap<ProgPoint, Vec<String>>,
-    pub annotations_enabled: bool,
+    pub(crate) debug_annotations: FxHashMap<ProgPoint, Vec<String>>,
+    pub(crate) annotations_enabled: bool,
 
     // Cached allocation for `try_to_allocate_bundle_to_reg` to avoid allocating
     // a new HashSet on every call.
-    pub conflict_set: FxHashSet<LiveBundleIndex>,
+    pub(crate) conflict_set: FxHashSet<LiveBundleIndex>,
+
+    // Output:
+    pub output: Output,
+
+    pub(crate) scratch_conflicts: LiveBundleVec,
+    pub(crate) scratch_bundle: LiveBundleVec,
+    pub(crate) scratch_vreg_ranges: Vec<LiveRangeIndex>,
+    pub(crate) scratch_spillset_pool: Vec<SpillSetRanges>,
+
+    pub(crate) scratch_workqueue: VecDeque<Block>,
+
+    pub(crate) scratch_operand_rewrites: FxHashMap<usize, Operand>,
+    pub(crate) scratch_removed_lrs: FxHashSet<LiveRangeIndex>,
+    pub(crate) scratch_removed_lrs_vregs: FxHashSet<VRegIndex>,
+    pub(crate) scratch_workqueue_set: FxHashSet<Block>,
+
+    pub(crate) scratch_bump: Bump,
+}
+
+impl Ctx {
+    pub(crate) fn bump(&self) -> Bump {
+        self.scratch_bump.clone()
+    }
+}
+
+pub struct Env<'a, F: Function> {
+    pub func: &'a F,
+    pub env: &'a MachineEnv,
+    pub ctx: &'a mut Ctx,
+}
+
+impl<'a, F: Function> Deref for Env<'a, F> {
+    type Target = Ctx;
+
+    fn deref(&self) -> &Self::Target {
+        self.ctx
+    }
+}
+
+impl<'a, F: Function> DerefMut for Env<'a, F> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.ctx
+    }
 }
 
 impl<'a, F: Function> Env<'a, F> {
@@ -507,17 +542,9 @@ impl<'a, F: Function> Env<'a, F> {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct SpillSetRanges {
     pub btree: BTreeMap<LiveRangeKey, SpillSetIndex>,
-}
-
-impl SpillSetRanges {
-    pub fn new() -> Self {
-        Self {
-            btree: BTreeMap::new(),
-        }
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -527,20 +554,13 @@ pub struct SpillSlotData {
     pub alloc: Allocation,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct SpillSlotList {
     pub slots: SmallVec<[SpillSlotIndex; 32]>,
     pub probe_start: usize,
 }
 
 impl SpillSlotList {
-    pub fn new() -> Self {
-        SpillSlotList {
-            slots: smallvec![],
-            probe_start: 0,
-        }
-    }
-
     /// Get the next spillslot index in probing order, wrapping around
     /// at the end of the slots list.
     pub(crate) fn next_index(&self, index: usize) -> usize {
@@ -553,7 +573,7 @@ impl SpillSlotList {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct PrioQueue {
     pub heap: alloc::collections::BinaryHeap<PrioQueueEntry>,
 }
@@ -631,12 +651,6 @@ impl<'a> ContainerComparator for PrioQueueComparator<'a> {
 }
 
 impl PrioQueue {
-    pub fn new() -> Self {
-        PrioQueue {
-            heap: alloc::collections::BinaryHeap::new(),
-        }
-    }
-
     #[inline(always)]
     pub fn insert(&mut self, bundle: LiveBundleIndex, prio: usize, reg_hint: PReg) {
         self.heap.push(PrioQueueEntry {
@@ -660,7 +674,7 @@ impl PrioQueue {
 impl LiveRangeSet {
     pub(crate) fn new() -> Self {
         Self {
-            btree: BTreeMap::new(),
+            btree: BTreeMap::default(),
         }
     }
 }
@@ -727,7 +741,7 @@ impl InsertedMoves {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Edits {
     edits: Vec<(PosWithPrio, Edit)>,
 }
@@ -751,8 +765,8 @@ impl Edits {
     }
 
     #[inline(always)]
-    pub fn into_edits(self) -> impl Iterator<Item = (ProgPoint, Edit)> {
-        self.edits.into_iter().map(|(pos, edit)| (pos.pos, edit))
+    pub fn drain_edits(&mut self) -> impl Iterator<Item = (ProgPoint, Edit)> + '_ {
+        self.edits.drain(..).map(|(pos, edit)| (pos.pos, edit))
     }
 
     /// Sort edits by the combination of their program position and priority. This is a stable sort

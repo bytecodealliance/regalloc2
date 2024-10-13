@@ -5,12 +5,19 @@
 
 //! Lightweight CFG analyses.
 
-use crate::{domtree, postorder, Block, Function, Inst, ProgPoint, RegAllocError};
-use alloc::vec;
-use alloc::vec::Vec;
+use crate::alloc::vec::Vec;
+
+use crate::{domtree, postorder, Block, Function, Inst, ProgPoint, RegAllocError, VecExt};
 use smallvec::{smallvec, SmallVec};
 
-#[derive(Clone, Debug)]
+#[derive(Debug, Default)]
+pub struct CFGInfoCtx {
+    visited: Vec<bool>,
+    block_to_rpo: Vec<Option<u32>>,
+    backedge: Vec<u32>,
+}
+
+#[derive(Debug, Default)]
 pub struct CFGInfo {
     /// Postorder traversal of blocks.
     pub postorder: Vec<Block>,
@@ -33,21 +40,41 @@ pub struct CFGInfo {
 }
 
 impl CFGInfo {
-    pub fn new<F: Function>(f: &F) -> Result<CFGInfo, RegAllocError> {
-        let postorder = postorder::calculate(f.num_blocks(), f.entry_block(), |block| {
-            f.block_succs(block)
-        });
-        let domtree = domtree::calculate(
-            f.num_blocks(),
+    pub fn new<F: Function>(f: &F) -> Result<Self, RegAllocError> {
+        let mut ctx = CFGInfoCtx::default();
+        let mut this = Self::default();
+        this.init(f, &mut ctx)?;
+        Ok(this)
+    }
+
+    pub fn init<F: Function>(&mut self, f: &F, ctx: &mut CFGInfoCtx) -> Result<(), RegAllocError> {
+        let nb = f.num_blocks();
+
+        postorder::calculate(
+            nb,
+            f.entry_block(),
+            &mut ctx.visited,
+            &mut self.postorder,
+            |block| f.block_succs(block),
+        );
+
+        domtree::calculate(
+            nb,
             |block| f.block_preds(block),
-            &postorder[..],
+            &self.postorder,
+            &mut ctx.block_to_rpo,
+            &mut self.domtree,
             f.entry_block(),
         );
-        let mut insn_block = vec![Block::invalid(); f.num_insts()];
-        let mut block_entry = vec![ProgPoint::before(Inst::invalid()); f.num_blocks()];
-        let mut block_exit = vec![ProgPoint::before(Inst::invalid()); f.num_blocks()];
-        let mut backedge_in = vec![0; f.num_blocks()];
-        let mut backedge_out = vec![0; f.num_blocks()];
+
+        let insn_block = self.insn_block.repopulate(f.num_insts(), Block::invalid());
+        let block_entry = self
+            .block_entry
+            .repopulate(nb, ProgPoint::before(Inst::invalid()));
+        let block_exit = self
+            .block_exit
+            .repopulate(nb, ProgPoint::before(Inst::invalid()));
+        let (backedge_in, backedge_out) = ctx.backedge.repopulate(nb * 2, 0).split_at_mut(nb);
 
         for block in 0..f.num_blocks() {
             let block = Block::new(block);
@@ -98,10 +125,10 @@ impl CFGInfo {
             }
         }
 
-        let mut approx_loop_depth = vec![];
-        let mut backedge_stack: SmallVec<[usize; 4]> = smallvec![];
+        let approx_loop_depth = self.approx_loop_depth.cleared();
+        let mut backedge_stack: SmallVec<[u32; 4]> = smallvec![];
         let mut cur_depth = 0;
-        for block in 0..f.num_blocks() {
+        for block in 0..nb {
             if backedge_in[block] > 0 {
                 cur_depth += 1;
                 backedge_stack.push(backedge_in[block]);
@@ -119,14 +146,7 @@ impl CFGInfo {
             }
         }
 
-        Ok(CFGInfo {
-            postorder,
-            domtree,
-            insn_block,
-            block_entry,
-            block_exit,
-            approx_loop_depth,
-        })
+        Ok(())
     }
 
     pub fn dominates(&self, a: Block, b: Block) -> bool {
