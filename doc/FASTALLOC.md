@@ -32,7 +32,7 @@ Every register class (int, float, and vector) has its own LRU and they
 are stored together in an array: `lrus`. An LRU is represented similarly
 to a `VRegSet`: it's a circular, doubly-linked list based on a vector.
 
-The last PReg in an LRU is the least-recently allocated PReg:
+The last PReg in an LRU is the least recently allocated PReg:
 
 most recently used PReg (head) -> 2nd MRU PReg -> ... -> LRU PReg
 
@@ -103,11 +103,11 @@ Some invariants that remain true throughout execution:
 
 1. During processing, the allocation of a VReg at any point in time
 as indicated in `vreg_allocs` changes exactly twice or thrice.
-Initially it is set to none. When it's allocated, it is
+Initially, it is set to none. When it's allocated, it is
 changed to that allocation. After this, it doesn't change unless 
 it's evicted or spilled across a block boundary;
 if it is, then its current allocation will change to its dedicated 
-spillslot. After this, it doesn't change again until it's definition 
+spillslot. After this, it doesn't change again until its definition 
 is reached and it's deallocated, during which its `vreg_allocs` 
 entry is set to none. The only exception is block parameters that 
 are never used: these are never allocated.
@@ -125,7 +125,7 @@ virtual registers will be in their dedicated spillslots.
 # Instruction Allocation
 
 To allocate a single instruction, the first step is to reset the
-`available_pregs` sets to all allocated PRegs.
+`available_pregs` sets to all allocatable PRegs.
 
 Next, the selection phase is carried out for all operands with
 fixed register constraints: the registers they are constrained to use are
@@ -188,22 +188,22 @@ On the other hand, if the VReg's current allocation is not within
 constraints, the selection and eviction phases are carried out for
 non-fixed operands. First, a set of PRegs that can be drawn from is
 created from `available_pregs`. For early uses and late defs,
-this draw-from set is the early set or late set respectively.
+this draw-from set is the early set or late set, respectively.
 For late uses and early defs, the draw-from set is an intersection
 of the available early and late sets (because a PReg used for a late
 use can't be reassigned to another operand in the early phase;
 likewise, a PReg used for an early def can't be reassigned to another
 operand in the late phase).
 The LRU for the VReg's regclass is then traversed from the end to find
-the least-recently used PReg in the draw-from set. Once a PReg is found,
+the least recently used PReg in the draw-from set. Once a PReg is found,
 it is marked as the most recently used in the LRU, unavailable in the
 `available_pregs` sets, and whatever VReg was in it before is evicted.
 
-The assignment phase is carried out next: the final allocation for the
+The assignment phase is carried out next. The final allocation for the
 operand is set to the selected register.
 
 If the newly allocated operand has not been allocated before, that is,
-this is the first use/def of the VReg encountered, the VReg is
+this is the first use/def of the VReg encountered; the VReg is
 inserted into `live_vregs` and marked as the value in the allocated
 PReg in `vreg_in_preg`.
 
@@ -230,7 +230,7 @@ Reused inputs are handled by creating a new operand with a fixed register
 constraint to use whatever register was assigned to the reuse def.
 
 Because of the way reuse operands and reused inputs are handled, when
-selecting a register for an early use operand with a fixed constraint,
+selecting a register for an early-use operand with a fixed constraint,
 the PReg is also marked as unavailable in the `available_pregs` late 
 set if the operand is a reused input. And when selecting a register 
 for reuse def operands, the selected register is marked as unavailable 
