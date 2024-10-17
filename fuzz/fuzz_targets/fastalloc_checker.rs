@@ -41,5 +41,6 @@ fuzz_target!(|testcase: TestCase| {
 
     let mut checker = Checker::new(&func, &env);
     checker.prepare(&out);
+    checker.init_debug_locations(&out);
     checker.run().expect("checker failed");
 });
