@@ -1209,11 +1209,35 @@ impl<'a, F: Function> Env<'a, F> {
         Ok(())
     }
 
+    fn point_range_intersect(
+        &self,
+        (start_inst, end_inst): (Inst, Inst),
+        (point_start, point_end): (ProgPoint, ProgPoint),
+    ) -> Option<(ProgPoint, ProgPoint)> {
+        if end_inst <= point_start.inst() || start_inst >= point_end.inst() {
+            None
+        } else {
+            let point0 = if point_start.inst() >= start_inst {
+                point_start
+            } else {
+                ProgPoint::new(start_inst, InstPosition::Before)
+            };
+            let point1 = if point_end.inst() < end_inst {
+                point_end
+            } else {
+                ProgPoint::new(end_inst, InstPosition::Before)
+            };
+            Some((point0, point1))
+        }
+    }
+
     fn build_debug_info(&mut self) {
         trace!("Building debug location info");
         for &(vreg, start, end, label) in self.func.debug_value_labels() {
             let (point_start, point_end, alloc) = self.vreg_to_live_inst_range[vreg.vreg()];
-            if point_start.inst() <= start && end <= point_end.inst().next() {
+            if let Some((point_start, point_end)) =
+                self.point_range_intersect((start, end), (point_start, point_end))
+            {
                 self.debug_locations
                     .push((label, point_start, point_end, alloc));
             }
