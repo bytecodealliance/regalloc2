@@ -17,7 +17,7 @@ repository = "https://github.com/bytecodealliance/regalloc2"
 log = { version = "0.4.8", default-features = false }
 smallvec = { version = "1.6.1", features = ["union"] }
 rustc-hash = { version = "2.0.0", default-features = false }
-hashbrown = { version = "0.14", default-features = false, features = [] }
+hashbrown = { version = "0.15", default-features = false, features = [] }
 
 # Optional serde support, enabled by feature below.
 serde = { version = "1.0.136", features = [
