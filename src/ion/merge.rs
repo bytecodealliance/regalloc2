@@ -170,19 +170,33 @@ impl<'a, F: Function> Env<'a, F> {
             ranges_to
         );
 
-        // Two non-empty lists of LiveRanges: concatenate and
-        // sort. This is faster than a mergesort-like merge into a new
-        // list, empirically.
         let empty_vec = LiveRangeList::new_in(self.ctx.bump());
-        let from_list = core::mem::replace(&mut self.bundles[from].ranges, empty_vec);
+        let mut from_list = core::mem::replace(&mut self.bundles[from].ranges, empty_vec);
         for entry in &from_list {
             self.ranges[entry.index].bundle = to;
         }
 
-        self.bundles[to].ranges.extend_from_slice(&from_list[..]);
-        self.bundles[to]
-            .ranges
-            .sort_unstable_by_key(|entry| entry.range.from);
+        if from_list.len() == 1 {
+            // Optimize for the common case where `from_list` contains a single
+            // item. Using a binary search to find the insertion point and then
+            // calling `insert` is more efficient than re-sorting the entire
+            // list, specially after the changes in sorting algorithms introduced
+            // in rustc 1.81.
+            // See: https://github.com/bytecodealliance/regalloc2/issues/203
+            let single_entry = from_list.pop().unwrap();
+            let pos = self.bundles[to]
+                .ranges
+                .binary_search_by_key(&single_entry.range.from, |entry| entry.range.from)
+                .unwrap_or_else(|pos| pos);
+            self.bundles[to].ranges.insert(pos, single_entry);
+        } else {
+            // Two non-empty lists of LiveRanges: concatenate and sort. This is
+            // faster than a mergesort-like merge into a new list, empirically.
+            self.bundles[to].ranges.extend_from_slice(&from_list[..]);
+            self.bundles[to]
+                .ranges
+                .sort_unstable_by_key(|entry| entry.range.from);
+        }
 
         if self.annotations_enabled {
             trace!("merging: merged = {:?}", self.bundles[to].ranges);
