@@ -9,7 +9,7 @@ In addition, it contains substantial amounts of testing infrastructure
 (fuzzing harnesses and checkers) that does not exist in the original
 IonMonkey allocator.
 
-See the [design overview](doc/DESIGN.md) for (much!) more detail on
+See the [design overview](doc/GENERAL.md) for (much!) more detail on
 how the allocator works.
 
 ## License
