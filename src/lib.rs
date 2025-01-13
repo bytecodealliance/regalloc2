@@ -334,7 +334,7 @@ impl Iterator for PRegSetIter {
     }
 }
 
-impl From<&MachineEnv> for PRegSet {
+impl From<&MachineEnv<'_>> for PRegSet {
     fn from(env: &MachineEnv) -> Self {
         let mut res = Self::default();
 
@@ -1441,14 +1441,13 @@ impl<'a> Iterator for OutputIter<'a> {
 /// of `Vec`s. If your use case depends on dynamically creating the registers lists, consider
 /// `[Vec::leak`].
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "enable-serde", derive(Serialize, Deserialize))]
-pub struct MachineEnv {
+pub struct MachineEnv<'a> {
     /// Preferred physical registers for each class. These are the
     /// registers that will be allocated first, if free.
     ///
     /// If an explicit scratch register is provided in `scratch_by_class` then
     /// it must not appear in this list.
-    pub preferred_regs_by_class: [&'static [PReg]; 3],
+    pub preferred_regs_by_class: [&'a [PReg]; 3],
 
     /// Non-preferred physical registers for each class. These are the
     /// registers that will be allocated if a preferred register is
@@ -1457,7 +1456,7 @@ pub struct MachineEnv {
     ///
     /// If an explicit scratch register is provided in `scratch_by_class` then
     /// it must not appear in this list.
-    pub non_preferred_regs_by_class: [&'static [PReg]; 3],
+    pub non_preferred_regs_by_class: [&'a [PReg]; 3],
 
     /// Optional dedicated scratch register per class. This is needed to perform
     /// moves between registers when cyclic move patterns occur. The
@@ -1482,7 +1481,7 @@ pub struct MachineEnv {
     ///
     /// `PReg`s in this list cannot be used as an allocatable or scratch
     /// register.
-    pub fixed_stack_slots: &'static [PReg],
+    pub fixed_stack_slots: &'a [PReg],
 }
 
 /// The output of the register allocator.

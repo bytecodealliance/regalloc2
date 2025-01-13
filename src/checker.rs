@@ -430,7 +430,7 @@ impl CheckerState {
         alloc: Allocation,
         val: &CheckerValue,
         allocs: &[Allocation],
-        checker: &Checker<'a, F>,
+        checker: &Checker<'a, '_, F>,
     ) -> Result<(), CheckerError> {
         if alloc == Allocation::none() {
             return Err(CheckerError::MissingAllocation { inst, op });
@@ -465,7 +465,7 @@ impl CheckerState {
         &self,
         pos: InstPosition,
         checkinst: &CheckerInst,
-        checker: &Checker<'a, F>,
+        checker: &Checker<'a, '_, F>,
     ) -> Result<(), CheckerError> {
         let default_val = Default::default();
         match checkinst {
@@ -627,7 +627,7 @@ impl CheckerState {
         op: Operand,
         alloc: Allocation,
         allocs: &[Allocation],
-        checker: &Checker<'a, F>,
+        checker: &Checker<'a, '_, F>,
     ) -> Result<(), CheckerError> {
         match op.constraint() {
             OperandConstraint::Any => {}
@@ -691,21 +691,21 @@ pub(crate) enum CheckerInst {
 }
 
 #[derive(Debug)]
-pub struct Checker<'a, F: Function> {
+pub struct Checker<'a, 'r, F: Function> {
     f: &'a F,
     bb_in: FxHashMap<Block, CheckerState>,
     bb_insts: FxHashMap<Block, Vec<CheckerInst>>,
     edge_insts: FxHashMap<(Block, Block), Vec<CheckerInst>>,
-    machine_env: &'a MachineEnv,
+    machine_env: &'a MachineEnv<'r>,
     stack_pregs: PRegSet,
 }
 
-impl<'a, F: Function> Checker<'a, F> {
+impl<'a, 'r, F: Function> Checker<'a, 'r, F> {
     /// Create a new checker for the given function, initializing CFG
     /// info immediately.  The client should call the `add_*()`
     /// methods to add abstract instructions to each BB before
     /// invoking `run()` to check for errors.
-    pub fn new(f: &'a F, machine_env: &'a MachineEnv) -> Checker<'a, F> {
+    pub fn new(f: &'a F, machine_env: &'a MachineEnv<'r>) -> Checker<'a, 'r, F> {
         let mut bb_in = FxHashMap::default();
         let mut bb_insts = FxHashMap::default();
         let mut edge_insts = FxHashMap::default();

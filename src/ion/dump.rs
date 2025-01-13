@@ -7,7 +7,7 @@ use alloc::{string::String, vec::Vec};
 use super::Env;
 use crate::{Block, Function, ProgPoint};
 
-impl<'a, F: Function> Env<'a, F> {
+impl<'a, F: Function> Env<'a, '_, F> {
     pub fn dump_state(&self) {
         trace!("Bundles:");
         for (i, b) in self.bundles.iter().enumerate() {

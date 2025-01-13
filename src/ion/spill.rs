@@ -18,7 +18,7 @@ use super::{
 };
 use crate::{Allocation, Function, SpillSlot};
 
-impl<'a, F: Function> Env<'a, F> {
+impl<'a, F: Function> Env<'a, '_, F> {
     pub fn try_allocating_regs_for_spilled_bundles(&mut self) {
         trace!("allocating regs for spilled bundles");
         let mut scratch = core::mem::take(&mut self.ctx.scratch_conflicts);

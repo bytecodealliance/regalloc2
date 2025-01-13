@@ -140,7 +140,7 @@ impl RealFunction {
     }
 }
 
-fn mach_env(no_of_regs: usize) -> MachineEnv {
+fn mach_env(no_of_regs: usize) -> MachineEnv<'static> {
     MachineEnv {
         preferred_regs_by_class: [
             Vec::leak(

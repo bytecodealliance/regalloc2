@@ -94,7 +94,7 @@ impl core::ops::Add<SpillWeight> for SpillWeight {
     }
 }
 
-impl<'a, F: Function> Env<'a, F> {
+impl<'a, F: Function> Env<'a, '_, F> {
     pub fn create_pregs_and_vregs(&mut self) {
         // Create PRegs from the env.
         self.pregs.resize(
