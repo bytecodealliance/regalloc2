@@ -1439,7 +1439,7 @@ impl<'a> Iterator for OutputIter<'a> {
 /// will have very few of and generally want to keep around for their entire lifetime.
 /// In order to make static initialization easier the registers lists are static slices instead
 /// of `Vec`s. If your use case depends on dynamically creating the registers lists, consider
-/// `[Vec::leak`].
+/// [`Vec::leak`].
 #[derive(Clone, Debug)]
 pub struct MachineEnv<'a> {
     /// Preferred physical registers for each class. These are the
