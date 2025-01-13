@@ -3,7 +3,7 @@ use core::fmt;
 use alloc::{format, string::ToString, vec::Vec};
 use serde::{Deserialize, Serialize};
 
-use crate::{Block, Function, Inst, InstRange, MachineEnv, Operand, PRegSet, RegClass, VReg};
+use crate::{Block, Function, Inst, InstRange, MachineEnv, Operand, PReg, PRegSet, RegClass, VReg};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 enum InstOpcode {
@@ -37,7 +37,7 @@ struct InstData {
 /// was created with.
 #[derive(Serialize, Deserialize)]
 pub struct SerializableFunction {
-    machine_env: MachineEnv,
+    machine_env: SerializableMachineEnv,
     entry_block: Block,
     insts: Vec<InstData>,
     blocks: Vec<InstRange>,
@@ -57,7 +57,7 @@ impl SerializableFunction {
     /// `MachineEnv`.
     pub fn new(func: &impl Function, machine_env: MachineEnv) -> Self {
         Self {
-            machine_env,
+            machine_env: SerializableMachineEnv::new(machine_env),
             entry_block: func.entry_block(),
             insts: (0..func.num_insts())
                 .map(|i| {
@@ -123,8 +123,8 @@ impl SerializableFunction {
     }
 
     /// Returns the `MachineEnv` associated with this function.
-    pub fn machine_env(&self) -> &MachineEnv {
-        &self.machine_env
+    pub fn machine_env(&self) -> MachineEnv {
+        self.machine_env.machine_env()
     }
 }
 
@@ -289,5 +289,49 @@ impl fmt::Debug for SerializableFunction {
         }
         write!(f, "}}\n")?;
         Ok(())
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct SerializableMachineEnv {
+    preferred_regs_by_class: [Vec<PReg>; 3],
+    non_preferred_regs_by_class: [Vec<PReg>; 3],
+    scratch_by_class: [Option<PReg>; 3],
+    fixed_stack_slots: Vec<PReg>,
+}
+
+impl SerializableMachineEnv {
+    pub fn new(machine_env: MachineEnv) -> Self {
+        Self {
+            preferred_regs_by_class: [
+                machine_env.preferred_regs_by_class[0].to_vec(),
+                machine_env.preferred_regs_by_class[1].to_vec(),
+                machine_env.preferred_regs_by_class[2].to_vec(),
+            ],
+            non_preferred_regs_by_class: [
+                machine_env.non_preferred_regs_by_class[0].to_vec(),
+                machine_env.non_preferred_regs_by_class[1].to_vec(),
+                machine_env.non_preferred_regs_by_class[2].to_vec(),
+            ],
+            scratch_by_class: machine_env.scratch_by_class,
+            fixed_stack_slots: machine_env.fixed_stack_slots.to_vec(),
+        }
+    }
+
+    pub fn machine_env(&self) -> MachineEnv {
+        MachineEnv {
+            preferred_regs_by_class: [
+                &self.preferred_regs_by_class[0],
+                &self.preferred_regs_by_class[1],
+                &self.preferred_regs_by_class[2],
+            ],
+            non_preferred_regs_by_class: [
+                &self.non_preferred_regs_by_class[0],
+                &self.non_preferred_regs_by_class[1],
+                &self.non_preferred_regs_by_class[2],
+            ],
+            scratch_by_class: self.scratch_by_class,
+            fixed_stack_slots: &self.fixed_stack_slots,
+        }
     }
 }
