@@ -338,13 +338,13 @@ impl From<&MachineEnv> for PRegSet {
     fn from(env: &MachineEnv) -> Self {
         let mut res = Self::default();
 
-        for class in env.preferred_regs_by_class.iter() {
+        for class in env.preferred_regs_by_class {
             for preg in class {
                 res.add(*preg)
             }
         }
 
-        for class in env.non_preferred_regs_by_class.iter() {
+        for class in env.non_preferred_regs_by_class {
             for preg in class {
                 res.add(*preg)
             }
@@ -1434,6 +1434,12 @@ impl<'a> Iterator for OutputIter<'a> {
 /// are available to allocate and what register may be used as a
 /// scratch register for each class, and some other miscellaneous info
 /// as well.
+///
+/// Note that `MachineEnv` is designed to be a global configuration struct that programs
+/// will have very few of and generally want to keep around for their entire lifetime.
+/// In order to make static initialization easier the registers lists are static slices instead
+/// of `Vec`s. If your use case depends on dynamically creating the registers lists, consider
+/// `[Vec::leak`].
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "enable-serde", derive(Serialize, Deserialize))]
 pub struct MachineEnv {
@@ -1442,7 +1448,7 @@ pub struct MachineEnv {
     ///
     /// If an explicit scratch register is provided in `scratch_by_class` then
     /// it must not appear in this list.
-    pub preferred_regs_by_class: [Vec<PReg>; 3],
+    pub preferred_regs_by_class: [&'static [PReg]; 3],
 
     /// Non-preferred physical registers for each class. These are the
     /// registers that will be allocated if a preferred register is
@@ -1451,7 +1457,7 @@ pub struct MachineEnv {
     ///
     /// If an explicit scratch register is provided in `scratch_by_class` then
     /// it must not appear in this list.
-    pub non_preferred_regs_by_class: [Vec<PReg>; 3],
+    pub non_preferred_regs_by_class: [&'static [PReg]; 3],
 
     /// Optional dedicated scratch register per class. This is needed to perform
     /// moves between registers when cyclic move patterns occur. The
@@ -1476,7 +1482,7 @@ pub struct MachineEnv {
     ///
     /// `PReg`s in this list cannot be used as an allocatable or scratch
     /// register.
-    pub fixed_stack_slots: Vec<PReg>,
+    pub fixed_stack_slots: &'static [PReg],
 }
 
 /// The output of the register allocator.

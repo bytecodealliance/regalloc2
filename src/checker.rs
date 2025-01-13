@@ -722,7 +722,7 @@ impl<'a, F: Function> Checker<'a, F> {
         bb_in.insert(f.entry_block(), CheckerState::default());
 
         let mut stack_pregs = PRegSet::empty();
-        for &preg in &machine_env.fixed_stack_slots {
+        for &preg in machine_env.fixed_stack_slots {
             stack_pregs.add(preg);
         }
 
