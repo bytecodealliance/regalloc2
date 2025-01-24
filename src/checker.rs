@@ -98,7 +98,7 @@
 use crate::{
     Allocation, AllocationKind, Block, Edit, Function, FxHashMap, FxHashSet, Inst, InstOrEdit,
     InstPosition, MachineEnv, Operand, OperandConstraint, OperandKind, OperandPos, Output, PReg,
-    PRegSet, VReg,
+    PRegSet, ProgPoint, VReg,
 };
 use alloc::vec::Vec;
 use alloc::{format, vec};
@@ -110,11 +110,11 @@ use smallvec::{smallvec, SmallVec};
 /// A set of errors detected by the regalloc checker.
 #[derive(Clone, Debug)]
 pub struct CheckerErrors {
-    errors: Vec<CheckerError>,
+    pub errors: Vec<CheckerError>,
 }
 
 /// A single error detected by the regalloc checker.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum CheckerError {
     MissingAllocation {
         inst: Inst,
@@ -166,6 +166,13 @@ pub enum CheckerError {
         into: Allocation,
         from: Allocation,
     },
+    ExpectedValueForDebug {
+        point: ProgPoint,
+        alloc: Allocation,
+        vreg: VReg,
+        found: CheckerValue,
+        label: u32,
+    },
 }
 
 /// Abstract state for an allocation.
@@ -174,7 +181,7 @@ pub enum CheckerError {
 /// universe-set as top and empty set as bottom lattice element. The
 /// meet-function is thus set intersection.
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum CheckerValue {
+pub enum CheckerValue {
     /// The lattice top-value: this value could be equivalent to any
     /// vreg (i.e., the universe set).
     Universe,
@@ -691,6 +698,128 @@ pub(crate) enum CheckerInst {
 }
 
 #[derive(Debug)]
+struct DebugLocationEntry {
+    vreg: VReg,
+    alloc: Allocation,
+    label: u32,
+}
+
+#[derive(Debug)]
+struct DebugLocations {
+    expected_vreg_locations: FxHashMap<(VReg, (ProgPoint, ProgPoint), u32), Allocation>,
+}
+
+impl DebugLocations {
+    fn ranges_overlaps(
+        (start_point, end_point): (ProgPoint, ProgPoint),
+        (start_inst, end_inst): (Inst, Inst),
+    ) -> Option<(ProgPoint, ProgPoint)> {
+        if end_inst <= start_point.inst() || start_inst >= end_point.inst() {
+            None
+        } else {
+            let point0 = if start_point.inst() >= start_inst {
+                start_point
+            } else {
+                ProgPoint::before(start_inst)
+            };
+            let point1 = if end_point.inst() < end_inst {
+                end_point
+            } else {
+                ProgPoint::before(end_inst)
+            };
+            Some((point0, point1))
+        }
+    }
+
+    fn new<F: Function>(f: &F, output: &Output) -> Self {
+        let mut expected_vreg_locations = FxHashMap::default();
+        for (label, start_point, end_point, alloc) in &output.debug_locations {
+            for (vreg, start_inst, end_inst, in_label) in f.debug_value_labels() {
+                if in_label != label {
+                    continue;
+                }
+                if let Some(range) =
+                    Self::ranges_overlaps((*start_point, *end_point), (*start_inst, *end_inst))
+                {
+                    expected_vreg_locations.insert((*vreg, range, *label), *alloc);
+                }
+            }
+        }
+        Self {
+            expected_vreg_locations,
+        }
+    }
+
+    fn points_covers_inst(
+        &self,
+        inst: Inst,
+        start_point: ProgPoint,
+        end_point: ProgPoint,
+    ) -> (bool, bool) {
+        let start_inst = start_point.inst();
+        let end_inst = end_point.inst();
+        if inst > start_inst && inst < end_inst {
+            return (true, true);
+        }
+        if inst == start_inst && start_point.pos() == InstPosition::Before {
+            return (true, true);
+        }
+        // Don't check for the case where inst == start and pos == after
+        // because it may be edit instructions after inst that are responsible
+        // for moving the vreg into the expected allocation.
+        if inst == end_inst && end_point.pos() == InstPosition::After {
+            return (true, false);
+        }
+        (false, false)
+    }
+
+    fn entries_covering(&self, inst: Inst) -> Vec<(bool, bool, DebugLocationEntry)> {
+        let mut entries = vec![];
+        for entry in self.expected_vreg_locations.keys().copied() {
+            let (vreg, (start_point, end_point), label) = entry;
+            let (before, after) = self.points_covers_inst(inst, start_point, end_point);
+            if before || after {
+                entries.push((
+                    before,
+                    after,
+                    DebugLocationEntry {
+                        vreg,
+                        alloc: self.expected_vreg_locations[&entry],
+                        label,
+                    },
+                ));
+            }
+        }
+        entries
+    }
+
+    fn check_locations_covering_inst(
+        &self,
+        inst: Inst,
+        pos: InstPosition,
+        state: &CheckerState,
+        errors: &mut Vec<CheckerError>,
+    ) {
+        for (before, after, entry) in self.entries_covering(inst) {
+            if before && pos == InstPosition::Before || pos == InstPosition::After && after {
+                let default_val = Default::default();
+                let val = state.get_value(&entry.alloc).unwrap_or(&default_val);
+                match val {
+                    CheckerValue::VRegs(vregs) if vregs.contains(&entry.vreg) => (),
+                    _ => errors.push(CheckerError::ExpectedValueForDebug {
+                        point: ProgPoint::new(inst, pos),
+                        alloc: entry.alloc,
+                        vreg: entry.vreg,
+                        found: val.clone(),
+                        label: entry.label,
+                    }),
+                };
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct Checker<'a, F: Function> {
     f: &'a F,
     bb_in: FxHashMap<Block, CheckerState>,
@@ -698,6 +827,7 @@ pub struct Checker<'a, F: Function> {
     edge_insts: FxHashMap<(Block, Block), Vec<CheckerInst>>,
     machine_env: &'a MachineEnv,
     stack_pregs: PRegSet,
+    debug_locations: Option<DebugLocations>,
 }
 
 impl<'a, F: Function> Checker<'a, F> {
@@ -733,6 +863,7 @@ impl<'a, F: Function> Checker<'a, F> {
             edge_insts,
             machine_env,
             stack_pregs,
+            debug_locations: None,
         }
     }
 
@@ -754,6 +885,10 @@ impl<'a, F: Function> Checker<'a, F> {
                 }
             }
         }
+    }
+
+    pub fn init_debug_locations(&mut self, out: &Output) {
+        self.debug_locations = Some(DebugLocations::new(self.f, out));
     }
 
     /// For each original instruction, create an `Op`.
@@ -888,6 +1023,21 @@ impl<'a, F: Function> Checker<'a, F> {
         for (block, input) in &self.bb_in {
             let mut state = input.clone();
             for inst in self.bb_insts.get(block).unwrap() {
+                let orig_inst = match inst {
+                    CheckerInst::Op { inst, .. } => Some(inst),
+                    _ => None,
+                };
+
+                if let (Some(debug_locations), Some(orig_inst)) = (&self.debug_locations, orig_inst)
+                {
+                    debug_locations.check_locations_covering_inst(
+                        *orig_inst,
+                        InstPosition::Before,
+                        &state,
+                        &mut errors,
+                    );
+                }
+
                 if let Err(e) = state.check(InstPosition::Before, inst, self) {
                     trace!("Checker error: {:?}", e);
                     errors.push(e);
@@ -896,6 +1046,16 @@ impl<'a, F: Function> Checker<'a, F> {
                 if let Err(e) = state.check(InstPosition::After, inst, self) {
                     trace!("Checker error: {:?}", e);
                     errors.push(e);
+                }
+
+                if let (Some(debug_locations), Some(orig_inst)) = (&self.debug_locations, orig_inst)
+                {
+                    debug_locations.check_locations_covering_inst(
+                        *orig_inst,
+                        InstPosition::After,
+                        &state,
+                        &mut errors,
+                    );
                 }
             }
         }
