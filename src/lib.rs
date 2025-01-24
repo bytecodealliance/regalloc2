@@ -13,6 +13,7 @@
 #![allow(dead_code)]
 #![allow(clippy::all)]
 #![no_std]
+#![cfg_attr(feature = "nightly", feature(allocator_api))]
 
 #[cfg(feature = "std")]
 extern crate std;
