@@ -912,7 +912,7 @@ impl Operand {
     }
 
     /// If this operand is for a fixed non-allocatable register (see
-    /// [`Operand::fixed`]), then returns the physical register that it will
+    /// [`OperandConstraint::FixedReg`]), then returns the physical register that it will
     /// be assigned to.
     #[inline(always)]
     pub fn as_fixed_nonallocatable(self) -> Option<PReg> {
