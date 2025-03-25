@@ -1120,9 +1120,6 @@ pub enum AllocationKind {
 ///
 /// (This trait's design is inspired by, and derives heavily from, the
 /// trait of the same name in regalloc.rs.)
-///
-/// The ids used in [`Block`] and [`VReg`] must start their numbering
-/// at zero and be sequential.
 pub trait Function {
     // -------------
     // CFG traversal
@@ -1131,7 +1128,13 @@ pub trait Function {
     /// How many instructions are there?
     fn num_insts(&self) -> usize;
 
-    /// How many blocks are there?
+    /// Number of entries to allocate [`Block`] storage for.
+    ///
+    /// The block ids are used as indices into a container, this
+    /// container is allocated with this number of elements. This means
+    /// that the value returned here must be the highest block index in
+    /// the function plus one. The block indices themselves need not be
+    /// consecutive.
     fn num_blocks(&self) -> usize;
 
     /// Get the index of the entry block.
@@ -1201,7 +1204,13 @@ pub trait Function {
     /// value(s).
     fn inst_clobbers(&self, insn: Inst) -> PRegSet;
 
-    /// Get the number of `VReg` in use in this function.
+    /// Number of entries to allocate [`VReg`] storage for.
+    ///
+    /// The VReg ids are used as indices into a container, this
+    /// container is allocated with this number of elements. This
+    /// means that the value returned here must be the highest block
+    /// index in the function plus one. The vreg indices themselves
+    /// need not be consecutive.
     fn num_vregs(&self) -> usize;
 
     /// Get the VRegs for which we should generate value-location

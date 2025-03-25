@@ -38,11 +38,12 @@ pub fn calculate<'a, SuccFn: Fn(Block) -> &'a [Block]>(
     while let Some(ref mut state) = stack.last_mut() {
         // Perform one action: push to new succ, skip an already-visited succ, or pop.
         if let Some(&succ) = state.succs.next() {
-            let succ_visit = visited
-                .get_mut(succ.index())
-                .ok_or(RegAllocError::BB(succ))?;
-            if !*succ_visit {
-                *succ_visit = true;
+            if succ.index() >= visited.len() {
+                trace!("Block index {:?} exceeds f.num_blocks().", succ);
+                return Err(RegAllocError::BB(succ));
+            }
+            if !visited[succ.index()] {
+                visited[succ.index()] = true;
                 stack.push(State {
                     block: succ,
                     succs: succ_blocks(succ).iter(),

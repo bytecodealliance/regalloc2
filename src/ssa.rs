@@ -17,7 +17,7 @@ pub fn validate_ssa<F: Function>(f: &F, cfginfo: &CFGInfo) -> Result<(), RegAllo
         let block = Block::new(block);
         let mut def = |vreg: VReg, inst| {
             if vreg.vreg() >= defined_in.len() {
-                trace!("VRegs not numbered consecutively {:?}", vreg);
+                trace!("VReg index {:?} exceeds exceeds f.num_vregs().", vreg);
                 return Err(RegAllocError::SSA(vreg, inst));
             }
             if defined_in[vreg.vreg()].is_valid() {
