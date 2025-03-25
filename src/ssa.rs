@@ -16,6 +16,10 @@ pub fn validate_ssa<F: Function>(f: &F, cfginfo: &CFGInfo) -> Result<(), RegAllo
     for block in 0..f.num_blocks() {
         let block = Block::new(block);
         let mut def = |vreg: VReg, inst| {
+            if vreg.vreg() >= defined_in.len() {
+                trace!("VRegs not numbered consecutively {:?}", vreg);
+                return Err(RegAllocError::SSA(vreg, inst));
+            }
             if defined_in[vreg.vreg()].is_valid() {
                 trace!("Multiple def constraints for {:?}", vreg);
                 Err(RegAllocError::SSA(vreg, inst))
