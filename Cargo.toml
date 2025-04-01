@@ -3,7 +3,7 @@ members = ["regalloc2-tool"]
 
 [package]
 name = "regalloc2"
-version = "0.11.1"
+version = "0.11.2"
 authors = [
     "Chris Fallin <chris@cfallin.org>",
     "Mozilla SpiderMonkey Developers",
