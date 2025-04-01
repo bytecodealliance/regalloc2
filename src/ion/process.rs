@@ -1258,8 +1258,7 @@ impl<'a, F: Function> Env<'a, F> {
                                 continue;
                             }
                             if preg_range.from >= range.to {
-                                // Success, return scratch memory to context and finish
-                                break 'outer;
+                                break;
                             }
                             if lr.is_valid() {
                                 if self.minimal_bundle(self.ranges[*lr].bundle) {
