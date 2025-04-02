@@ -94,7 +94,7 @@ impl core::ops::Add<SpillWeight> for SpillWeight {
     }
 }
 
-impl<'a, F: Function> Env<'a, F> {
+impl<'a, F: Function> Env<'a, '_, F> {
     pub fn create_pregs_and_vregs(&mut self) {
         // Create PRegs from the env.
         self.pregs.resize(
@@ -104,7 +104,7 @@ impl<'a, F: Function> Env<'a, F> {
                 is_stack: false,
             },
         );
-        for &preg in &self.env.fixed_stack_slots {
+        for &preg in self.env.fixed_stack_slots {
             self.pregs[preg.index()].is_stack = true;
         }
         for class in 0..self.preferred_victim_by_class.len() {

@@ -33,7 +33,7 @@ use alloc::vec::Vec;
 use hashbrown::hash_map::Entry;
 use smallvec::{smallvec, SmallVec};
 
-impl<'a, F: Function> Env<'a, F> {
+impl<'a, F: Function> Env<'a, '_, F> {
     pub fn is_start_of_block(&self, pos: ProgPoint) -> bool {
         let block = self.ctx.cfginfo.insn_block[pos.inst().index()];
         pos == self.ctx.cfginfo.block_entry[block.index()]
@@ -171,7 +171,7 @@ impl<'a, F: Function> Env<'a, F> {
         //   and moves go at start of `to`.
         #[inline(always)]
         fn choose_move_location<'a, F: Function>(
-            env: &Env<'a, F>,
+            env: &Env<'a, '_, F>,
             from: Block,
             to: Block,
         ) -> (ProgPoint, InsertMovePrio) {
@@ -787,7 +787,7 @@ impl<'a, F: Function> Env<'a, F> {
         let mut redundant_moves = RedundantMoveEliminator::default();
 
         fn redundant_move_process_side_effects<'a, F: Function>(
-            this: &Env<'a, F>,
+            this: &Env<'a, '_, F>,
             redundant_moves: &mut RedundantMoveEliminator,
             from: ProgPoint,
             to: ProgPoint,
