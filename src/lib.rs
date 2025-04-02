@@ -912,7 +912,7 @@ impl Operand {
     }
 
     /// If this operand is for a fixed non-allocatable register (see
-    /// [`Operand::fixed`]), then returns the physical register that it will
+    /// [`OperandConstraint::FixedReg`]), then returns the physical register that it will
     /// be assigned to.
     #[inline(always)]
     pub fn as_fixed_nonallocatable(self) -> Option<PReg> {
@@ -1128,7 +1128,13 @@ pub trait Function {
     /// How many instructions are there?
     fn num_insts(&self) -> usize;
 
-    /// How many blocks are there?
+    /// Number of entries to allocate [`Block`] storage for.
+    ///
+    /// The block ids are used as indices into a container, this
+    /// container is allocated with this number of elements. This means
+    /// that the value returned here must be the highest block index in
+    /// the function plus one. The block indices themselves need not be
+    /// consecutive.
     fn num_blocks(&self) -> usize;
 
     /// Get the index of the entry block.
@@ -1198,7 +1204,13 @@ pub trait Function {
     /// value(s).
     fn inst_clobbers(&self, insn: Inst) -> PRegSet;
 
-    /// Get the number of `VReg` in use in this function.
+    /// Number of entries to allocate [`VReg`] storage for.
+    ///
+    /// The VReg ids are used as indices into a container, this
+    /// container is allocated with this number of elements. This
+    /// means that the value returned here must be the highest block
+    /// index in the function plus one. The vreg indices themselves
+    /// need not be consecutive.
     fn num_vregs(&self) -> usize;
 
     /// Get the VRegs for which we should generate value-location
@@ -1557,10 +1569,12 @@ pub enum RegAllocError {
     /// a block param.
     SSA(VReg, Inst),
     /// Invalid basic block: does not end in branch/ret, or contains a
-    /// branch/ret in the middle.
+    /// branch/ret in the middle, or the VReg ids do not start at zero
+    /// or aren't numbered sequentially.
     BB(Block),
     /// Invalid branch: operand count does not match sum of block
-    /// params of successor blocks.
+    /// params of successor blocks, or the block ids do not start at
+    /// zero or aren't numbered sequentially.
     Branch(Inst),
     /// A VReg is live-in on entry; this is not allowed.
     EntryLivein,

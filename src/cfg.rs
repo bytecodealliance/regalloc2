@@ -56,7 +56,7 @@ impl CFGInfo {
             &mut ctx.visited,
             &mut self.postorder,
             |block| f.block_succs(block),
-        );
+        )?;
 
         domtree::calculate(
             nb,
