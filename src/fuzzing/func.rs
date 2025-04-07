@@ -264,6 +264,7 @@ pub struct Options {
     pub fixed_nonallocatable: bool,
     pub clobbers: bool,
     pub reftypes: bool,
+    pub callsite_ish_constraints: bool,
 }
 
 impl core::default::Default for Options {
@@ -274,6 +275,7 @@ impl core::default::Default for Options {
             fixed_nonallocatable: false,
             clobbers: false,
             reftypes: false,
+            callsite_ish_constraints: false,
         }
     }
 }
@@ -289,7 +291,7 @@ impl Func {
         // General strategy:
         // 1. Create an arbitrary CFG.
         // 2. Create a list of vregs to define in each block.
-        // 3. Define some of those vregs in each block as blockparams.f.
+        // 3. Define some of those vregs in each block as blockparams.
         // 4. Populate blocks with ops that define the rest of the vregs.
         //    - For each use, choose an available vreg: either one
         //      already defined (via blockparam or inst) in this block,
@@ -344,14 +346,19 @@ impl Func {
 
         builder.compute_doms();
 
+        let alloc_vreg = |builder: &mut FuncBuilder, u: &mut Unstructured| {
+            let vreg = VReg::new(builder.f.num_vregs, RegClass::arbitrary(u)?);
+            builder.f.num_vregs += 1;
+            Ok(vreg)
+        };
+
         let mut vregs_by_block = vec![];
         let mut vregs_by_block_to_be_defined = vec![];
         let mut block_params = vec![vec![]; num_blocks];
         for block in 0..num_blocks {
             let mut vregs = vec![];
             for _ in 0..u.int_in_range(5..=15)? {
-                let vreg = VReg::new(builder.f.num_vregs, RegClass::arbitrary(u)?);
-                builder.f.num_vregs += 1;
+                let vreg = alloc_vreg(&mut builder, u)?;
                 vregs.push(vreg);
                 if opts.reftypes && bool::arbitrary(u)? {
                     builder.f.reftype_vregs.push(vreg);
@@ -408,7 +415,7 @@ impl Func {
                     def_pos,
                 )];
                 let mut allocations = vec![Allocation::none()];
-                for _ in 0..u.int_in_range(0..=3)? {
+                for _ in 0..u.int_in_range(0..=10)? {
                     let vreg = if avail.len() > 0
                         && (remaining_nonlocal_uses == 0 || bool::arbitrary(u)?)
                     {
@@ -471,14 +478,14 @@ impl Func {
                             // Early-defs with fixed constraints conflict with
                             // any other fixed uses of the same preg.
                             if fixed_late.contains(&fixed_reg) {
-                                break;
+                                continue;
                             }
                         }
                         if op.kind() == OperandKind::Use && op.pos() == OperandPos::Late {
                             // Late-use with fixed constraints conflict with
                             // any other fixed uses of the same preg.
                             if fixed_early.contains(&fixed_reg) {
-                                break;
+                                continue;
                             }
                         }
                         let fixed_list = match op.pos() {
@@ -486,7 +493,7 @@ impl Func {
                             OperandPos::Late => &mut fixed_late,
                         };
                         if fixed_list.contains(&fixed_reg) {
-                            break;
+                            continue;
                         }
                         fixed_list.push(fixed_reg);
                         operands[i] = Operand::new(
@@ -496,11 +503,49 @@ impl Func {
                             op.pos(),
                         );
                     }
+
+                    if opts.callsite_ish_constraints && bool::arbitrary(u)? {
+                        // Define some new vregs with `any`
+                        // constraints.
+                        for _ in 0..u.int_in_range(0..=20)? {
+                            let vreg = alloc_vreg(&mut builder, u)?;
+                            operands.push(Operand::new(
+                                vreg,
+                                OperandConstraint::Any,
+                                OperandKind::Def,
+                                OperandPos::Late,
+                            ));
+                        }
+
+                        // Create some clobbers, avoiding regs named
+                        // by operand constraints. Note that the sum
+                        // of the maximum clobber count here (10) and
+                        // maximum operand count above (10) is less
+                        // than the number of registers in any single
+                        // class, so the resulting problem is always
+                        // allocatable.
+                        for _ in 0..u.int_in_range(0..=10)? {
+                            let reg = u.int_in_range(0..=30)?;
+                            let preg = PReg::new(reg, RegClass::arbitrary(u)?);
+                            if operands
+                                .iter()
+                                .any(|op| match (op.kind(), op.constraint()) {
+                                    (OperandKind::Def, OperandConstraint::FixedReg(fixed)) => {
+                                        fixed == preg
+                                    }
+                                    _ => false,
+                                })
+                            {
+                                continue;
+                            }
+                            clobbers.push(preg);
+                        }
+                    }
                 } else if opts.clobbers && bool::arbitrary(u)? {
                     for _ in 0..u.int_in_range(0..=5)? {
                         let reg = u.int_in_range(0..=30)?;
                         if clobbers.iter().any(|r| r.hw_enc() == reg) {
-                            break;
+                            continue;
                         }
                         clobbers.push(PReg::new(reg, RegClass::arbitrary(u)?));
                     }

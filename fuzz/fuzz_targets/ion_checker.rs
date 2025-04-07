@@ -25,6 +25,7 @@ impl Arbitrary<'_> for TestCase {
                     fixed_nonallocatable: true,
                     clobbers: true,
                     reftypes: true,
+                    callsite_ish_constraints: true,
                 },
             )?,
         })
