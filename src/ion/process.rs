@@ -268,6 +268,7 @@ impl<'a, F: Function> Env<'a, F> {
         let mut fixed = false;
         let mut fixed_def = false;
         let bundledata = &self.ctx.bundles[bundle];
+        let num_ranges = bundledata.ranges.len();
         let first_range = bundledata.ranges[0].index;
         let first_range_data = &self.ctx.ranges[first_range];
 
@@ -277,7 +278,7 @@ impl<'a, F: Function> Env<'a, F> {
             trace!("  -> no vreg; minimal and fixed");
             minimal = true;
             fixed = true;
-        } else {
+        } else if num_ranges == 1 {
             for u in &first_range_data.uses {
                 trace!("  -> use: {:?}", u);
                 if let OperandConstraint::FixedReg(_) = u.operand.constraint() {
@@ -291,8 +292,9 @@ impl<'a, F: Function> Env<'a, F> {
                     break;
                 }
             }
-            // Minimal if the range covers only one instruction. Note
-            // that it could cover just one ProgPoint,
+            // Minimal if there is only one LR and the ProgPoint range
+            // covers only one instruction. Note that it could cover
+            // just one ProgPoint,
             // i.e. X.Before..X.After, or two ProgPoints,
             // i.e. X.Before..X+1.Before.
             trace!("  -> first range has range {:?}", first_range_data.range);
@@ -300,6 +302,8 @@ impl<'a, F: Function> Env<'a, F> {
             let bundle_end = self.ctx.bundles[bundle].ranges.last().unwrap().range.to;
             minimal = bundle_start.inst() == bundle_end.prev().inst();
             trace!("  -> minimal: {}", minimal);
+        } else {
+            minimal = false;
         }
 
         let spill_weight = if minimal {
