@@ -912,7 +912,7 @@ impl Operand {
     }
 
     /// If this operand is for a fixed non-allocatable register (see
-    /// [`Operand::fixed`]), then returns the physical register that it will
+    /// [`Operand::fixed_nonallocatable`]), then returns the physical register that it will
     /// be assigned to.
     #[inline(always)]
     pub fn as_fixed_nonallocatable(self) -> Option<PReg> {
@@ -1120,6 +1120,9 @@ pub enum AllocationKind {
 ///
 /// (This trait's design is inspired by, and derives heavily from, the
 /// trait of the same name in regalloc.rs.)
+///
+/// The ids used in [`Block`] and [`VReg`] must start their numbering
+/// at zero and be sequential.
 pub trait Function {
     // -------------
     // CFG traversal
@@ -1557,10 +1560,12 @@ pub enum RegAllocError {
     /// a block param.
     SSA(VReg, Inst),
     /// Invalid basic block: does not end in branch/ret, or contains a
-    /// branch/ret in the middle.
+    /// branch/ret in the middle, or the VReg ids do not start at zero
+    /// or aren't numbered sequentially.
     BB(Block),
     /// Invalid branch: operand count does not match sum of block
-    /// params of successor blocks.
+    /// params of successor blocks, or the block ids do not start at
+    /// zero or aren't numbered sequentially.
     Branch(Inst),
     /// A VReg is live-in on entry; this is not allowed.
     EntryLivein,

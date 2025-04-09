@@ -65,12 +65,12 @@
 //!
 //!   - `Edit::Move` inserted by RA:       [ alloc_d := alloc_s ]
 //!
-//!       A' = A[alloc_d → A[alloc_s]]
+//!       A' = A[alloc_d → A\[alloc_s\]]
 //!
 //!   - statement in pre-regalloc function [ V_i := op V_j, V_k, ... ]
 //!     with allocated form                [ A_i := op A_j, A_k, ... ]
 //!
-//!       A' = { A_k → A[A_k] \ { V_i } for k ≠ i } ∪
+//!       A' = { A_k → A\[A_k\] \ { V_i } for k ≠ i } ∪
 //!            { A_i -> { V_i } }
 //!
 //!     In other words, a statement, even after allocation, generates
@@ -81,7 +81,7 @@
 //!   - Parallel moves or blockparam-assignments in original program
 //!                                       [ V_d1 := V_s1, V_d2 := V_s2, ... ]
 //!
-//!       A' = { A_k → subst(A[A_k]) for all k }
+//!       A' = { A_k → subst(A\[A_k\]) for all k }
 //!            where subst(S) removes symbols for overwritten virtual
 //!            registers (V_d1 .. V_dn) and then adds V_di whenever
 //!            V_si appeared prior to the removals.

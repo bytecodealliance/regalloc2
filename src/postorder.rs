@@ -5,7 +5,7 @@
 
 //! Fast postorder computation.
 
-use crate::{Block, VecExt};
+use crate::{Block, RegAllocError, VecExt};
 use alloc::vec::Vec;
 use smallvec::{smallvec, SmallVec};
 
@@ -15,7 +15,7 @@ pub fn calculate<'a, SuccFn: Fn(Block) -> &'a [Block]>(
     visited_scratch: &mut Vec<bool>,
     out: &mut Vec<Block>,
     succ_blocks: SuccFn,
-) {
+) -> Result<(), RegAllocError> {
     // State: visited-block map, and explicit DFS stack.
     struct State<'a> {
         block: Block,
@@ -26,7 +26,10 @@ pub fn calculate<'a, SuccFn: Fn(Block) -> &'a [Block]>(
     let mut stack: SmallVec<[State; 64]> = smallvec![];
     out.clear();
 
-    visited[entry.index()] = true;
+    let entry_visit = visited
+        .get_mut(entry.index())
+        .ok_or(RegAllocError::BB(entry))?;
+    *entry_visit = true;
     stack.push(State {
         block: entry,
         succs: succ_blocks(entry).iter(),
@@ -35,8 +38,11 @@ pub fn calculate<'a, SuccFn: Fn(Block) -> &'a [Block]>(
     while let Some(ref mut state) = stack.last_mut() {
         // Perform one action: push to new succ, skip an already-visited succ, or pop.
         if let Some(&succ) = state.succs.next() {
-            if !visited[succ.index()] {
-                visited[succ.index()] = true;
+            let succ_visit = visited
+                .get_mut(succ.index())
+                .ok_or(RegAllocError::BB(succ))?;
+            if !*succ_visit {
+                *succ_visit = true;
                 stack.push(State {
                     block: succ,
                     succs: succ_blocks(succ).iter(),
@@ -47,4 +53,5 @@ pub fn calculate<'a, SuccFn: Fn(Block) -> &'a [Block]>(
             stack.pop();
         }
     }
+    Ok(())
 }

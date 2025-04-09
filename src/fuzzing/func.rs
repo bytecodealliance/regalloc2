@@ -189,7 +189,7 @@ impl FuncBuilder {
 
     fn compute_doms(&mut self) {
         let f = &self.f;
-        postorder::calculate(
+        let _ = postorder::calculate(
             self.f.blocks.len(),
             Block::new(0),
             &mut vec![],
