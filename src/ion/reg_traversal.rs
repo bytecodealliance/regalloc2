@@ -14,8 +14,8 @@ use crate::{MachineEnv, PReg, RegClass};
 ///   usage, these consist of caller-save and callee-save registers
 ///   respectively, to minimize clobber-saves; but they need not.)
 
-pub struct RegTraversalIter<'a> {
-    env: &'a MachineEnv,
+pub struct RegTraversalIter<'a, 'r> {
+    env: &'a MachineEnv<'r>,
     class: usize,
     hints: [Option<PReg>; 2],
     hint_idx: usize,
@@ -27,9 +27,9 @@ pub struct RegTraversalIter<'a> {
     fixed: Option<PReg>,
 }
 
-impl<'a> RegTraversalIter<'a> {
+impl<'a, 'r> RegTraversalIter<'a, 'r> {
     pub fn new(
-        env: &'a MachineEnv,
+        env: &'a MachineEnv<'r>,
         class: RegClass,
         hint_reg: PReg,
         hint2_reg: PReg,
@@ -78,7 +78,7 @@ impl<'a> RegTraversalIter<'a> {
     }
 }
 
-impl<'a> core::iter::Iterator for RegTraversalIter<'a> {
+impl<'a> core::iter::Iterator for RegTraversalIter<'a, '_> {
     type Item = PReg;
 
     fn next(&mut self) -> Option<PReg> {
