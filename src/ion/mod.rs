@@ -97,6 +97,9 @@ impl<'a, F: Function> Env<'a, F> {
         self.process_bundles()?;
         self.try_allocating_regs_for_spilled_bundles();
         self.allocate_spillslots();
+        if trace_enabled!() {
+            self.dump_state();
+        }
         let moves = self.apply_allocations_and_insert_moves();
         Ok(self.resolve_inserted_moves(moves))
     }

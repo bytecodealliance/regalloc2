@@ -19,7 +19,7 @@ use super::{
 };
 use crate::{
     ion::data_structures::{
-        CodeRange, BUNDLE_MAX_NORMAL_SPILL_WEIGHT, MAX_SPLITS_PER_SPILLSET,
+        CodeRange, Use, BUNDLE_MAX_NORMAL_SPILL_WEIGHT, MAX_SPLITS_PER_SPILLSET,
         MINIMAL_BUNDLE_SPILL_WEIGHT, MINIMAL_FIXED_BUNDLE_SPILL_WEIGHT,
     },
     Allocation, Function, Inst, InstPosition, OperandConstraint, OperandKind, PReg, ProgPoint,
@@ -292,15 +292,23 @@ impl<'a, F: Function> Env<'a, F> {
                     break;
                 }
             }
-            // Minimal if there is only one LR and the ProgPoint range
-            // covers only one instruction. Note that it could cover
-            // just one ProgPoint,
-            // i.e. X.Before..X.After, or two ProgPoints,
-            // i.e. X.Before..X+1.Before.
-            trace!("  -> first range has range {:?}", first_range_data.range);
-            let bundle_start = self.ctx.bundles[bundle].ranges.first().unwrap().range.from;
-            let bundle_end = self.ctx.bundles[bundle].ranges.last().unwrap().range.to;
-            minimal = bundle_start.inst() == bundle_end.prev().inst();
+            // Minimal if there is only one LR and only up to one use
+            // in that LR, and extent of range is consistent with the
+            // "minimal range for use" definition.
+            minimal = match &first_range_data.uses[..] {
+                [] => true,
+                [only_use] => {
+                    // We use a "contains" rather than "exact" range
+                    // check because a smaller-than-min range is also
+                    // OK, if some logic produced it for a valid
+                    // reason -- for example, a dead def. We don't
+                    // want to livelock on "smaller than minimal"
+                    // ranges.
+                    let min_range = minimal_range_for_use(only_use);
+                    min_range.contains(&first_range_data.range)
+                }
+                _ => false,
+            };
             trace!("  -> minimal: {}", minimal);
         } else {
             minimal = false;
@@ -430,9 +438,26 @@ impl<'a, F: Function> Env<'a, F> {
         let bundle_end = self.ctx.bundles[bundle].ranges.last().unwrap().range.to;
         debug_assert!(split_at < bundle_end);
 
+        trace!(
+            "bundle_start = {:?} bundle_end = {:?}",
+            bundle_start,
+            bundle_end
+        );
+
+        // Is the bundle at most spanning one instruction? Then
+        // there's nothing we can do with this logic (we will not
+        // split in the middle of the instruction). Fall back to the
+        // minimal-bundle splitting in this case as well.
+        if bundle_end.prev().inst() == bundle_start.inst() {
+            trace!(" -> spans only one inst; splitting into minimal bundles");
+            self.split_into_minimal_bundles(bundle, reg_hint);
+            return;
+        }
+
         // Is the split point *at* the start? If so, peel off the
-        // first use: set the split point just after it, or just
-        // before it if it comes after the start of the bundle.
+        // program point with the first use: set the split point just
+        // after it, or just before it if it comes after the start of
+        // the bundle.
         if split_at == bundle_start {
             // Find any uses; if none, just chop off one instruction.
             let mut first_use = None;
@@ -762,7 +787,7 @@ impl<'a, F: Function> Env<'a, F> {
     ///
     /// This is meant to solve a quadratic-cost problem that exists
     /// with "normal" splitting as implemented above. With that
-    /// procedure, , splitting a bundle produces two
+    /// procedure, splitting a bundle produces two
     /// halves. Furthermore, it has cost linear in the length of the
     /// bundle, because the resulting half-bundles have their
     /// requirements recomputed with a new scan, and because we copy
@@ -804,17 +829,10 @@ impl<'a, F: Function> Env<'a, F> {
             reg_hint
         );
 
-        let mut last_lr: Option<LiveRangeIndex> = None;
-        let mut last_bundle: Option<LiveBundleIndex> = None;
-        let mut last_inst: Option<Inst> = None;
-        let mut last_vreg: Option<VRegIndex> = None;
-
         let mut spill_uses = UseList::new_in(self.ctx.bump());
 
         let empty_vec = LiveRangeList::new_in(self.ctx.bump());
         for entry in core::mem::replace(&mut self.ctx.bundles[bundle].ranges, empty_vec) {
-            let lr_from = entry.range.from;
-            let lr_to = entry.range.to;
             let vreg = self.ctx.ranges[entry.index].vreg;
 
             self.ctx.scratch_removed_lrs.insert(entry.index);
@@ -825,10 +843,9 @@ impl<'a, F: Function> Env<'a, F> {
             let mut spill_range = entry.range;
             let mut spill_starts_def = false;
 
-            let mut last_live_pos = entry.range.from;
             let empty_vec = UseList::new_in(self.ctx.bump());
             for u in core::mem::replace(&mut self.ctx.ranges[entry.index].uses, empty_vec) {
-                trace!("   -> use {:?} (last_live_pos {:?})", u, last_live_pos);
+                trace!("   -> use {:?}", u);
 
                 let is_def = u.operand.kind() == OperandKind::Def;
 
@@ -848,66 +865,17 @@ impl<'a, F: Function> Env<'a, F> {
                     continue;
                 }
 
-                // If this is a def of the vreg the entry cares about, make sure that the spill
-                // range starts right before the next instruction so that the value is available.
+                // If this is a def, make sure that the spill range
+                // starts before the next instruction rather than at
+                // this position: the value is available only *after*
+                // this position.
                 if is_def {
                     trace!("    -> moving the spill range forward by one");
                     spill_range.from = ProgPoint::before(u.pos.inst().next());
                 }
 
-                // If we just created a LR for this inst at the last
-                // pos, add this use to the same LR.
-                if Some(u.pos.inst()) == last_inst && Some(vreg) == last_vreg {
-                    self.ctx.ranges[last_lr.unwrap()].uses.push(u);
-                    trace!("    -> appended to last LR {:?}", last_lr.unwrap());
-                    continue;
-                }
-
-                // The minimal bundle runs through the whole inst
-                // (up to the Before of the next inst), *unless*
-                // the original LR was only over the Before (up to
-                // the After) of this inst.
-                let to = core::cmp::min(ProgPoint::before(u.pos.inst().next()), lr_to);
-
-                // If the last bundle was at the same inst, add a new
-                // LR to the same bundle; otherwise, create a LR and a
-                // new bundle.
-                if Some(u.pos.inst()) == last_inst {
-                    let cr = CodeRange { from: u.pos, to };
-                    let lr = self.ctx.ranges.add(cr, self.ctx.bump());
-                    new_lrs.push((vreg, lr));
-                    self.ctx.ranges[lr].uses.push(u);
-                    self.ctx.ranges[lr].vreg = vreg;
-
-                    trace!(
-                        "    -> created new LR {:?} but adding to existing bundle {:?}",
-                        lr,
-                        last_bundle.unwrap()
-                    );
-                    // Edit the previous LR to end mid-inst.
-                    self.ctx.bundles[last_bundle.unwrap()]
-                        .ranges
-                        .last_mut()
-                        .unwrap()
-                        .range
-                        .to = u.pos;
-                    self.ctx.ranges[last_lr.unwrap()].range.to = u.pos;
-                    // Add this LR to the bundle.
-                    self.ctx.bundles[last_bundle.unwrap()]
-                        .ranges
-                        .push(LiveRangeListEntry {
-                            range: cr,
-                            index: lr,
-                        });
-                    self.ctx.ranges[lr].bundle = last_bundle.unwrap();
-                    last_live_pos = ProgPoint::before(u.pos.inst().next());
-                    continue;
-                }
-
-                // Otherwise, create a new LR.
-                let pos = ProgPoint::before(u.pos.inst());
-                let pos = core::cmp::max(lr_from, pos);
-                let cr = CodeRange { from: pos, to };
+                // Create a new LR.
+                let cr = minimal_range_for_use(&u);
                 let lr = self.ctx.ranges.add(cr, self.ctx.bump());
                 new_lrs.push((vreg, lr));
                 self.ctx.ranges[lr].uses.push(u);
@@ -936,13 +904,6 @@ impl<'a, F: Function> Env<'a, F> {
                     cr,
                     new_bundle
                 );
-
-                last_live_pos = ProgPoint::before(u.pos.inst().next());
-
-                last_lr = Some(lr);
-                last_bundle = Some(new_bundle);
-                last_inst = Some(u.pos.inst());
-                last_vreg = Some(vreg);
             }
 
             if !spill_range.is_empty() {
@@ -1361,5 +1322,39 @@ impl<'a, F: Function> Env<'a, F> {
         self.ctx.scratch_conflicts = scratch;
         self.ctx.scratch_bundle = lowest_cost_evict_conflict_set;
         return Ok(());
+    }
+}
+
+/// Compute the minimal range that covers a given use in a minimal
+/// bundle. This definition needs to be consistent between bundle
+/// property computation and minimal-range splitting (fallback
+/// splitting).
+///
+/// The cases are:
+/// - early def: whole instruction
+/// - late def: Late only
+/// - early use: Early only
+/// - late use: whole instruction
+fn minimal_range_for_use(u: &Use) -> CodeRange {
+    let early = ProgPoint::before(u.pos.inst());
+    let late = ProgPoint::after(u.pos.inst());
+    let next_early = ProgPoint::before(u.pos.inst().next());
+    match (u.pos.pos(), u.operand.kind()) {
+        (InstPosition::Before, OperandKind::Def) => CodeRange {
+            from: early,
+            to: next_early,
+        },
+        (InstPosition::Before, OperandKind::Use) => CodeRange {
+            from: early,
+            to: late,
+        },
+        (InstPosition::After, OperandKind::Def) => CodeRange {
+            from: late,
+            to: next_early,
+        },
+        (InstPosition::After, OperandKind::Use) => CodeRange {
+            from: early,
+            to: next_early,
+        },
     }
 }
