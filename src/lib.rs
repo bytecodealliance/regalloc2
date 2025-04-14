@@ -1193,12 +1193,11 @@ pub trait Function {
     /// used as a vreg output, or fixed physical registers used as
     /// temps within an instruction out of necessity.
     ///
-    /// Note that it is legal for a register to be both a clobber and
-    /// an actual def (via pinned vreg or via operand constrained to
-    /// the reg). This is for convenience: e.g., a call instruction
-    /// might have a constant clobber set determined by the ABI, but
-    /// some of those clobbered registers are sometimes return
-    /// value(s).
+    /// Note that clobbers and defs and late-uses must not collide: it
+    /// is illegal to name the same physical register both as a clobber
+    /// and in a fixed-register constraint on a def or late use.
+    /// Internally, clobbers are modeled as defs (of throwaway vregs) at
+    /// the instruction's late-point constrained to the named register.
     fn inst_clobbers(&self, insn: Inst) -> PRegSet;
 
     /// Get the number of `VReg` in use in this function.
