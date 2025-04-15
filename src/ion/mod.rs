@@ -35,8 +35,8 @@ pub(crate) mod dump;
 pub(crate) mod moves;
 pub(crate) mod spill;
 
-impl<'a, F: Function> Env<'a, F> {
-    pub(crate) fn new(func: &'a F, env: &'a MachineEnv, ctx: &'a mut Ctx) -> Self {
+impl<'a, 'r, F: Function> Env<'a, 'r, F> {
+    pub(crate) fn new(func: &'a F, env: &'a MachineEnv<'r>, ctx: &'a mut Ctx) -> Self {
         let ninstrs = func.num_insts();
         let nblocks = func.num_blocks();
 

@@ -52,7 +52,7 @@ fn main() {
         validate_ssa: true,
         algorithm: args.algorithm.into(),
     };
-    let output = match regalloc2::run(&function, function.machine_env(), &options) {
+    let output = match regalloc2::run(&function, &function.machine_env(), &options) {
         Ok(output) => output,
         Err(e) => {
             panic!("Register allocation failed: {e:#?}");
@@ -63,7 +63,8 @@ fn main() {
         print_output(&function, &output);
     }
 
-    let mut checker = Checker::new(&function, function.machine_env());
+    let machine_env = function.machine_env();
+    let mut checker = Checker::new(&function, &machine_env);
     checker.prepare(&output);
     if let Err(e) = checker.run() {
         panic!("Regsiter allocation checker failed: {e:#?}");

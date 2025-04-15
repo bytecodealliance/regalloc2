@@ -140,18 +140,20 @@ impl RealFunction {
     }
 }
 
-fn mach_env(no_of_regs: usize) -> MachineEnv {
+fn mach_env(no_of_regs: usize) -> MachineEnv<'static> {
     MachineEnv {
         preferred_regs_by_class: [
-            (0..no_of_regs)
-                .map(|no| PReg::new(no, RegClass::Int))
-                .collect(),
-            vec![],
-            vec![],
+            Vec::leak(
+                (0..no_of_regs)
+                    .map(|no| PReg::new(no, RegClass::Int))
+                    .collect(),
+            ),
+            &[],
+            &[],
         ],
-        non_preferred_regs_by_class: [vec![], vec![], vec![]],
+        non_preferred_regs_by_class: [&[], &[], &[]],
         scratch_by_class: [None, None, None],
-        fixed_stack_slots: vec![],
+        fixed_stack_slots: &[],
     }
 }
 

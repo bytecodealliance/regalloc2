@@ -497,13 +497,13 @@ impl Ctx {
     }
 }
 
-pub struct Env<'a, F: Function> {
+pub struct Env<'a, 'r, F: Function> {
     pub func: &'a F,
-    pub env: &'a MachineEnv,
+    pub env: &'a MachineEnv<'r>,
     pub ctx: &'a mut Ctx,
 }
 
-impl<'a, F: Function> Deref for Env<'a, F> {
+impl<'a, F: Function> Deref for Env<'a, '_, F> {
     type Target = Ctx;
 
     fn deref(&self) -> &Self::Target {
@@ -511,13 +511,13 @@ impl<'a, F: Function> Deref for Env<'a, F> {
     }
 }
 
-impl<'a, F: Function> DerefMut for Env<'a, F> {
+impl<'a, F: Function> DerefMut for Env<'a, '_, F> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.ctx
     }
 }
 
-impl<'a, F: Function> Env<'a, F> {
+impl<'a, F: Function> Env<'a, '_, F> {
     /// Get the VReg (with bundled RegClass) from a vreg index.
     #[inline]
     pub fn vreg(&self, index: VRegIndex) -> VReg {

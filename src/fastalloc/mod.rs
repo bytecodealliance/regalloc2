@@ -245,9 +245,9 @@ impl<'a, F: Function> Env<'a, F> {
     fn new(func: &'a F, env: &'a MachineEnv) -> Self {
         use alloc::vec;
         let mut regs = [
-            env.preferred_regs_by_class[RegClass::Int as usize].clone(),
-            env.preferred_regs_by_class[RegClass::Float as usize].clone(),
-            env.preferred_regs_by_class[RegClass::Vector as usize].clone(),
+            Vec::from(env.preferred_regs_by_class[RegClass::Int as usize]),
+            Vec::from(env.preferred_regs_by_class[RegClass::Float as usize]),
+            Vec::from(env.preferred_regs_by_class[RegClass::Vector as usize]),
         ];
         regs[0].extend(
             env.non_preferred_regs_by_class[RegClass::Int as usize]
