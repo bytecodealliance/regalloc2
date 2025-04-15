@@ -758,25 +758,22 @@ impl<'a, F: Function> Checker<'a, F> {
 
     /// For each original instruction, create an `Op`.
     fn handle_inst(&mut self, block: Block, inst: Inst, out: &Output) {
-        // Skip normal checks if this is a branch: the blockparams do
-        // not exist in post-regalloc code, and the edge-moves have to
-        // be inserted before the branch rather than after.
-        if !self.f.is_branch(inst) {
-            let operands: Vec<_> = self.f.inst_operands(inst).iter().cloned().collect();
-            let allocs: Vec<_> = out.inst_allocs(inst).iter().cloned().collect();
-            let clobbers: Vec<_> = self.f.inst_clobbers(inst).into_iter().collect();
-            let checkinst = CheckerInst::Op {
-                inst,
-                operands,
-                allocs,
-                clobbers,
-            };
-            trace!("checker: adding inst {:?}", checkinst);
-            self.bb_insts.get_mut(&block).unwrap().push(checkinst);
-        }
-        // Instead, if this is a branch, emit a ParallelMove on each
-        // outgoing edge as necessary to handle blockparams.
-        else {
+        // Process uses, defs, and clobbers.
+        let operands: Vec<_> = self.f.inst_operands(inst).iter().cloned().collect();
+        let allocs: Vec<_> = out.inst_allocs(inst).iter().cloned().collect();
+        let clobbers: Vec<_> = self.f.inst_clobbers(inst).into_iter().collect();
+        let checkinst = CheckerInst::Op {
+            inst,
+            operands,
+            allocs,
+            clobbers,
+        };
+        trace!("checker: adding inst {:?}", checkinst);
+        self.bb_insts.get_mut(&block).unwrap().push(checkinst);
+
+        // If this is a branch, emit a ParallelMove on each outgoing
+        // edge as necessary to handle blockparams.
+        if self.f.is_branch(inst) {
             for (i, &succ) in self.f.block_succs(block).iter().enumerate() {
                 let args = self.f.branch_blockparams(block, inst, i);
                 let params = self.f.block_params(succ);
