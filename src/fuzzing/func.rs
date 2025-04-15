@@ -4,8 +4,8 @@
  */
 
 use crate::{
-    domtree, postorder, Allocation, Block, Function, Inst, InstRange, MachineEnv, Operand,
-    OperandConstraint, OperandKind, OperandPos, PReg, PRegSet, RegClass, VReg,
+    domtree, postorder, Allocation, Block, Function, FxHashMap, Inst, InstRange, MachineEnv,
+    Operand, OperandConstraint, OperandKind, OperandPos, PReg, PRegSet, RegClass, VReg,
 };
 
 use alloc::vec::Vec;
@@ -302,6 +302,7 @@ impl Func {
             builder.add_block();
         }
         let num_blocks = builder.f.blocks.len();
+        let mut label_free_range_start = FxHashMap::default();
 
         // Generate a CFG. Create a "spine" of either single blocks,
         // with links to the next; or fork patterns, with the left
@@ -365,20 +366,20 @@ impl Func {
                 }
                 if bool::arbitrary(u)? {
                     let assumed_end_inst = 10 * num_blocks;
-                    let mut start = u.int_in_range::<usize>(0..=assumed_end_inst)?;
                     for _ in 0..10 {
-                        if start >= assumed_end_inst {
-                            break;
-                        }
-                        let end = u.int_in_range::<usize>(start..=assumed_end_inst)?;
                         let label = u.int_in_range::<u32>(0..=100)?;
+                        let free_range_start = label_free_range_start.entry(label).or_insert(0);
+                        if *free_range_start >= assumed_end_inst {
+                            continue;
+                        }
+                        let end = u.int_in_range(*free_range_start..=assumed_end_inst)?;
                         builder.f.debug_value_labels.push((
                             vreg,
-                            Inst::new(start),
+                            Inst::new(*free_range_start),
                             Inst::new(end),
                             label,
                         ));
-                        start = end;
+                        *free_range_start = end;
                     }
                 }
             }
@@ -664,6 +665,7 @@ impl core::fmt::Debug for Func {
                 }
             }
         }
+        write!(f, "  debug_value_labels: {:?}", self.debug_value_labels)?;
         write!(f, "}}\n")?;
         Ok(())
     }
