@@ -1577,6 +1577,9 @@ pub enum RegAllocError {
     /// Too many pinned VRegs + Reg-constrained Operands are live at
     /// once, making allocation impossible.
     TooManyLiveRegs,
+    /// Too many operands on a single instruction (beyond limit of
+    /// 2^16 - 1).
+    TooManyOperands,
 }
 
 impl core::fmt::Display for RegAllocError {

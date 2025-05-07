@@ -24,6 +24,7 @@ use crate::{
     Allocation, Block, Function, Inst, InstPosition, Operand, OperandConstraint, OperandKind,
     OperandPos, PReg, ProgPoint, RegAllocError, VReg, VecExt,
 };
+use core::convert::TryFrom;
 use smallvec::{smallvec, SmallVec};
 
 /// A spill weight computed for a certain Use.
@@ -92,6 +93,10 @@ impl core::ops::Add<SpillWeight> for SpillWeight {
     fn add(self, other: SpillWeight) -> Self {
         SpillWeight(self.0 + other.0)
     }
+}
+
+fn slot_idx(i: usize) -> Result<u16, RegAllocError> {
+    u16::try_from(i).map_err(|_| RegAllocError::TooManyOperands)
 }
 
 impl<'a, F: Function> Env<'a, F> {
@@ -362,7 +367,7 @@ impl<'a, F: Function> Env<'a, F> {
         Ok(())
     }
 
-    pub fn build_liveranges(&mut self) {
+    pub fn build_liveranges(&mut self) -> Result<(), RegAllocError> {
         // Create Uses and Defs referring to VRegs, and place the Uses
         // in LiveRanges.
         //
@@ -533,8 +538,8 @@ impl<'a, F: Function> Env<'a, F> {
                                     let pos = ProgPoint::before(inst);
                                     self.multi_fixed_reg_fixups.push(MultiFixedRegFixup {
                                         pos,
-                                        from_slot: i as u8,
-                                        to_slot: i as u8,
+                                        from_slot: slot_idx(i)?,
+                                        to_slot: slot_idx(i)?,
                                         to_preg: PRegIndex::new(preg.index()),
                                         vreg: VRegIndex::new(operand.vreg().vreg()),
                                         level: FixedRegFixupLevel::Initial,
@@ -638,7 +643,10 @@ impl<'a, F: Function> Env<'a, F> {
                                     live.set(operand.vreg().vreg(), true);
                                 }
                                 // Create the use in the LiveRange.
-                                self.insert_use_into_liverange(lr, Use::new(operand, pos, i as u8));
+                                self.insert_use_into_liverange(
+                                    lr,
+                                    Use::new(operand, pos, slot_idx(i)?),
+                                );
                                 // If def (not mod), this reg is now dead,
                                 // scanning backward; make it so.
                                 if operand.kind() == OperandKind::Def {
@@ -681,7 +689,10 @@ impl<'a, F: Function> Env<'a, F> {
 
                                 trace!("Use of {:?} at {:?} -> {:?}", operand, pos, lr,);
 
-                                self.insert_use_into_liverange(lr, Use::new(operand, pos, i as u8));
+                                self.insert_use_into_liverange(
+                                    lr,
+                                    Use::new(operand, pos, slot_idx(i)?),
+                                );
 
                                 // Add to live-set.
                                 live.set(operand.vreg().vreg(), true);
@@ -756,6 +767,8 @@ impl<'a, F: Function> Env<'a, F> {
         self.output.stats.blockparam_outs_count = self.blockparam_outs.len();
         self.ctx.scratch_vreg_ranges = vreg_ranges;
         self.ctx.scratch_operand_rewrites = operand_rewrites;
+
+        Ok(())
     }
 
     pub fn fixup_multi_fixed_vregs(&mut self) {
