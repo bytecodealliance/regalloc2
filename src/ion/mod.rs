@@ -83,7 +83,7 @@ impl<'a, F: Function> Env<'a, F> {
     pub(crate) fn init(&mut self) -> Result<(), RegAllocError> {
         self.create_pregs_and_vregs();
         self.compute_liveness()?;
-        self.build_liveranges();
+        self.build_liveranges()?;
         self.fixup_multi_fixed_vregs();
         self.merge_vreg_bundles();
         self.queue_bundles();

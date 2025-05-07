@@ -179,13 +179,13 @@ impl LiveRange {
 pub struct Use {
     pub operand: Operand,
     pub pos: ProgPoint,
-    pub slot: u8,
+    pub slot: u16,
     pub weight: u16,
 }
 
 impl Use {
     #[inline(always)]
-    pub fn new(operand: Operand, pos: ProgPoint, slot: u8) -> Self {
+    pub fn new(operand: Operand, pos: ProgPoint, slot: u16) -> Self {
         Self {
             operand,
             pos,
@@ -315,8 +315,8 @@ pub struct PRegData {
 #[derive(Clone, Debug)]
 pub struct MultiFixedRegFixup {
     pub pos: ProgPoint,
-    pub from_slot: u8,
-    pub to_slot: u8,
+    pub from_slot: u16,
+    pub to_slot: u16,
     pub level: FixedRegFixupLevel,
     pub to_preg: PRegIndex,
     pub vreg: VRegIndex,
