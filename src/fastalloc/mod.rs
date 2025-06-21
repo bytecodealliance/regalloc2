@@ -327,12 +327,18 @@ impl<'a, F: Function> Env<'a, F> {
         self.edits.scratch_regs = self.edits.dedicated_scratch_regs.clone();
     }
 
-    fn alloc_scratch_reg(&mut self, inst: Inst, class: RegClass) -> Result<(), RegAllocError> {
+    fn alloc_scratch_reg(
+        &mut self,
+        inst: Inst,
+        class: RegClass,
+        pos: InstPosition,
+    ) -> Result<(), RegAllocError> {
         use OperandPos::{Early, Late};
         let reg = self.get_scratch_reg(
             inst,
             class,
             self.available_pregs[Late] & self.available_pregs[Early],
+            pos,
         )?;
         self.edits.scratch_regs[class] = Some(reg);
         self.available_pregs[OperandPos::Early].remove(reg);
@@ -340,32 +346,18 @@ impl<'a, F: Function> Env<'a, F> {
         Ok(())
     }
 
-    fn get_scratch_reg_for_reload(
-        &mut self,
-        inst: Inst,
-        class: RegClass,
-        avail_regs: PRegSet,
-    ) -> Result<PReg, RegAllocError> {
-        let Some(preg) = self.lrus[class].last(avail_regs) else {
-            return Err(RegAllocError::TooManyLiveRegs);
-        };
-        if self.vreg_in_preg[preg.index()] != VReg::invalid() {
-            self.evict_vreg_in_preg_before_inst(inst, preg);
-        }
-        Ok(preg)
-    }
-
     fn get_scratch_reg(
         &mut self,
         inst: Inst,
         class: RegClass,
         avail_regs: PRegSet,
+        pos: InstPosition,
     ) -> Result<PReg, RegAllocError> {
         let Some(preg) = self.lrus[class].last(avail_regs) else {
             return Err(RegAllocError::TooManyLiveRegs);
         };
         if self.vreg_in_preg[preg.index()] != VReg::invalid() {
-            self.evict_vreg_in_preg(inst, preg);
+            self.evict_vreg_in_preg(inst, preg, pos);
         }
         Ok(preg)
     }
@@ -461,7 +453,7 @@ impl<'a, F: Function> Env<'a, F> {
         }
     }
 
-    fn base_evict_vreg_in_preg(&mut self, inst: Inst, preg: PReg, pos: InstPosition) {
+    fn evict_vreg_in_preg(&mut self, inst: Inst, preg: PReg, pos: InstPosition) {
         trace!("Removing the vreg in preg {} for eviction", preg);
         let evicted_vreg = self.vreg_in_preg[preg.index()];
         trace!("The removed vreg: {}", evicted_vreg);
@@ -479,14 +471,6 @@ impl<'a, F: Function> Env<'a, F> {
             evicted_vreg.class(),
             pos,
         );
-    }
-
-    fn evict_vreg_in_preg_before_inst(&mut self, inst: Inst, preg: PReg) {
-        self.base_evict_vreg_in_preg(inst, preg, InstPosition::Before)
-    }
-
-    fn evict_vreg_in_preg(&mut self, inst: Inst, preg: PReg) {
-        self.base_evict_vreg_in_preg(inst, preg, InstPosition::After)
     }
 
     fn freealloc(&mut self, vreg: VReg) {
@@ -542,7 +526,7 @@ impl<'a, F: Function> Env<'a, F> {
             return Err(RegAllocError::TooManyLiveRegs);
         };
         if self.vreg_in_preg[preg.index()] != VReg::invalid() {
-            self.evict_vreg_in_preg(inst, preg);
+            self.evict_vreg_in_preg(inst, preg, InstPosition::After);
         }
         trace!("The allocated register for vreg {}: {}", op.vreg(), preg);
         self.lrus[op.class()].poke(preg);
@@ -643,7 +627,7 @@ impl<'a, F: Function> Env<'a, F> {
                     && self.edits.is_stack(curr_alloc)
                     && self.edits.scratch_regs[op.class()].is_none()
                 {
-                    self.alloc_scratch_reg(inst, op.class())?;
+                    self.alloc_scratch_reg(inst, op.class(), InstPosition::After)?;
                 }
                 if op.kind() == OperandKind::Def {
                     trace!("Adding edit from {new_alloc:?} to {curr_alloc:?} after inst {inst:?} for {op}");
@@ -761,10 +745,11 @@ impl<'a, F: Function> Env<'a, F> {
                     if self.edits.is_stack(curr_alloc)
                         && self.edits.scratch_regs[vreg.class()].is_none()
                     {
-                        let reg = self.get_scratch_reg_for_reload(
+                        let reg = self.get_scratch_reg(
                             inst,
                             vreg.class(),
                             self.available_pregs[Early] & self.available_pregs[Late],
+                            InstPosition::Before,
                         )?;
                         self.edits.scratch_regs[vreg.class()] = Some(reg);
                         self.available_pregs[OperandPos::Early].remove(reg);
@@ -889,9 +874,9 @@ impl<'a, F: Function> Env<'a, F> {
                 if self.fixed_stack_slots.contains(preg)
                     && self.edits.scratch_regs[preg.class()].is_none()
                 {
-                    self.alloc_scratch_reg(inst, preg.class())?;
+                    self.alloc_scratch_reg(inst, preg.class(), InstPosition::After)?;
                 }
-                self.evict_vreg_in_preg(inst, preg);
+                self.evict_vreg_in_preg(inst, preg, InstPosition::After);
                 self.vreg_in_preg[preg.index()] = VReg::invalid();
             }
         }
@@ -905,9 +890,9 @@ impl<'a, F: Function> Env<'a, F> {
                 if self.fixed_stack_slots.contains(preg)
                     && self.edits.scratch_regs[preg.class()].is_none()
                 {
-                    self.alloc_scratch_reg(inst, preg.class())?;
+                    self.alloc_scratch_reg(inst, preg.class(), InstPosition::After)?;
                 }
-                self.evict_vreg_in_preg(inst, preg);
+                self.evict_vreg_in_preg(inst, preg, InstPosition::After);
                 self.vreg_in_preg[preg.index()] = VReg::invalid();
             }
         }
@@ -935,7 +920,7 @@ impl<'a, F: Function> Env<'a, F> {
                     };
                 if !src_and_dest_are_same {
                     if is_stack_to_stack && self.edits.scratch_regs[op.class()].is_none() {
-                        self.alloc_scratch_reg(inst, op.class())?;
+                        self.alloc_scratch_reg(inst, op.class(), InstPosition::After)?;
                     };
                     self.edits.add_move(
                         inst,
@@ -974,6 +959,13 @@ impl<'a, F: Function> Env<'a, F> {
                 let curr_alloc = self.vreg_allocs[op.vreg().vreg()];
                 let new_alloc = self.allocs[(inst.index(), op_idx)];
                 trace!("Adding edit from {curr_alloc:?} to {new_alloc:?} before inst {inst:?} for {op}");
+                if curr_alloc != new_alloc
+                    && self.edits.is_stack(curr_alloc)
+                    && self.edits.is_stack(new_alloc)
+                    && self.edits.scratch_regs[op.class()].is_none()
+                {
+                    self.alloc_scratch_reg(inst, op.class(), InstPosition::Before)?;
+                }
                 self.edits.add_move(
                     inst,
                     curr_alloc,
@@ -1060,10 +1052,11 @@ impl<'a, F: Function> Env<'a, F> {
                 vreg
             );
             if self.edits.is_stack(prev_alloc) && self.edits.scratch_regs[vreg.class()].is_none() {
-                let reg = self.get_scratch_reg_for_reload(
+                let reg = self.get_scratch_reg(
                     first_inst,
                     vreg.class(),
                     avail_regs_for_scratch,
+                    InstPosition::Before,
                 )?;
                 self.edits.scratch_regs[vreg.class()] = Some(reg);
             }
