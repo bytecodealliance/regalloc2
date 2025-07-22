@@ -267,6 +267,7 @@ impl<'a, F: Function> Env<'a, F> {
         let minimal;
         let mut fixed = false;
         let mut fixed_def = false;
+        let mut stack = false;
         let bundledata = &self.ctx.bundles[bundle];
         let num_ranges = bundledata.ranges.len();
         let first_range = bundledata.ranges[0].index;
@@ -288,7 +289,12 @@ impl<'a, F: Function> Env<'a, F> {
                         trace!("  -> is fixed def");
                         fixed_def = true;
                     }
-
+                }
+                if let OperandConstraint::Stack = u.operand.constraint() {
+                    trace!("  -> stack operand at {:?}: {:?}", u.pos, u.operand);
+                    stack = true;
+                }
+                if stack && fixed {
                     break;
                 }
             }
@@ -351,6 +357,7 @@ impl<'a, F: Function> Env<'a, F> {
             minimal,
             fixed,
             fixed_def,
+            stack,
         );
     }
 
@@ -1036,6 +1043,13 @@ impl<'a, F: Function> Env<'a, F> {
             let fixed_preg = match req {
                 Requirement::FixedReg(preg) | Requirement::FixedStack(preg) => Some(preg),
                 Requirement::Register => None,
+                Requirement::Stack => {
+                    // If we must be on the stack, mark our spillset
+                    // as required immediately.
+                    let spillset = self.bundles[bundle].spillset;
+                    self.spillsets[spillset].required = true;
+                    return Ok(());
+                }
 
                 Requirement::Any => {
                     self.ctx.spilled_bundles.push(bundle);

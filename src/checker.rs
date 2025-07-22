@@ -640,6 +640,17 @@ impl CheckerState {
                 }
                 return Err(CheckerError::AllocationIsNotReg { inst, op, alloc });
             }
+            OperandConstraint::Stack => {
+                if alloc.kind() != AllocationKind::Stack {
+                    // Accept pregs that represent a fixed stack slot.
+                    if let Some(preg) = alloc.as_reg() {
+                        if checker.machine_env.fixed_stack_slots.contains(&preg) {
+                            return Ok(());
+                        }
+                    }
+                    return Err(CheckerError::AllocationIsNotStack { inst, op, alloc });
+                }
+            }
             OperandConstraint::FixedReg(preg) => {
                 if alloc != Allocation::reg(preg) {
                     return Err(CheckerError::AllocationIsNotFixedReg { inst, op, alloc });

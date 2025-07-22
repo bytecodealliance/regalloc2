@@ -112,7 +112,11 @@ impl<'a, F: Function> Env<'a, F> {
         }
 
         // Check for a requirements conflict.
-        if self.bundles[from].cached_fixed() || self.bundles[to].cached_fixed() {
+        if self.bundles[from].cached_stack()
+            || self.bundles[from].cached_fixed()
+            || self.bundles[to].cached_stack()
+            || self.bundles[to].cached_fixed()
+        {
             if self.merge_bundle_requirements(from, to).is_err() {
                 trace!(" -> conflicting requirements; aborting merge");
                 return false;
@@ -154,6 +158,9 @@ impl<'a, F: Function> Env<'a, F> {
             }
             self.bundles[to].ranges = list;
 
+            if self.bundles[from].cached_stack() {
+                self.bundles[to].set_cached_stack();
+            }
             if self.bundles[from].cached_fixed() {
                 self.bundles[to].set_cached_fixed();
             }
@@ -236,6 +243,9 @@ impl<'a, F: Function> Env<'a, F> {
             *to_range = to_range.join(from_range);
         }
 
+        if self.bundles[from].cached_stack() {
+            self.bundles[to].set_cached_stack();
+        }
         if self.bundles[from].cached_fixed() {
             self.bundles[to].set_cached_fixed();
         }
@@ -272,6 +282,7 @@ impl<'a, F: Function> Env<'a, F> {
 
             let mut fixed = false;
             let mut fixed_def = false;
+            let mut stack = false;
             for entry in &self.bundles[bundle].ranges {
                 for u in &self.ranges[entry.index].uses {
                     if let OperandConstraint::FixedReg(_) = u.operand.constraint() {
@@ -280,7 +291,10 @@ impl<'a, F: Function> Env<'a, F> {
                             fixed_def = true;
                         }
                     }
-                    if fixed && fixed_def {
+                    if let OperandConstraint::Stack = u.operand.constraint() {
+                        stack = true;
+                    }
+                    if fixed && stack && fixed_def {
                         break;
                     }
                 }
@@ -290,6 +304,9 @@ impl<'a, F: Function> Env<'a, F> {
             }
             if fixed_def {
                 self.bundles[bundle].set_cached_fixed_def();
+            }
+            if stack {
+                self.bundles[bundle].set_cached_stack();
             }
 
             // Create a spillslot for this bundle.

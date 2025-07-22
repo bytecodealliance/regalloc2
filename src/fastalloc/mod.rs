@@ -453,6 +453,10 @@ impl<'a, F: Function> Env<'a, F> {
             OperandConstraint::Reuse(_) => {
                 unreachable!()
             }
+
+            OperandConstraint::Stack => {
+                panic!("Stack constraints not supported in fastalloc");
+            }
         }
     }
 
@@ -575,6 +579,10 @@ impl<'a, F: Function> Env<'a, F> {
             OperandConstraint::Reuse(_) => {
                 // This is handled elsewhere.
                 unreachable!();
+            }
+
+            OperandConstraint::Stack => {
+                panic!("Stack operand constraints not supported in fastalloc");
             }
         };
         self.allocs[(inst.index(), op_idx)] = new_alloc;
