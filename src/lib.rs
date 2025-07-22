@@ -528,6 +528,8 @@ pub enum OperandConstraint {
     Any,
     /// Operand must be in a register. Register is read-only for Uses.
     Reg,
+    /// Operand must be on the stack.
+    Stack,
     /// Operand must be in a fixed register.
     FixedReg(PReg),
     /// On defs only: reuse a use's register.
@@ -539,6 +541,7 @@ impl core::fmt::Display for OperandConstraint {
         match self {
             Self::Any => write!(f, "any"),
             Self::Reg => write!(f, "reg"),
+            Self::Stack => write!(f, "stack"),
             Self::FixedReg(preg) => write!(f, "fixed({})", preg),
             Self::Reuse(idx) => write!(f, "reuse({})", idx),
         }
@@ -634,6 +637,7 @@ impl Operand {
         let constraint_field = match constraint {
             OperandConstraint::Any => 0,
             OperandConstraint::Reg => 1,
+            OperandConstraint::Stack => 2,
             OperandConstraint::FixedReg(preg) => {
                 debug_assert_eq!(preg.class(), vreg.class());
                 0b1000000 | preg.hw_enc() as u32
@@ -906,6 +910,7 @@ impl Operand {
             match constraint_field {
                 0 => OperandConstraint::Any,
                 1 => OperandConstraint::Reg,
+                2 => OperandConstraint::Stack,
                 _ => unreachable!(),
             }
         }
