@@ -1046,7 +1046,8 @@ impl<'a, F: Function> Env<'a, F> {
                 Requirement::Stack => {
                     // If we must be on the stack, mark our spillset
                     // as required immediately.
-                    self.spillsets[self.bundles[bundle].spillset].required = true;
+                    let spillset = self.bundles[bundle].spillset;
+                    self.spillsets[spillset].required = true;
                     return Ok(());
                 }
 

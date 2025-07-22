@@ -265,7 +265,7 @@ impl LiveBundle {
 
     #[inline(always)]
     pub fn cached_spill_weight(&self) -> u32 {
-        self.spill_weight_and_props & ((1 << 28) - 1)
+        self.spill_weight_and_props & BUNDLE_MAX_SPILL_WEIGHT
     }
 }
 
