@@ -112,7 +112,11 @@ impl<'a, F: Function> Env<'a, F> {
         }
 
         // Check for a requirements conflict.
-        if self.bundles[from].cached_fixed() || self.bundles[to].cached_fixed() {
+        if self.bundles[from].cached_stack()
+            || self.bundles[from].cached_fixed()
+            || self.bundles[to].cached_stack()
+            || self.bundles[to].cached_fixed()
+        {
             if self.merge_bundle_requirements(from, to).is_err() {
                 trace!(" -> conflicting requirements; aborting merge");
                 return false;
@@ -154,6 +158,9 @@ impl<'a, F: Function> Env<'a, F> {
             }
             self.bundles[to].ranges = list;
 
+            if self.bundles[from].cached_stack() {
+                self.bundles[to].set_cached_stack();
+            }
             if self.bundles[from].cached_fixed() {
                 self.bundles[to].set_cached_fixed();
             }
@@ -236,6 +243,9 @@ impl<'a, F: Function> Env<'a, F> {
             *to_range = to_range.join(from_range);
         }
 
+        if self.bundles[from].cached_stack() {
+            self.bundles[to].set_cached_stack();
+        }
         if self.bundles[from].cached_fixed() {
             self.bundles[to].set_cached_fixed();
         }
