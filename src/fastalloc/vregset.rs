@@ -58,7 +58,7 @@ impl VRegSet {
         self.items[self.head.index()].next == self.head
     }
 
-    pub fn iter(&self) -> VRegSetIter {
+    pub fn iter(&self) -> VRegSetIter<'_> {
         VRegSetIter {
             curr_item: self.items[self.head.index()].next,
             head: self.head,
