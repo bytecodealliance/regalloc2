@@ -10,7 +10,7 @@ use alloc::{vec, vec::Vec};
 use core::convert::TryInto;
 use core::fmt;
 use core::iter::FromIterator;
-use core::ops::{Index, IndexMut};
+use core::ops::{BitAnd, BitOr, Index, IndexMut, Not};
 
 mod iter;
 mod lru;
@@ -183,6 +183,41 @@ struct PartedByOperandPos<T> {
     items: [T; 2],
 }
 
+impl<T: Copy> Copy for PartedByOperandPos<T> {}
+
+impl<T: BitAnd<Output = T> + Copy> BitAnd for PartedByOperandPos<T> {
+    type Output = Self;
+    fn bitand(self, other: Self) -> Self {
+        Self {
+            items: [
+                self.items[0] & other.items[0],
+                self.items[1] & other.items[1],
+            ],
+        }
+    }
+}
+
+impl<T: BitOr<Output = T> + Copy> BitOr for PartedByOperandPos<T> {
+    type Output = Self;
+    fn bitor(self, other: Self) -> Self {
+        Self {
+            items: [
+                self.items[0] | other.items[0],
+                self.items[1] | other.items[1],
+            ],
+        }
+    }
+}
+
+impl Not for PartedByOperandPos<PRegSet> {
+    type Output = Self;
+    fn not(self) -> Self {
+        Self {
+            items: [self.items[0].invert(), self.items[1].invert()],
+        }
+    }
+}
+
 impl<T> Index<OperandPos> for PartedByOperandPos<T> {
     type Output = T;
     fn index(&self, index: OperandPos) -> &Self::Output {
@@ -222,10 +257,17 @@ pub struct Env<'a, F: Function> {
     /// that uses the `i`th operand in the current instruction as its input.
     reused_input_to_reuse_op: Vec<usize>,
     /// The set of registers that can be used for allocation in the
-    /// early and late phases of an instruction.
+    /// early and late phases of an instruction for operands with a
+    /// Reg constraint.
     /// Allocatable registers that contain no vregs, registers that can be
     /// evicted can be in the set, and fixed stack slots are in this set.
-    available_pregs: PartedByOperandPos<PRegSet>,
+    available_pregs_for_regs: PartedByOperandPos<PRegSet>,
+    /// This is `available_pregs_for_regs` but for operands
+    /// with an Any constraint. This split is made here to allow for
+    /// reservation of registers for Reg-only operands, so as to avoid
+    /// a scenario where available registers are allocated to Any operands
+    /// without leaving any for Reg-only operands.
+    available_pregs_for_any: PartedByOperandPos<PRegSet>,
     init_available_pregs: PRegSet,
     allocatable_regs: PRegSet,
     stack: Stack<'a, F>,
@@ -278,7 +320,7 @@ impl<'a, F: Function> Env<'a, F> {
                 env.scratch_by_class[2],
             ],
         };
-        trace!("{:?}", env);
+        trace!("{:#?}", env);
         let (allocs, max_operand_len) = Allocs::new(func);
         let fixed_stack_slots = PRegSet::from_iter(env.fixed_stack_slots.iter().cloned());
         Self {
@@ -308,7 +350,10 @@ impl<'a, F: Function> Env<'a, F> {
             },
             reused_input_to_reuse_op: vec![usize::MAX; max_operand_len as usize],
             init_available_pregs,
-            available_pregs: PartedByOperandPos {
+            available_pregs_for_regs: PartedByOperandPos {
+                items: [init_available_pregs, init_available_pregs],
+            },
+            available_pregs_for_any: PartedByOperandPos {
                 items: [init_available_pregs, init_available_pregs],
             },
             allocs,
@@ -320,7 +365,7 @@ impl<'a, F: Function> Env<'a, F> {
 
     fn reset_available_pregs_and_scratch_regs(&mut self) {
         trace!("Resetting the available pregs");
-        self.available_pregs = PartedByOperandPos {
+        self.available_pregs_for_regs = PartedByOperandPos {
             items: [self.init_available_pregs, self.init_available_pregs],
         };
         self.edits.scratch_regs = self.edits.dedicated_scratch_regs.clone();
@@ -332,15 +377,16 @@ impl<'a, F: Function> Env<'a, F> {
         class: RegClass,
         pos: InstPosition,
     ) -> Result<(), RegAllocError> {
-        let avail_regs =
-            self.available_pregs[OperandPos::Late] & self.available_pregs[OperandPos::Early];
+        let avail_regs = self.available_pregs_for_any[OperandPos::Late]
+            & self.available_pregs_for_any[OperandPos::Early];
+        trace!("Checking {avail_regs} for scratch register for {class:?}");
         if let Some(preg) = self.lrus[class].last(avail_regs) {
             if self.vreg_in_preg[preg.index()] != VReg::invalid() {
                 self.evict_vreg_in_preg(inst, preg, pos)?;
             }
             self.edits.scratch_regs[class] = Some(preg);
-            self.available_pregs[OperandPos::Early].remove(preg);
-            self.available_pregs[OperandPos::Late].remove(preg);
+            self.available_pregs_for_any[OperandPos::Early].remove(preg);
+            self.available_pregs_for_any[OperandPos::Late].remove(preg);
             Ok(())
         } else {
             Err(RegAllocError::TooManyLiveRegs)
@@ -365,33 +411,41 @@ impl<'a, F: Function> Env<'a, F> {
         Ok(())
     }
 
-    fn reserve_reg_for_fixed_operand(
-        &mut self,
+    fn get_spillslot(&mut self, vreg: VReg) -> SpillSlot {
+        if self.vreg_spillslots[vreg.vreg()].is_invalid() {
+            self.vreg_spillslots[vreg.vreg()] = self.stack.allocstack(vreg.class());
+        }
+        self.vreg_spillslots[vreg.vreg()]
+    }
+
+    fn reserve_reg_for_operand(
+        &self,
         op: Operand,
         op_idx: usize,
         preg: PReg,
+        available_pregs: &mut PartedByOperandPos<PRegSet>,
     ) -> Result<(), RegAllocError> {
-        trace!("Reserving register {preg} for fixed operand {op}");
-        let early_avail_pregs = self.available_pregs[OperandPos::Early];
-        let late_avail_pregs = self.available_pregs[OperandPos::Late];
+        trace!("Reserving register {preg} for operand {op}");
+        let early_avail_pregs = available_pregs[OperandPos::Early];
+        let late_avail_pregs = available_pregs[OperandPos::Late];
         match (op.pos(), op.kind()) {
             (OperandPos::Early, OperandKind::Use) => {
                 if op.as_fixed_nonallocatable().is_none() && !early_avail_pregs.contains(preg) {
                     return Err(RegAllocError::TooManyLiveRegs);
                 }
-                self.available_pregs[OperandPos::Early].remove(preg);
+                available_pregs[OperandPos::Early].remove(preg);
                 if self.reused_input_to_reuse_op[op_idx] != usize::MAX {
                     if op.as_fixed_nonallocatable().is_none() && !late_avail_pregs.contains(preg) {
                         return Err(RegAllocError::TooManyLiveRegs);
                     }
-                    self.available_pregs[OperandPos::Late].remove(preg);
+                    available_pregs[OperandPos::Late].remove(preg);
                 }
             }
             (OperandPos::Late, OperandKind::Def) => {
                 if op.as_fixed_nonallocatable().is_none() && !late_avail_pregs.contains(preg) {
                     return Err(RegAllocError::TooManyLiveRegs);
                 }
-                self.available_pregs[OperandPos::Late].remove(preg);
+                available_pregs[OperandPos::Late].remove(preg);
             }
             _ => {
                 if op.as_fixed_nonallocatable().is_none()
@@ -399,8 +453,8 @@ impl<'a, F: Function> Env<'a, F> {
                 {
                     return Err(RegAllocError::TooManyLiveRegs);
                 }
-                self.available_pregs[OperandPos::Early].remove(preg);
-                self.available_pregs[OperandPos::Late].remove(preg);
+                available_pregs[OperandPos::Early].remove(preg);
+                available_pregs[OperandPos::Late].remove(preg);
             }
         }
         Ok(())
@@ -411,7 +465,7 @@ impl<'a, F: Function> Env<'a, F> {
         match op.constraint() {
             OperandConstraint::Any => {
                 if let Some(preg) = alloc.as_reg() {
-                    if !self.available_pregs[op.pos()].contains(preg) {
+                    if !self.available_pregs_for_any[op.pos()].contains(preg) {
                         // If a register isn't in the available pregs list, then
                         // there are two cases: either it's reserved for a
                         // fixed register constraint or a vreg allocated in the instruction
@@ -437,7 +491,7 @@ impl<'a, F: Function> Env<'a, F> {
                     return false;
                 }
                 if let Some(preg) = alloc.as_reg() {
-                    if !self.available_pregs[op.pos()].contains(preg) {
+                    if !self.available_pregs_for_regs[op.pos()].contains(preg) {
                         trace!("The vreg in {preg}: {}", self.vreg_in_preg[preg.index()]);
                         self.vreg_in_preg[preg.index()] == op.vreg()
                     } else {
@@ -505,26 +559,20 @@ impl<'a, F: Function> Env<'a, F> {
         );
     }
 
-    /// Allocates a physical register for the operand `op`.
-    fn alloc_reg_for_operand(
-        &mut self,
-        inst: Inst,
+    fn select_suitable_reg_in_lru(
+        &self,
         op: Operand,
-    ) -> Result<Allocation, RegAllocError> {
-        trace!("available regs: {}", self.available_pregs);
-        trace!("Int LRU: {:?}", self.lrus[RegClass::Int]);
-        trace!("Float LRU: {:?}", self.lrus[RegClass::Float]);
-        trace!("Vector LRU: {:?}", self.lrus[RegClass::Vector]);
-        trace!("");
+        available_pregs: &PartedByOperandPos<PRegSet>,
+    ) -> Result<PReg, RegAllocError> {
         let draw_from = match (op.pos(), op.kind()) {
             (OperandPos::Late, OperandKind::Use)
             | (OperandPos::Early, OperandKind::Def)
             | (OperandPos::Late, OperandKind::Def)
                 if matches!(op.constraint(), OperandConstraint::Reuse(_)) =>
             {
-                self.available_pregs[OperandPos::Late] & self.available_pregs[OperandPos::Early]
+                available_pregs[OperandPos::Late] & available_pregs[OperandPos::Early]
             }
-            _ => self.available_pregs[op.pos()],
+            _ => available_pregs[op.pos()],
         };
         if draw_from.is_empty(op.class()) {
             trace!("No registers available for {op}");
@@ -537,23 +585,39 @@ impl<'a, F: Function> Env<'a, F> {
             );
             return Err(RegAllocError::TooManyLiveRegs);
         };
+        Ok(preg)
+    }
+
+    /// Allocates a physical register for the operand `op`.
+    fn alloc_reg_for_operand(
+        &mut self,
+        inst: Inst,
+        op: Operand,
+        available_pregs: &mut PartedByOperandPos<PRegSet>,
+    ) -> Result<Allocation, RegAllocError> {
+        trace!("available regs: {}", available_pregs);
+        trace!("Int LRU: {:?}", self.lrus[RegClass::Int]);
+        trace!("Float LRU: {:?}", self.lrus[RegClass::Float]);
+        trace!("Vector LRU: {:?}", self.lrus[RegClass::Vector]);
+        trace!("");
+        let preg = self.select_suitable_reg_in_lru(op, available_pregs)?;
         if self.vreg_in_preg[preg.index()] != VReg::invalid() {
             self.evict_vreg_in_preg(inst, preg, InstPosition::After)?;
         }
         trace!("The allocated register for vreg {}: {}", op.vreg(), preg);
         self.lrus[op.class()].poke(preg);
-        self.available_pregs[op.pos()].remove(preg);
+        available_pregs[op.pos()].remove(preg);
         match (op.pos(), op.kind()) {
             (OperandPos::Late, OperandKind::Use) => {
-                self.available_pregs[OperandPos::Early].remove(preg);
+                available_pregs[OperandPos::Early].remove(preg);
             }
             (OperandPos::Early, OperandKind::Def) => {
-                self.available_pregs[OperandPos::Late].remove(preg);
+                available_pregs[OperandPos::Late].remove(preg);
             }
             (OperandPos::Late, OperandKind::Def)
                 if matches!(op.constraint(), OperandConstraint::Reuse(_)) =>
             {
-                self.available_pregs[OperandPos::Early].remove(preg);
+                available_pregs[OperandPos::Early].remove(preg);
             }
             _ => (),
         };
@@ -569,8 +633,31 @@ impl<'a, F: Function> Env<'a, F> {
         op_idx: usize,
     ) -> Result<Allocation, RegAllocError> {
         let new_alloc = match op.constraint() {
-            OperandConstraint::Any => self.alloc_reg_for_operand(inst, op)?,
-            OperandConstraint::Reg => self.alloc_reg_for_operand(inst, op)?,
+            OperandConstraint::Any => {
+                if op.kind() == OperandKind::Def
+                    && self.vreg_allocs[op.vreg().vreg()] == Allocation::none()
+                {
+                    // This def is never used, so it can just be put in its spillslot.
+                    Allocation::stack(self.get_spillslot(op.vreg()))
+                } else {
+                    let mut available_pregs = self.available_pregs_for_any;
+                    let result = self.alloc_reg_for_operand(inst, op, &mut available_pregs);
+                    self.available_pregs_for_any = available_pregs;
+                    match result {
+                        Ok(alloc) => alloc,
+                        Err(RegAllocError::TooManyLiveRegs) => {
+                            Allocation::stack(self.get_spillslot(op.vreg()))
+                        }
+                        Err(err) => return Err(err),
+                    }
+                }
+            }
+            OperandConstraint::Reg => {
+                let mut available_pregs = self.available_pregs_for_regs;
+                let alloc = self.alloc_reg_for_operand(inst, op, &mut available_pregs)?;
+                self.available_pregs_for_regs = available_pregs;
+                alloc
+            }
             OperandConstraint::FixedReg(preg) => {
                 trace!("The fixed preg: {} for operand {}", preg, op);
 
@@ -610,7 +697,10 @@ impl<'a, F: Function> Env<'a, F> {
             return Ok(());
         }
         if !self.allocd_within_constraint(op) {
-            trace!("{op} isn't allocated within constraints.");
+            trace!(
+                "{op} isn't allocated within constraints (the alloc: {}).",
+                self.vreg_allocs[op.vreg().vreg()]
+            );
             let curr_alloc = self.vreg_allocs[op.vreg().vreg()];
             let new_alloc = self.alloc_operand(inst, op, op_idx)?;
             if curr_alloc.is_none() {
@@ -664,13 +754,16 @@ impl<'a, F: Function> Env<'a, F> {
                 if self.allocatable_regs.contains(preg) {
                     self.lrus[preg.class()].poke(preg);
                 }
-                self.available_pregs[op.pos()].remove(preg);
+                self.available_pregs_for_regs[op.pos()].remove(preg);
+                self.available_pregs_for_any[op.pos()].remove(preg);
                 match (op.pos(), op.kind()) {
                     (OperandPos::Late, OperandKind::Use) => {
-                        self.available_pregs[OperandPos::Early].remove(preg);
+                        self.available_pregs_for_regs[OperandPos::Early].remove(preg);
+                        self.available_pregs_for_any[OperandPos::Early].remove(preg);
                     }
                     (OperandPos::Early, OperandKind::Def) => {
-                        self.available_pregs[OperandPos::Late].remove(preg);
+                        self.available_pregs_for_regs[OperandPos::Late].remove(preg);
+                        self.available_pregs_for_any[OperandPos::Late].remove(preg);
                     }
                     _ => (),
                 };
@@ -683,12 +776,20 @@ impl<'a, F: Function> Env<'a, F> {
             );
         }
         trace!(
-            "Late available regs: {}",
-            self.available_pregs[OperandPos::Late]
+            "Late available regs for Reg-only: {}",
+            self.available_pregs_for_regs[OperandPos::Late]
         );
         trace!(
-            "Early available regs: {}",
-            self.available_pregs[OperandPos::Early]
+            "Early available regs for Reg-only: {}",
+            self.available_pregs_for_regs[OperandPos::Early]
+        );
+        trace!(
+            "Late available regs for Any: {}",
+            self.available_pregs_for_any[OperandPos::Late]
+        );
+        trace!(
+            "Early available regs for Any: {}",
+            self.available_pregs_for_any[OperandPos::Early]
         );
         Ok(())
     }
@@ -707,8 +808,10 @@ impl<'a, F: Function> Env<'a, F> {
         // To avoid this scenario, clobbers should be removed from both late
         // and early reg sets.
         let all_but_clobbers = clobbers.invert();
-        self.available_pregs[OperandPos::Late].intersect_from(all_but_clobbers);
-        self.available_pregs[OperandPos::Early].intersect_from(all_but_clobbers);
+        self.available_pregs_for_regs[OperandPos::Late].intersect_from(all_but_clobbers);
+        self.available_pregs_for_regs[OperandPos::Early].intersect_from(all_but_clobbers);
+        // No need to do the same for `available_pregs_for_any` because it is derived from
+        // `available_pregs_for_regs` after this operation.
     }
 
     /// If instruction `inst` is a branch in `block`,
@@ -769,8 +872,8 @@ impl<'a, F: Function> Env<'a, F> {
         let resolved_vec = vec_parallel_moves.resolve();
         let mut scratch_regs = self.edits.scratch_regs.clone();
         let mut num_spillslots = self.stack.num_spillslots;
-        let mut avail_regs =
-            self.available_pregs[OperandPos::Early] & self.available_pregs[OperandPos::Late];
+        let mut avail_regs = self.available_pregs_for_any[OperandPos::Early]
+            & self.available_pregs_for_any[OperandPos::Late];
 
         trace!("Resolving parallel moves");
         for (resolved, class) in [
@@ -842,11 +945,71 @@ impl<'a, F: Function> Env<'a, F> {
             let OperandConstraint::FixedReg(preg) = op.constraint() else {
                 unreachable!();
             };
-            self.reserve_reg_for_fixed_operand(op, op_idx, preg)?;
+            let mut available_pregs = self.available_pregs_for_regs;
+            self.reserve_reg_for_operand(op, op_idx, preg, &mut available_pregs)?;
+            self.available_pregs_for_regs = available_pregs;
+
             if self.allocatable_regs.contains(preg) {
                 self.lrus[preg.class()].poke(preg);
             }
         }
+
+        self.remove_clobbers_from_available_pregs(clobbers);
+
+        // Need to reserve enough registers for operands with Reg-only constraints
+        // This reservation is done here, before any evictions, so that `available_pregs_for_any`
+        // can be used for scratch registers when generating moves.
+        self.available_pregs_for_any = self.available_pregs_for_regs;
+        for (op_idx, op) in operands.any_reg() {
+            let mut available_pregs = self.available_pregs_for_any;
+            // Always allocate for a late use, because it will reserve only registers
+            // that are available in both the early and late phases.
+            // Consider a scenario:
+            // use v0 (reg), use v1 (reg), late use v2 (reg)
+            // If the available registers reserved are:
+            // early: [p0]
+            // late: [p0, p1, p2]
+            // Then this should be enough for all vregs: just allocated p0 to v2,
+            // p1 and p2 to v0 and v1.
+            // But if v0 and v1 are allocated first and p0 is allocated to, say, v0 then
+            // p2 will be left for v2. But it will not be suitable for v2 because it is
+            // not available in the early phase.
+            // To avoid this scenario, only registers available in both phases are reserved.
+            let alloc_for_op = Operand::new(
+                op.vreg(),
+                op.constraint(),
+                OperandKind::Use,
+                OperandPos::Late,
+            );
+            trace!("Making reservation for {op} as {alloc_for_op}");
+            let preg = self.select_suitable_reg_in_lru(alloc_for_op, &available_pregs)?;
+            self.reserve_reg_for_operand(alloc_for_op, op_idx, preg, &mut available_pregs)?;
+            self.available_pregs_for_any = available_pregs;
+            if self.allocatable_regs.contains(preg) {
+                self.lrus[op.class()].poke(preg);
+            }
+        }
+        // Remove the registers available for Any constraints from the
+        // Reg registers
+        self.available_pregs_for_regs =
+            self.available_pregs_for_regs & !self.available_pregs_for_any;
+        trace!(
+            "Late available regs for Reg-only: {}",
+            self.available_pregs_for_regs[OperandPos::Late]
+        );
+        trace!(
+            "Early available regs for Reg-only: {}",
+            self.available_pregs_for_regs[OperandPos::Early]
+        );
+        trace!(
+            "Late available regs for Any: {}",
+            self.available_pregs_for_any[OperandPos::Late]
+        );
+        trace!(
+            "Early available regs for Any: {}",
+            self.available_pregs_for_any[OperandPos::Early]
+        );
+
         for (_, op) in operands.fixed() {
             let OperandConstraint::FixedReg(preg) = op.constraint() else {
                 unreachable!();
@@ -864,7 +1027,6 @@ impl<'a, F: Function> Env<'a, F> {
                 self.vreg_in_preg[preg.index()] = VReg::invalid();
             }
         }
-        self.remove_clobbers_from_available_pregs(clobbers);
         for preg in clobbers {
             if self.vreg_in_preg[preg.index()] != VReg::invalid() {
                 trace!(
@@ -875,6 +1037,26 @@ impl<'a, F: Function> Env<'a, F> {
                 self.vreg_in_preg[preg.index()] = VReg::invalid();
             }
         }
+        for op in operands.0.iter() {
+            if op.constraint() == OperandConstraint::Reg
+                || matches!(op.constraint(), OperandConstraint::FixedReg(_))
+            {
+                continue;
+            }
+            if let Some(preg) = self.vreg_allocs[op.vreg().vreg()].as_reg() {
+                if self.available_pregs_for_regs[OperandPos::Early].contains(preg)
+                    || self.available_pregs_for_regs[OperandPos::Late].contains(preg)
+                {
+                    trace!(
+                        "Evicting {} from Reg-only {preg}",
+                        self.vreg_in_preg[preg.index()]
+                    );
+                    self.evict_vreg_in_preg(inst, preg, InstPosition::After)?;
+                    self.vreg_in_preg[preg.index()] = VReg::invalid();
+                }
+            }
+        }
+
         for (op_idx, op) in operands.def_ops() {
             trace!("Allocating def operands {op}");
             if let OperandConstraint::Reuse(reused_idx) = op.constraint() {
@@ -915,6 +1097,9 @@ impl<'a, F: Function> Env<'a, F> {
                 self.process_operand_allocation(inst, op, op_idx)?;
             }
         }
+        // Put registers unused for Reg-only back into `available_pregs_for_any`
+        self.available_pregs_for_any = self.available_pregs_for_any | self.available_pregs_for_regs;
+
         for (op_idx, op) in operands.use_ops() {
             if op.as_fixed_nonallocatable().is_some() {
                 continue;
@@ -965,12 +1150,8 @@ impl<'a, F: Function> Env<'a, F> {
             block,
             self.func.block_params(block)
         );
-        trace!(
-            "Available pregs: {}",
-            self.available_pregs[OperandPos::Early]
-        );
         self.reset_available_pregs_and_scratch_regs();
-        let avail_regs_for_scratch = self.available_pregs[OperandPos::Early];
+        let avail_regs_for_scratch = self.available_pregs_for_regs[OperandPos::Early];
         let first_inst = self.func.block_insns(block).first();
         // We need to check for the registers that are still live.
         // These registers are either livein or block params
