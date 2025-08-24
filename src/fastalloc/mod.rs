@@ -508,9 +508,7 @@ impl<'a, F: Function> Env<'a, F> {
                 unreachable!()
             }
 
-            OperandConstraint::Stack => {
-                panic!("Stack constraints not supported in fastalloc");
-            }
+            OperandConstraint::Stack => self.edits.is_stack(alloc),
         }
     }
 
@@ -668,9 +666,7 @@ impl<'a, F: Function> Env<'a, F> {
                 unreachable!();
             }
 
-            OperandConstraint::Stack => {
-                panic!("Stack operand constraints not supported in fastalloc");
-            }
+            OperandConstraint::Stack => Allocation::stack(self.get_spillslot(op.vreg())),
         };
         self.allocs[(inst.index(), op_idx)] = new_alloc;
         Ok(new_alloc)
