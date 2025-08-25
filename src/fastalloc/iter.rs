@@ -33,6 +33,10 @@ impl<'a> Operands<'a> {
     pub fn fixed(&self) -> impl Iterator<Item = (usize, Operand)> + 'a {
         self.matches(|op| matches!(op.constraint(), OperandConstraint::FixedReg(_)))
     }
+
+    pub fn any_reg(&self) -> impl Iterator<Item = (usize, Operand)> + 'a {
+        self.matches(|op| matches!(op.constraint(), OperandConstraint::Reg))
+    }
 }
 
 impl<'a> core::ops::Index<usize> for Operands<'a> {

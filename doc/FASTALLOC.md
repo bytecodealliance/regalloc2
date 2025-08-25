@@ -42,16 +42,21 @@ During allocation, it's necessary to determine which VReg is in a PReg
 to generate the right move(s) for eviction.
 `vreg_in_preg` is a vector that stores this information.
 
-## Available PRegs For Use In Instruction (`available_pregs`)
+## Available PRegs For Use In Instruction (`available_pregs_for_regs`, `available_pregs_for_any`)
 
-This is a 2-tuple of `PRegSet`s, a bitset of physical registers, one for
+These are a 2-tuples of `PRegSet`s, a bitset of physical registers, one for
 the instruction's early phase and one for the late phase.
 They are used to determine which registers are available for use in the
 early/late phases of an instruction.
 
-Prior to the beginning of any instruction's allocation, this set is reset
-to include all allocatable physical registers, some of which may already
+Prior to the beginning of any instruction's allocation, `available_pregs_for_regs` 
+is reset to include all allocatable physical registers, some of which may already
 contain a VReg.
+
+The two sets have the same function, except that `available_pregs_for_regs` is
+used to determine which registers are available for operands with a register-only
+constraint while `available_pregs_for_any` is used to determine which registers
+are available for operands with no constraints.
 
 ## VReg Liverange Location Info (`vreg_to_live_inst_range`)
 
@@ -71,11 +76,11 @@ in four phases: selection, assignment, eviction, and edit insertion.
 
 ## Allocation Phase: Selection
 
-In this phase, a PReg is selected from `available_pregs` for the 
-operand based on the operand constraints. Depending on the operand's 
-position the selected PReg is removed from either the early or late 
-phase or both, indicating that the PReg is no longer available for 
-allocation by other operands in that phase.
+In this phase, a PReg is selected from `available_pregs_for_regs` or
+`available_pregs_for_any` for the operand based on the operand constraints. 
+Depending on the operand's position, the selected PReg is removed from either 
+the early or late phase or both, indicating that the PReg is no longer available 
+for allocation by other operands in that phase.
 
 ## Allocation Phase: Assignment
 
@@ -88,8 +93,9 @@ In this phase, the previous VReg in the allocation assigned to
 an operand is evicted, if any.
 
 During eviction, a dedicated spillslot is allocated for the evicted 
-VReg and an edit is inserted after the instruction to move from the
-slot to the allocation it's expected to be in after the instruction.
+VReg, if it doesn't have a spillslot yet, and an edit is inserted 
+after the instruction to move from the slot to the allocation 
+it's expected to be in after the instruction.
 
 ## Allocation Phase: Edit Insertion
 
@@ -125,11 +131,11 @@ virtual registers will be in their dedicated spillslots.
 # Instruction Allocation
 
 To allocate a single instruction, the first step is to reset the
-`available_pregs` sets to all allocatable PRegs.
+`available_pregs_for_regs` sets to all allocatable PRegs.
 
 Next, the selection phase is carried out for all operands with
 fixed register constraints: the registers they are constrained to use are
-marked as unavailable in the `available_pregs` set, depending on the
+marked as unavailable in the `available_pregs_for_regs` set, depending on the
 phase that they are valid in. If the operand is an early use or late
 def operand, then the register will be marked as unavailable in the
 early set or late set, respectively. Otherwise, the PReg is marked
@@ -137,20 +143,29 @@ as unavailable in both the early and late sets, because a PReg
 assigned to an early def or late use operand cannot be reused by another
 operand in the same instruction.
 
-After selection for fixed register operands, the eviction phase is 
+Next, all clobbers are removed from the early and late `available_pregs_for_regs` 
+sets to avoid allocating a clobber to a def.
+
+Next, registers are reserved for register-only operands and marked as
+unavailable in `available_pregs_for_regs`.
+Then `available_pregs_for_any` for the instruction is derived from
+`available_pregs_for_regs` by marking all other registers not reserved as
+available. This is to avoid a situation where operands with no
+constraints take up all available registers, leaving none for operands
+with register-only constraints.
+
+After selection for register-only operands, the eviction phase is 
 carried out for fixed register operands. Any VReg in their selected
 registers, indicated by `vreg_in_preg`, is evicted: a dedicated 
 spillslot is allocated for the VReg (if it doesn't have one already),
 an edit is inserted to move from the slot to the PReg, which is where
 the VReg expected to be after the instruction, and its current
 allocation in `vreg_allocs` is set to the spillslot.
-
-Next, all clobbers are removed from the early and late `available_pregs` 
-sets to avoid allocating a clobber to a def.
+The same is then done for clobbers, then register-only operands.
 
 Next, the selection, assignment, eviction, and edit insertion phases are 
 carried out for all def operands. When each def operand's allocation is
-complete, the def operands is immediately freed, marking the end of the
+complete, the def operand is immediately freed, marking the end of the
 VReg's liverange. It is removed from the  `live_vregs` set, its allocation
 in `vreg_allocs` is set to none, and if it was in a PReg, that PReg's
 entry in `vreg_in_preg` is set to none. The selection and eviction phases
@@ -187,7 +202,9 @@ allocation and no edit insertion needs to be done either.
 On the other hand, if the VReg's current allocation is not within
 constraints, the selection and eviction phases are carried out for
 non-fixed operands. First, a set of PRegs that can be drawn from is
-created from `available_pregs`. For early uses and late defs,
+created from `available_pregs_for_regs` or `available_pregs_for_any`,
+depending on whether the operand has a register-only constraint
+or no constraint. For early uses and late defs,
 this draw-from set is the early set or late set, respectively.
 For late uses and early defs, the draw-from set is an intersection
 of the available early and late sets (because a PReg used for a late
@@ -196,8 +213,8 @@ likewise, a PReg used for an early def can't be reassigned to another
 operand in the late phase).
 The LRU for the VReg's regclass is then traversed from the end to find
 the least recently used PReg in the draw-from set. Once a PReg is found,
-it is marked as the most recently used in the LRU, unavailable in the
-`available_pregs` sets, and whatever VReg was in it before is evicted.
+it is marked as the most recently used in the LRU, unavailable in both
+available pregs sets, and whatever VReg was in it before is evicted.
 
 The assignment phase is carried out next. The final allocation for the
 operand is set to the selected register.
