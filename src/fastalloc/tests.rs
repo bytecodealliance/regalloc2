@@ -1,8 +1,9 @@
+use crate::checker::{Checker, CheckerError, CheckerValue};
 use crate::OperandConstraint::{self, *};
 use crate::OperandKind::{self, *};
 use crate::{
-    run, Algorithm, Allocation, Block, Function, Inst, InstRange, MachineEnv, Operand, OperandPos,
-    PReg, PRegSet, ProgPoint, RegClass, RegallocOptions, VReg,
+    run, Algorithm, Allocation, Block, Function, FxHashSet, Inst, InstRange, MachineEnv, Operand,
+    OperandPos, PReg, PRegSet, ProgPoint, RegClass, RegallocOptions, VReg,
 };
 use alloc::vec;
 use alloc::vec::Vec;
@@ -102,8 +103,116 @@ fn test_debug_locations2() {
     );
     assert_eq!(result.debug_locations[1].0, 23);
     assert_eq!(result.debug_locations[1].1, ProgPoint::after(i(2)));
-    assert_eq!(result.debug_locations[1].2, ProgPoint::after(i(4)));
+    assert_eq!(result.debug_locations[1].2, ProgPoint::before(i(3)));
     assert!(matches!(result.debug_locations[1].3.as_stack(), Some(_)));
+}
+
+#[test]
+fn test_debug_locations_check1() {
+    let mach_env = mach_env(10);
+    let mut options = RegallocOptions::default();
+    options.validate_ssa = true;
+    options.algorithm = Algorithm::Fastalloc;
+    let mut f = RealFunction::new(vec![BlockBuildInfo {
+        insts: vec![
+            /* 0. */ vec![op(Def, 0, FixedReg(p(0)))],
+            /* 1. */
+            vec![
+                op(Def, 1, FixedReg(p(0))),
+                op(Use, 0, FixedReg(p(0))),
+                op(Use, 0, Reg),
+            ],
+            /* 2. */
+            vec![
+                op(Def, 2, FixedReg(p(8))),
+                op(Use, 0, FixedReg(p(2))),
+                op(Use, 1, FixedReg(p(0))),
+            ],
+            /* 3. */ vec![op(Def, 3, FixedReg(p(9))), op(Use, 0, FixedReg(p(9)))],
+        ],
+    }]);
+    f.debug_value_labels = vec![
+        (v(0), i(0), i(4), 32),
+        (v(2), i(2), i(4), 70),
+        (v(2), i(2), i(4), 71),
+        (v(3), i(3), i(4), 34),
+    ];
+    let mut result = run(&f, &mach_env, &options).unwrap();
+    /*
+    The correct debug_locations output
+    vec![
+        (
+            32,
+            ProgPoint::after(i(0)),
+            ProgPoint::after(i(3)),
+            alloc(p(9))
+        ),
+        (
+            34,
+            ProgPoint::after(i(3)),
+            ProgPoint::before(i(4)),
+            alloc(p(9))
+        ),
+        (
+            70,
+            ProgPoint::after(i(2)),
+            ProgPoint::before(i(3)),
+            alloc(p(8))
+        ),
+        (
+            71,
+            ProgPoint::after(i(2)),
+            ProgPoint::before(i(3)),
+            alloc(p(8))
+        ),
+    ]
+    */
+    result.debug_locations.pop();
+    /*
+    Replacing the last entry with this should result in a checker error
+    */
+    result.debug_locations.push((
+        71,
+        ProgPoint::after(i(2)),
+        ProgPoint::before(i(4)),
+        alloc(p(9)),
+    ));
+    let mut checker = Checker::new(&f, &mach_env);
+    checker.prepare(&result);
+    checker.init_debug_locations(&result);
+    let checker_result = checker.run();
+    assert!(checker_result.is_err());
+    let mut found_0 = FxHashSet::default();
+    let mut found_3 = FxHashSet::default();
+    found_0.insert(v(0));
+    found_3.insert(v(3));
+    assert_eq!(
+        checker_result.unwrap_err().errors,
+        vec![
+            // Before inst 3, we're expecting v2 to be in p9,
+            // because the entry in debug_locations labeled 71
+            // indicates that it should.
+            // Instead, we found v0
+            CheckerError::ExpectedValueForDebug {
+                point: ProgPoint::before(i(3)),
+                alloc: alloc(p(9)),
+                vreg: v(2),
+                found: CheckerValue::VRegs(found_0),
+                label: 71,
+            },
+            // After inst 3, we're expecting v2 to be in p9,
+            // because the entry in debug_locations labeled 71
+            // indicates that it should.
+            // Instead, we found v3
+            CheckerError::ExpectedValueForDebug {
+                point: ProgPoint::after(i(3)),
+                alloc: alloc(p(9)),
+                vreg: v(2),
+                found: CheckerValue::VRegs(found_3),
+                label: 71,
+            },
+        ]
+    );
 }
 
 impl RealFunction {
