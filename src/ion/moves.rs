@@ -119,8 +119,8 @@ impl<'a, F: Function> Env<'a, F> {
                 self.prev_ins_idx
             }
 
-            /// Record this index as the next index to use when the previous liverange buffer
-            /// anvances.
+            /// Record this index as the next index to use when the previous
+            /// liverange buffer advances.
             #[inline(always)]
             fn update_blockparam_ins_idx(&mut self, idx: usize) {
                 self.buffered_ins_idx = idx;
