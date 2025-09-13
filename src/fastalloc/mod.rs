@@ -827,6 +827,17 @@ impl<'a, F: Function> Env<'a, F> {
                 .iter()
                 .enumerate()
             {
+                if self
+                    .func
+                    .inst_operands(inst)
+                    .iter()
+                    .find(|op| op.vreg() == *vreg && op.kind() == OperandKind::Def)
+                    .is_some()
+                {
+                    // vreg is defined in this instruction, so it's dead already.
+                    // Can't move it.
+                    continue;
+                }
                 let succ_params = self.func.block_params(*succ);
                 let succ_param_vreg = succ_params[pos];
                 if self.vreg_spillslots[succ_param_vreg.vreg()].is_invalid() {
@@ -1061,6 +1072,41 @@ impl<'a, F: Function> Env<'a, F> {
                     Operand::new(op.vreg(), reused_op.constraint(), op.kind(), op.pos());
                 trace!("allocating reuse op {op} as {new_reuse_op}");
                 self.process_operand_allocation(inst, new_reuse_op, op_idx)?;
+            } else if self.func.is_branch(inst) {
+                // If the defined vreg is used as a branch arg and it has an
+                // any or stack constraint, define it into the block param spillslot
+                let mut param_spillslot = None;
+                'outer: for (succ_idx, succ) in
+                    self.func.block_succs(block).iter().cloned().enumerate()
+                {
+                    for (param_idx, branch_arg_vreg) in self
+                        .func
+                        .branch_blockparams(block, inst, succ_idx)
+                        .iter()
+                        .cloned()
+                        .enumerate()
+                    {
+                        if op.vreg() == branch_arg_vreg {
+                            if matches!(
+                                op.constraint(),
+                                OperandConstraint::Any | OperandConstraint::Stack
+                            ) {
+                                let block_param = self.func.block_params(succ)[param_idx];
+                                param_spillslot = Some(self.get_spillslot(block_param));
+                            }
+                            break 'outer;
+                        }
+                    }
+                }
+                if let Some(param_spillslot) = param_spillslot {
+                    let spillslot = self.vreg_spillslots[op.vreg().vreg()];
+                    self.vreg_spillslots[op.vreg().vreg()] = param_spillslot;
+                    let op = Operand::new(op.vreg(), OperandConstraint::Stack, op.kind(), op.pos());
+                    self.process_operand_allocation(inst, op, op_idx)?;
+                    self.vreg_spillslots[op.vreg().vreg()] = spillslot;
+                } else {
+                    self.process_operand_allocation(inst, op, op_idx)?;
+                }
             } else {
                 self.process_operand_allocation(inst, op, op_idx)?;
             }
@@ -1159,13 +1205,10 @@ impl<'a, F: Function> Env<'a, F> {
                 // be none at this point.
                 continue;
             }
-            if self.vreg_spillslots[vreg.vreg()].is_invalid() {
-                self.vreg_spillslots[vreg.vreg()] = self.stack.allocstack(vreg.class());
-            }
             // The allocation where the vreg is expected to be before
             // the first instruction.
             let prev_alloc = self.vreg_allocs[vreg.vreg()];
-            let slot = Allocation::stack(self.vreg_spillslots[vreg.vreg()]);
+            let slot = Allocation::stack(self.get_spillslot(vreg));
             self.vreg_to_live_inst_range[vreg.vreg()].2 = slot;
             self.vreg_to_live_inst_range[vreg.vreg()].0 = ProgPoint::before(first_inst);
             trace!("{} is a block param. Freeing it", vreg);
@@ -1259,6 +1302,67 @@ impl<'a, F: Function> Env<'a, F> {
                 vreg.class(),
                 InstPosition::Before,
             );
+        }
+        // Reset this, in case a fixed reg used by a branch arg defined on the branch
+        // is used as a scratch reg in the previous loop.
+        self.edits.scratch_regs = self.edits.dedicated_scratch_regs.clone();
+
+        let get_succ_idx_of_pred = |pred, func: &F| {
+            for (idx, pred_succ) in func.block_succs(pred).iter().enumerate() {
+                if *pred_succ == block {
+                    return idx;
+                }
+            }
+            unreachable!(
+                "{:?} was not found in the successor list of its predecessor {:?}",
+                block, pred
+            );
+        };
+        trace!(
+            "Checking for predecessor branch args defined in the branch with fixed-reg constraint"
+        );
+        for (param_idx, block_param) in self.func.block_params(block).iter().cloned().enumerate() {
+            // Block param is never used. Don't bother.
+            if self.vreg_spillslots[block_param.vreg()].is_invalid() {
+                continue;
+            }
+            for pred in self.func.block_preds(block).iter().cloned() {
+                let pred_last_inst = self.func.block_insns(pred).last();
+                let curr_block_succ_idx = get_succ_idx_of_pred(pred, self.func);
+                let branch_arg_for_param =
+                    self.func
+                        .branch_blockparams(pred, pred_last_inst, curr_block_succ_idx)[param_idx];
+                // If the branch arg is defined in the branch instruction, the move will have to be done
+                // here, instead of at the end of the predecessor block.
+                let move_from = self.func.inst_operands(pred_last_inst)
+                    .iter()
+                    .find_map(|op| if op.kind() == OperandKind::Def && op.vreg() == branch_arg_for_param {
+                        match op.constraint() {
+                            OperandConstraint::FixedReg(reg) => {
+                                trace!("Found one for branch arg {branch_arg_for_param} and param {block_param} in reg {reg}");
+                                Some(Allocation::reg(reg))
+                            },
+                            // In these cases, the vreg is defined directly into the block param
+                            // spillslot.
+                            OperandConstraint::Stack | OperandConstraint::Any => None,
+                            constraint => panic!("fastalloc does not support using any-reg or reuse constraints ({}) defined on a branch instruction as a branch arg on the same instruction", constraint),
+                        }
+                    } else {
+                        None
+                    });
+                if let Some(from) = move_from {
+                    let to = Allocation::stack(self.vreg_spillslots[block_param.vreg()]);
+                    trace!("Inserting edit to move from {from} to {to}");
+                    self.add_move(
+                        first_inst,
+                        from,
+                        to,
+                        block_param.class(),
+                        InstPosition::Before,
+                    )?;
+                }
+                break;
+            }
         }
         if trace_enabled!() {
             self.log_post_reload_at_begin_state(block);

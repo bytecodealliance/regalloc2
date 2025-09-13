@@ -128,6 +128,10 @@ arguments will be in their dedicated spillslots.
 4. At the beginning of a block, all branch parameters and livein 
 virtual registers will be in their dedicated spillslots.
 
+There is an exception to invariant 3: if a branch instruction defines
+the VReg used as a branch arg, then there may be no opportunity for
+the VReg to be placed in its spillslot.
+
 # Instruction Allocation
 
 To allocate a single instruction, the first step is to reset the
@@ -283,6 +287,15 @@ It's after these edits have been inserted that the parallel move
 resolver is then used to generate and insert edits to move from
 those spillslots to the spillslots of the block parameters.
 
+There is an exception to the invariant - it's possible that the
+branch argument is defined in the same branch instruction.
+If the branch argument VReg has a fixed-reg constraint, the move
+will have to be done in the successor.
+If it has an stack or anywhere constraint, it is allocated directly
+into the block param's spillslot, so there is no need to insert moves.
+The other constraints, reuse and any-reg, are not supported in this
+case.
+
 # Across Blocks
 
 When a block completes processing, some VRegs will still be live.
@@ -296,6 +309,20 @@ parameter and livein spillslots to the allocation they are expected
 to be in from the first instruction.
 All block parameters are freed, just like defs, and liveins' current
 allocations in `vreg_allocs` are set to their spillslots.
+
+Any block parameter that receives a branch argument from a predecessor
+where the argument VReg was defined in the branch instruction will
+also need moves inserted at the block beginning because the predecessor
+couldn't have inserted the required moves.
+All predecessors branch arguments to the block are checked to see if any
+are defined in the same branch instruction. For all branch arguments that
+are defined in the branch instruction and have fixed-reg constraints, a 
+move will be inserted from the fixed-reg to the block param's spillslot
+at the beginning of the block. In the case of stack and anywhere constraints,
+nothing is done, because in that case, the VRegs used as the branch arguments
+will be defined directly into the block param's spillslot. Reuse and any-reg
+constraints are not supported and aren't handled.
+
 
 # Edits Order
 
