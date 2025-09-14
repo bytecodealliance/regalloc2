@@ -272,6 +272,8 @@ pub struct PartedByRegClass<T> {
     pub items: [T; 3],
 }
 
+impl<T: Copy> Copy for PartedByRegClass<T> {}
+
 impl<T> Index<RegClass> for PartedByRegClass<T> {
     type Output = T;
 
@@ -283,6 +285,12 @@ impl<T> Index<RegClass> for PartedByRegClass<T> {
 impl<T> IndexMut<RegClass> for PartedByRegClass<T> {
     fn index_mut(&mut self, index: RegClass) -> &mut Self::Output {
         &mut self.items[index as usize]
+    }
+}
+
+impl<T: PartialEq> PartialEq for PartedByRegClass<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.items.eq(&other.items)
     }
 }
 
