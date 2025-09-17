@@ -643,7 +643,7 @@ impl Operand {
                 0b1000000 | preg.hw_enc() as u32
             }
             OperandConstraint::Reuse(which) => {
-                debug_assert!(which <= 31);
+                debug_assert!(which <= 0b11111);
                 0b0100000 | which as u32
             }
         };
@@ -901,7 +901,7 @@ impl Operand {
     /// its allocation must fulfill.
     #[inline(always)]
     pub fn constraint(self) -> OperandConstraint {
-        let constraint_field = ((self.bits >> 25) as usize) & 127;
+        let constraint_field = ((self.bits >> 25) as usize) & 0b1111111;
         if constraint_field & 0b1000000 != 0 {
             OperandConstraint::FixedReg(PReg::new(constraint_field & 0b0111111, self.class()))
         } else if constraint_field & 0b0100000 != 0 {
