@@ -892,14 +892,8 @@ impl<'a, F: Function> Env<'a, F> {
                 }
 
                 let resolved = parallel_moves.resolve();
-                let mut scratch_iter = RegTraversalIter::new(
-                    self.env,
-                    regclass,
-                    PReg::invalid(),
-                    PReg::invalid(),
-                    0,
-                    None,
-                );
+                let mut scratch_iter =
+                    RegTraversalIter::new(self.env, regclass, None, PReg::invalid(), 0);
                 let mut dedicated_scratch = self.env.scratch_by_class[regclass as usize];
                 let key = LiveRangeKey::from_range(&CodeRange {
                     from: pos_prio.pos,

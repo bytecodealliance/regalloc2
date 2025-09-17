@@ -1078,14 +1078,7 @@ impl<'a, F: Function> Env<'a, F> {
                 + bundle.index();
 
             self.ctx.output.stats.process_bundle_reg_probe_start_any += 1;
-            for preg in RegTraversalIter::new(
-                self.env,
-                class,
-                hint_reg,
-                PReg::invalid(),
-                scan_offset,
-                fixed_preg,
-            ) {
+            for preg in RegTraversalIter::new(self.env, class, fixed_preg, hint_reg, scan_offset) {
                 self.ctx.output.stats.process_bundle_reg_probes_any += 1;
                 let preg_idx = PRegIndex::new(preg.index());
                 trace!("trying preg {:?}", preg_idx);
