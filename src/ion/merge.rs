@@ -12,17 +12,32 @@
 
 //! Bundle merging.
 
-use super::{Env, LiveBundleIndex, SpillSet, SpillSlotIndex, VRegIndex};
-use crate::{
-    ion::{
-        data_structures::{BlockparamOut, CodeRange},
-        LiveRangeList,
-    },
-    Function, Inst, OperandConstraint, OperandKind, PReg, ProgPoint,
+use crate::ion::data_structures::{
+    BlockparamOut, CodeRange, Env, LiveBundleIndex, LiveRangeList, SpillSet, SpillSlotIndex,
+    VRegIndex,
 };
+use crate::{Function, Inst, OperandConstraint, OperandKind, PReg, ProgPoint};
 use alloc::format;
 
 impl<'a, F: Function> Env<'a, F> {
+    fn merge_bundle_properties(&mut self, from: LiveBundleIndex, to: LiveBundleIndex) {
+        if self.bundles[from].cached_fixed() {
+            self.bundles[to].set_cached_fixed();
+        }
+        if self.bundles[from].cached_fixed_def() {
+            self.bundles[to].set_cached_fixed_def();
+        }
+        if self.bundles[from].cached_stack() {
+            self.bundles[to].set_cached_stack();
+        }
+        if let Some(theirs) = self.bundles[from].limit {
+            match self.bundles[to].limit {
+                Some(ours) => self.bundles[to].limit = Some(ours.min(theirs)),
+                None => self.bundles[to].limit = Some(theirs),
+            }
+        }
+    }
+
     pub fn merge_bundles(&mut self, from: LiveBundleIndex, to: LiveBundleIndex) -> bool {
         if from == to {
             // Merge bundle into self -- trivial merge.
@@ -114,8 +129,10 @@ impl<'a, F: Function> Env<'a, F> {
         // Check for a requirements conflict.
         if self.bundles[from].cached_stack()
             || self.bundles[from].cached_fixed()
+            || self.bundles[from].limit.is_some()
             || self.bundles[to].cached_stack()
             || self.bundles[to].cached_fixed()
+            || self.bundles[to].limit.is_some()
         {
             if self.merge_bundle_requirements(from, to).is_err() {
                 trace!(" -> conflicting requirements; aborting merge");
@@ -157,17 +174,7 @@ impl<'a, F: Function> Env<'a, F> {
                 }
             }
             self.bundles[to].ranges = list;
-
-            if self.bundles[from].cached_stack() {
-                self.bundles[to].set_cached_stack();
-            }
-            if self.bundles[from].cached_fixed() {
-                self.bundles[to].set_cached_fixed();
-            }
-            if self.bundles[from].cached_fixed_def() {
-                self.bundles[to].set_cached_fixed_def();
-            }
-
+            self.merge_bundle_properties(from, to);
             return true;
         }
 
@@ -243,15 +250,7 @@ impl<'a, F: Function> Env<'a, F> {
             *to_range = to_range.join(from_range);
         }
 
-        if self.bundles[from].cached_stack() {
-            self.bundles[to].set_cached_stack();
-        }
-        if self.bundles[from].cached_fixed() {
-            self.bundles[to].set_cached_fixed();
-        }
-        if self.bundles[from].cached_fixed_def() {
-            self.bundles[to].set_cached_fixed_def();
-        }
+        self.merge_bundle_properties(from, to);
 
         true
     }
@@ -283,16 +282,25 @@ impl<'a, F: Function> Env<'a, F> {
             let mut fixed = false;
             let mut fixed_def = false;
             let mut stack = false;
+            let mut limit: Option<usize> = None;
             for entry in &self.bundles[bundle].ranges {
                 for u in &self.ranges[entry.index].uses {
-                    if let OperandConstraint::FixedReg(_) = u.operand.constraint() {
-                        fixed = true;
-                        if u.operand.kind() == OperandKind::Def {
-                            fixed_def = true;
+                    use OperandConstraint::*;
+                    match u.operand.constraint() {
+                        FixedReg(_) => {
+                            fixed = true;
+                            if u.operand.kind() == OperandKind::Def {
+                                fixed_def = true;
+                            }
                         }
-                    }
-                    if let OperandConstraint::Stack = u.operand.constraint() {
-                        stack = true;
+                        Stack => stack = true,
+                        Limit(current) => match limit {
+                            Some(prev) => limit = Some(prev.min(current)),
+                            None => limit = Some(current),
+                        },
+                        Any | Reg | Reuse(_) => {
+                            continue;
+                        }
                     }
                     if fixed && stack && fixed_def {
                         break;
@@ -308,6 +316,7 @@ impl<'a, F: Function> Env<'a, F> {
             if stack {
                 self.bundles[bundle].set_cached_stack();
             }
+            self.bundles[bundle].limit = limit;
 
             // Create a spillslot for this bundle.
             let reg = self.vreg(vreg);
