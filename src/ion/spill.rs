@@ -13,8 +13,8 @@
 //! Spillslot allocation.
 
 use super::{
-    AllocRegResult, Env, LiveRangeKey, PReg, PRegIndex, RegTraversalIter, SpillSetIndex,
-    SpillSlotData, SpillSlotIndex,
+    AllocRegResult, Env, LiveRangeKey, PRegIndex, RegTraversalIter, SpillSetIndex, SpillSlotData,
+    SpillSlotIndex,
 };
 use crate::{Allocation, Function, SpillSlot};
 
@@ -40,9 +40,7 @@ impl<'a, F: Function> Env<'a, F> {
 
             let mut success = false;
             self.ctx.output.stats.spill_bundle_reg_probes += 1;
-            for preg in
-                RegTraversalIter::new(self.env, class, hint, PReg::invalid(), bundle.index(), None)
-            {
+            for preg in RegTraversalIter::new(self.env, class, None, hint, bundle.index()) {
                 trace!("trying bundle {:?} to preg {:?}", bundle, preg);
                 let preg_idx = PRegIndex::new(preg.index());
                 if let AllocRegResult::Allocated(_) =
