@@ -468,10 +468,10 @@ pub struct Ctx {
     // single VReg at a single program point (this can happen for,
     // e.g., call args that use the same value multiple times), we
     // remove all but one of the fixed-register constraints, make a
-    // note here, and add a clobber with that PReg instread to keep
+    // note here, and add a clobber with that PReg instead to keep
     // the register available. When we produce the final edit-list, we
     // will insert a copy from wherever the VReg's primary allocation
-    // was to the approprate PReg.
+    // was to the appropriate PReg.
     pub(crate) multi_fixed_reg_fixups: Vec<MultiFixedRegFixup>,
 
     pub(crate) allocated_bundle_count: usize,
