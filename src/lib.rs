@@ -547,6 +547,13 @@ pub enum OperandConstraint {
     FixedReg(PReg),
     /// On defs only: reuse a use's register.
     Reuse(usize),
+    /// Operand must be in a specific range of registers.
+    ///
+    /// The contained `usize` indicates the (exclusive) upper limit of a
+    /// register range, `n`. An operand with this constraint may allocate a
+    /// register between `0 ..= n-1`. Due to encoding constraints, `n` must be a
+    /// power of two and below 2^16.
+    Limit(usize),
 }
 
 impl core::fmt::Display for OperandConstraint {
@@ -555,8 +562,9 @@ impl core::fmt::Display for OperandConstraint {
             Self::Any => write!(f, "any"),
             Self::Reg => write!(f, "reg"),
             Self::Stack => write!(f, "stack"),
-            Self::FixedReg(preg) => write!(f, "fixed({})", preg),
-            Self::Reuse(idx) => write!(f, "reuse({})", idx),
+            Self::FixedReg(preg) => write!(f, "fixed({preg})"),
+            Self::Reuse(idx) => write!(f, "reuse({idx})"),
+            Self::Limit(max) => write!(f, "limit(0..={})", max - 1),
         }
     }
 }
@@ -631,6 +639,7 @@ pub struct Operand {
     /// The constraints are encoded as follows:
     /// - 1xxxxxx => FixedReg(preg)
     /// - 01xxxxx => Reuse(index)
+    /// - 001xxxx => Limit(max)
     /// - 0000000 => Any
     /// - 0000001 => Reg
     /// - 0000010 => Stack
@@ -658,6 +667,12 @@ impl Operand {
             OperandConstraint::Reuse(which) => {
                 debug_assert!(which <= 0b11111);
                 0b0100000 | which as u32
+            }
+            OperandConstraint::Limit(max) => {
+                assert!(max.is_power_of_two());
+                let log2 = max.ilog2();
+                debug_assert!(log2 <= 0b1111);
+                0b0010000 | log2 as u32
             }
         };
         let class_field = vreg.class() as u8 as u32;
@@ -919,6 +934,8 @@ impl Operand {
             OperandConstraint::FixedReg(PReg::new(constraint_field & 0b0111111, self.class()))
         } else if constraint_field & 0b0100000 != 0 {
             OperandConstraint::Reuse(constraint_field & 0b0011111)
+        } else if constraint_field & 0b0010000 != 0 {
+            OperandConstraint::Limit(1 << (constraint_field & 0b0001111))
         } else {
             match constraint_field {
                 0 => OperandConstraint::Any,
