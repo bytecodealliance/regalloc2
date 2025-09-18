@@ -37,7 +37,7 @@ impl<'a> Operands<'a> {
     pub fn any_reg(&self) -> impl Iterator<Item = (usize, Operand)> + 'a {
         self.matches(|op| matches!(op.constraint(), OperandConstraint::Reg))
     }
-    
+
     pub fn late(&self) -> impl Iterator<Item = (usize, Operand)> + 'a {
         self.matches(|op| op.pos() == OperandPos::Late)
     }

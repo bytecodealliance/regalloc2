@@ -1023,7 +1023,14 @@ impl<'a, F: Function> Env<'a, F> {
         Ok(())
     }
 
-    fn alloc_def_op(&mut self, op_idx: usize, op: Operand, operands: &[Operand], block: Block, inst: Inst) -> Result<(), RegAllocError> {
+    fn alloc_def_op(
+        &mut self,
+        op_idx: usize,
+        op: Operand,
+        operands: &[Operand],
+        block: Block,
+        inst: Inst,
+    ) -> Result<(), RegAllocError> {
         trace!("Allocating def operand {op}");
         if let OperandConstraint::Reuse(reused_idx) = op.constraint() {
             let reused_op = operands[reused_idx];
@@ -1040,8 +1047,7 @@ impl<'a, F: Function> Env<'a, F> {
             // If the defined vreg is used as a branch arg and it has an
             // any or stack constraint, define it into the block param spillslot
             let mut param_spillslot = None;
-            'outer: for (succ_idx, succ) in
-                self.func.block_succs(block).iter().cloned().enumerate()
+            'outer: for (succ_idx, succ) in self.func.block_succs(block).iter().cloned().enumerate()
             {
                 for (param_idx, branch_arg_vreg) in self
                     .func
@@ -1087,7 +1093,7 @@ impl<'a, F: Function> Env<'a, F> {
         self.freealloc(op.vreg());
         Ok(())
     }
-    
+
     fn alloc_use(&mut self, op_idx: usize, op: Operand, inst: Inst) -> Result<(), RegAllocError> {
         trace!("Allocating use op {op}");
         if self.reused_input_to_reuse_op[op_idx] != usize::MAX {
@@ -1106,7 +1112,7 @@ impl<'a, F: Function> Env<'a, F> {
         }
         Ok(())
     }
-    
+
     fn alloc_inst(&mut self, block: Block, inst: Inst) -> Result<(), RegAllocError> {
         trace!("Allocating instruction {:?}", inst);
         self.reset_available_pregs_and_scratch_regs();
@@ -1196,8 +1202,12 @@ impl<'a, F: Function> Env<'a, F> {
                     trace!("Decrementing clobber avail preg");
                     self.num_available_pregs[ExclusiveOperandPos::LateOnly][preg.class()] -= 1;
                     self.num_available_pregs[ExclusiveOperandPos::Both][preg.class()] -= 1;
-                    debug_assert!(self.num_available_pregs[ExclusiveOperandPos::LateOnly][preg.class()] >= 0);
-                    debug_assert!(self.num_available_pregs[ExclusiveOperandPos::Both][preg.class()] >= 0);
+                    debug_assert!(
+                        self.num_available_pregs[ExclusiveOperandPos::LateOnly][preg.class()] >= 0
+                    );
+                    debug_assert!(
+                        self.num_available_pregs[ExclusiveOperandPos::Both][preg.class()] >= 0
+                    );
                 } else {
                     // Some fixed-reg operands may be clobbers and so the decrement
                     // of the num avail regs has already been done.
@@ -1222,8 +1232,14 @@ impl<'a, F: Function> Env<'a, F> {
             "Number of available pregs for int, float, vector any-reg and any ops: {:?}",
             self.num_available_pregs
         );
-        trace!("registers available for early reg-only & any operands: {}", self.available_pregs[OperandPos::Early]);
-        trace!("registers available for late reg-only & any operands: {}", self.available_pregs[OperandPos::Late]);
+        trace!(
+            "registers available for early reg-only & any operands: {}",
+            self.available_pregs[OperandPos::Early]
+        );
+        trace!(
+            "registers available for late reg-only & any operands: {}",
+            self.available_pregs[OperandPos::Late]
+        );
 
         for (op_idx, op) in operands.late() {
             if op.kind() == OperandKind::Def {
