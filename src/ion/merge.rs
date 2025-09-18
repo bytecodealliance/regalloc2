@@ -392,6 +392,28 @@ impl<'a, F: Function> Env<'a, F> {
         total
     }
 
+    pub fn compute_bundle_limit(&self, bundle: LiveBundleIndex) -> Option<usize> {
+        let mut limit: Option<usize> = None;
+        for entry in &self.bundles[bundle].ranges {
+            for u in &self.ranges[entry.index].uses {
+                use OperandConstraint::*;
+                match u.operand.constraint() {
+                    Limit(current) => match limit {
+                        Some(prev) => limit = Some(prev.min(current)),
+                        None => limit = Some(current),
+                    },
+                    FixedReg(_) | Stack => {
+                        break;
+                    }
+                    Any | Reg | Reuse(_) => {
+                        continue;
+                    }
+                }
+            }
+        }
+        limit
+    }
+
     pub fn queue_bundles(&mut self) {
         for bundle in 0..self.bundles.len() {
             trace!("enqueueing bundle{}", bundle);

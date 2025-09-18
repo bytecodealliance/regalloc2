@@ -274,6 +274,7 @@ impl<'a, F: Function> Env<'a, F> {
         let first_range_data = &self.ctx.ranges[first_range];
 
         self.ctx.bundles[bundle].prio = self.compute_bundle_prio(bundle);
+        self.ctx.bundles[bundle].limit = self.compute_bundle_limit(bundle);
 
         if first_range_data.vreg.is_invalid() {
             trace!("  -> no vreg; minimal and fixed");
