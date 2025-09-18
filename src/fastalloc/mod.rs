@@ -583,8 +583,8 @@ impl<'a, F: Function> Env<'a, F> {
                         self.vreg_in_preg[preg.index()] == op.vreg() &&
                             // If it's a late operand, it shouldn't be allocated to a
                             // clobber. For example:
-                            // use v0 (fixed: p0), late use v1
-                            // If p0 is a clobber, then v1 shouldn't be allocated to it.
+                            // use v0 (fixed: p0), late use v0
+                            // If p0 is a clobber, then v0 shouldn't be allocated to it.
                             (op.pos() != OperandPos::Late || !self.func.inst_clobbers(inst).contains(preg))
                     } else {
                         true
