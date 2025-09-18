@@ -115,6 +115,7 @@ impl PReg {
     pub const MAX_BITS: usize = 6;
     pub const MAX: usize = (1 << Self::MAX_BITS) - 1;
     pub const NUM_INDEX: usize = 1 << (Self::MAX_BITS + 2); // including RegClass bits
+    pub const INVALID: u8 = ((RegClass::Int as u8) << Self::MAX_BITS) | (Self::MAX as u8);
 
     /// Create a new PReg. The `hw_enc` range is 6 bits.
     #[inline(always)]
@@ -162,7 +163,19 @@ impl PReg {
     /// data structures.
     #[inline(always)]
     pub const fn invalid() -> Self {
-        PReg::new(Self::MAX, RegClass::Int)
+        PReg {
+            bits: Self::INVALID,
+        }
+    }
+
+    /// Return a valid [`PReg`] or [`None`] if it is invalid.
+    #[inline(always)]
+    pub const fn as_valid(self) -> Option<Self> {
+        if self.bits == Self::INVALID {
+            None
+        } else {
+            Some(self)
+        }
     }
 }
 

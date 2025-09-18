@@ -79,14 +79,11 @@ impl<'a> RegTraversalIter<'a> {
         env: &'a MachineEnv,
         class: RegClass,
         fixed: Option<PReg>,
-        hint: PReg,
+        hint: Option<PReg>,
         offset: usize,
     ) -> Self {
-        let hint = if hint != PReg::invalid() {
-            Some(hint)
-        } else {
-            None
-        };
+        debug_assert!(fixed != Some(PReg::invalid()));
+        debug_assert!(hint != Some(PReg::invalid()));
 
         let class = class as u8 as usize;
         let preferred = Cursor::new(&env.preferred_regs_by_class[class], offset);

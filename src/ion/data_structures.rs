@@ -295,7 +295,7 @@ const fn no_bloat_capacity<T>() -> usize {
 #[derive(Clone, Debug)]
 pub struct SpillSet {
     pub slot: SpillSlotIndex,
-    pub reg_hint: PReg,
+    pub hint: PReg,
     pub class: RegClass,
     pub spill_bundle: LiveBundleIndex,
     pub required: bool,
@@ -594,7 +594,7 @@ pub struct PrioQueue {
 pub struct PrioQueueEntry {
     pub prio: u32,
     pub bundle: LiveBundleIndex,
-    pub reg_hint: PReg,
+    pub hint: PReg,
 }
 
 #[derive(Clone, Debug)]
@@ -664,11 +664,11 @@ impl<'a> ContainerComparator for PrioQueueComparator<'a> {
 
 impl PrioQueue {
     #[inline(always)]
-    pub fn insert(&mut self, bundle: LiveBundleIndex, prio: usize, reg_hint: PReg) {
+    pub fn insert(&mut self, bundle: LiveBundleIndex, prio: usize, hint: PReg) {
         self.heap.push(PrioQueueEntry {
             prio: prio as u32,
             bundle,
-            reg_hint,
+            hint,
         });
     }
 
@@ -679,7 +679,7 @@ impl PrioQueue {
 
     #[inline(always)]
     pub fn pop(&mut self) -> Option<(LiveBundleIndex, PReg)> {
-        self.heap.pop().map(|entry| (entry.bundle, entry.reg_hint))
+        self.heap.pop().map(|entry| (entry.bundle, entry.hint))
     }
 }
 

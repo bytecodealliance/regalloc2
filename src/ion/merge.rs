@@ -315,7 +315,7 @@ impl<'a, F: Function> Env<'a, F> {
                 slot: SpillSlotIndex::invalid(),
                 required: false,
                 class: reg.class(),
-                reg_hint: PReg::invalid(),
+                hint: PReg::invalid(),
                 spill_bundle: LiveBundleIndex::invalid(),
                 splits: 0,
                 range,

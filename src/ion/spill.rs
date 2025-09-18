@@ -30,7 +30,9 @@ impl<'a, F: Function> Env<'a, F> {
             }
 
             let class = self.ctx.spillsets[self.ctx.bundles[bundle].spillset].class;
-            let hint = self.ctx.spillsets[self.ctx.bundles[bundle].spillset].reg_hint;
+            let hint = self.ctx.spillsets[self.ctx.bundles[bundle].spillset]
+                .hint
+                .as_valid();
 
             // This may be an empty-range bundle whose ranges are not
             // sorted; sort all range-lists again here.
