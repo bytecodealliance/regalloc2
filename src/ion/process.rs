@@ -38,9 +38,9 @@ pub enum AllocRegResult<'a> {
 
 impl<'a, F: Function> Env<'a, F> {
     pub fn process_bundles(&mut self) -> Result<(), RegAllocError> {
-        while let Some((bundle, reg_hint)) = self.ctx.allocation_queue.pop() {
+        while let Some((bundle, hint)) = self.ctx.allocation_queue.pop() {
             self.ctx.output.stats.process_bundle_count += 1;
-            self.process_bundle(bundle, reg_hint)?;
+            self.process_bundle(bundle, hint)?;
         }
         self.ctx.output.stats.final_liverange_count = self.ranges.len();
         self.ctx.output.stats.final_bundle_count = self.bundles.len();
@@ -408,17 +408,14 @@ impl<'a, F: Function> Env<'a, F> {
         &mut self,
         bundle: LiveBundleIndex,
         mut split_at: ProgPoint,
-        reg_hint: PReg,
+        hint: PReg,
         // Do we trim the parts around the split and put them in the
         // spill bundle?
         mut trim_ends_into_spill_bundle: bool,
     ) {
         self.ctx.output.stats.splits += 1;
         trace!(
-            "split bundle {:?} at {:?} and requeue with reg hint (for first part) {:?}",
-            bundle,
-            split_at,
-            reg_hint,
+            "split bundle {bundle:?} at {split_at:?} and requeue with reg hint (for first part) {hint:?}"
         );
 
         // Split `bundle` at `split_at`, creating new LiveRanges and
@@ -432,7 +429,7 @@ impl<'a, F: Function> Env<'a, F> {
         // bundle. See the doc-comment on
         // `split_into_minimal_bundles()` above for more.
         if self.ctx.spillsets[spillset].splits >= MAX_SPLITS_PER_SPILLSET {
-            self.split_into_minimal_bundles(bundle, reg_hint);
+            self.split_into_minimal_bundles(bundle, hint);
             return;
         }
         self.ctx.spillsets[spillset].splits += 1;
@@ -457,7 +454,7 @@ impl<'a, F: Function> Env<'a, F> {
         // minimal-bundle splitting in this case as well.
         if bundle_end.prev().inst() == bundle_start.inst() {
             trace!(" -> spans only one inst; splitting into minimal bundles");
-            self.split_into_minimal_bundles(bundle, reg_hint);
+            self.split_into_minimal_bundles(bundle, hint);
             return;
         }
 
@@ -777,14 +774,14 @@ impl<'a, F: Function> Env<'a, F> {
             let prio = self.ctx.bundles[bundle].prio;
             self.ctx
                 .allocation_queue
-                .insert(bundle, prio as usize, reg_hint);
+                .insert(bundle, prio as usize, hint);
         }
         if self.ctx.bundles[new_bundle].ranges.len() > 0 {
             self.recompute_bundle_properties(new_bundle);
             let prio = self.ctx.bundles[new_bundle].prio;
             self.ctx
                 .allocation_queue
-                .insert(new_bundle, prio as usize, reg_hint);
+                .insert(new_bundle, prio as usize, hint);
         }
     }
 
@@ -818,7 +815,7 @@ impl<'a, F: Function> Env<'a, F> {
     /// the spill bundle; and then does minimal reservations of
     /// registers just at uses/defs and moves the "spilled" value
     /// into/out of them immediately.
-    pub fn split_into_minimal_bundles(&mut self, bundle: LiveBundleIndex, reg_hint: PReg) {
+    pub fn split_into_minimal_bundles(&mut self, bundle: LiveBundleIndex, hint: PReg) {
         assert_eq!(self.ctx.scratch_removed_lrs_vregs.len(), 0);
         self.ctx.scratch_removed_lrs.clear();
 
@@ -830,11 +827,7 @@ impl<'a, F: Function> Env<'a, F> {
             .get_or_create_spill_bundle(bundle, /* create_if_absent = */ true)
             .unwrap();
 
-        trace!(
-            "Splitting bundle {:?} into minimal bundles with reg hint {}",
-            bundle,
-            reg_hint
-        );
+        trace!("Splitting bundle {bundle:?} into minimal bundles with reg hint {hint:?}");
 
         let mut spill_uses = UseList::new_in(self.ctx.bump());
 
@@ -966,7 +959,7 @@ impl<'a, F: Function> Env<'a, F> {
                 let prio = self.ctx.bundles[bundle].prio;
                 self.ctx
                     .allocation_queue
-                    .insert(bundle, prio as usize, reg_hint);
+                    .insert(bundle, prio as usize, hint);
             }
         }
     }
@@ -974,19 +967,20 @@ impl<'a, F: Function> Env<'a, F> {
     pub fn process_bundle(
         &mut self,
         bundle: LiveBundleIndex,
-        reg_hint: PReg,
+        hint: PReg,
     ) -> Result<(), RegAllocError> {
         let class = self.ctx.spillsets[self.bundles[bundle].spillset].class;
+
         // Grab a hint from either the queue or our spillset, if any.
-        let mut hint_reg = if reg_hint != PReg::invalid() {
-            reg_hint
+        let mut hint = if hint != PReg::invalid() {
+            hint
         } else {
-            self.ctx.spillsets[self.bundles[bundle].spillset].reg_hint
+            self.ctx.spillsets[self.bundles[bundle].spillset].hint
         };
-        if self.ctx.pregs[hint_reg.index()].is_stack {
-            hint_reg = PReg::invalid();
+        if self.ctx.pregs[hint.index()].is_stack {
+            hint = PReg::invalid();
         }
-        trace!("process_bundle: bundle {:?} hint {:?}", bundle, hint_reg,);
+        trace!("process_bundle: bundle {bundle:?} hint {hint:?}");
 
         let req = match self.compute_requirement(bundle) {
             Ok(req) => req,
@@ -1002,7 +996,7 @@ impl<'a, F: Function> Env<'a, F> {
                 self.split_and_requeue_bundle(
                     bundle,
                     /* split_at_point = */ conflict.suggested_split_point(),
-                    reg_hint,
+                    hint,
                     /* trim_ends_into_spill_bundle = */
                     conflict.should_trim_edges_around_split(),
                 );
@@ -1078,7 +1072,9 @@ impl<'a, F: Function> Env<'a, F> {
                 + bundle.index();
 
             self.ctx.output.stats.process_bundle_reg_probe_start_any += 1;
-            for preg in RegTraversalIter::new(self.env, class, fixed_preg, hint_reg, scan_offset) {
+            for preg in
+                RegTraversalIter::new(self.env, class, fixed_preg, hint.as_valid(), scan_offset)
+            {
                 self.ctx.output.stats.process_bundle_reg_probes_any += 1;
                 let preg_idx = PRegIndex::new(preg.index());
                 trace!("trying preg {:?}", preg_idx);
@@ -1099,7 +1095,7 @@ impl<'a, F: Function> Env<'a, F> {
                     AllocRegResult::Allocated(alloc) => {
                         self.ctx.output.stats.process_bundle_reg_success_any += 1;
                         trace!(" -> allocated to any {:?}", preg_idx);
-                        self.ctx.spillsets[self.ctx.bundles[bundle].spillset].reg_hint =
+                        self.ctx.spillsets[self.ctx.bundles[bundle].spillset].hint =
                             alloc.as_reg().unwrap();
                         // Success, return scratch memory to context and finish
                         break 'outer;
