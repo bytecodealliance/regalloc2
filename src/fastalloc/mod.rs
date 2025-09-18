@@ -491,12 +491,12 @@ impl<'a, F: Function> Env<'a, F> {
             && self.edits.scratch_regs[class].is_none()
         {
             self.alloc_scratch_reg(inst, class, pos)?;
-            self.num_available_pregs[ExclusiveOperandPos::Both][class] =
-                0i16.max(self.num_available_pregs[ExclusiveOperandPos::Both][class] - 1);
-            self.num_available_pregs[ExclusiveOperandPos::LateOnly][class] =
-                0i16.max(self.num_available_pregs[ExclusiveOperandPos::LateOnly][class] - 1);
-            self.num_available_pregs[ExclusiveOperandPos::EarlyOnly][class] -=
-                0i16.max(self.num_available_pregs[ExclusiveOperandPos::EarlyOnly][class] - 1);
+            let dec_clamp_zero = |x: &mut i16| {
+                *x = 0i16.max(*x - 1);
+            };
+            dec_clamp_zero(&mut self.num_available_pregs[ExclusiveOperandPos::Both][class]);
+            dec_clamp_zero(&mut self.num_available_pregs[ExclusiveOperandPos::EarlyOnly][class]);
+            dec_clamp_zero(&mut self.num_available_pregs[ExclusiveOperandPos::LateOnly][class]);
         }
         self.edits.add_move(inst, from, to, class, pos);
         Ok(())
@@ -1453,6 +1453,9 @@ impl<'a, F: Function> Env<'a, F> {
                 let move_from = self.func.inst_operands(pred_last_inst)
                     .iter()
                     .find_map(|op| if op.kind() == OperandKind::Def && op.vreg() == branch_arg_for_param {
+                        if self.func.block_preds(block).len() > 1 {
+                            panic!("Multiple predecessors when a branch arg is defined on the branch");
+                        }
                         match op.constraint() {
                             OperandConstraint::FixedReg(reg) => {
                                 trace!("Found one for branch arg {branch_arg_for_param} and param {block_param} in reg {reg}");
