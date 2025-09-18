@@ -379,6 +379,7 @@ impl<'a, F: Function> Env<'a, F> {
         for entry in &self.bundles[bundle].ranges {
             total += entry.range.len() as u32;
         }
+        trace!(" -> prio {total}");
         total
     }
 
@@ -390,12 +391,9 @@ impl<'a, F: Function> Env<'a, F> {
                 trace!(" -> no ranges; skipping");
                 continue;
             }
-            let prio = self.compute_bundle_prio(bundle);
-            trace!(" -> prio {}", prio);
-            self.bundles[bundle].prio = prio;
             self.recompute_bundle_properties(bundle);
-            self.allocation_queue
-                .insert(bundle, prio as usize, PReg::invalid());
+            let prio = self.bundles[bundle].prio as usize;
+            self.allocation_queue.insert(bundle, prio, PReg::invalid());
         }
         self.output.stats.merged_bundle_count = self.allocation_queue.heap.len();
     }
