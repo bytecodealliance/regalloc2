@@ -670,6 +670,10 @@ impl Operand {
             }
             OperandConstraint::Limit(max) => {
                 assert!(max.is_power_of_two());
+                assert!(
+                    max <= PReg::MAX + 1,
+                    "limit is larger than the allowed register encoding"
+                );
                 let log2 = max.ilog2();
                 debug_assert!(log2 <= 0b1111);
                 0b0010000 | log2 as u32
