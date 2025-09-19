@@ -203,7 +203,7 @@ pub struct LiveBundle {
     pub allocation: Allocation,
     pub prio: u32, // recomputed after every bulk update
     pub spill_weight_and_props: u32,
-    pub limit: Option<usize>,
+    pub limit: Option<u8>,
 }
 
 pub const BUNDLE_MAX_SPILL_WEIGHT: u32 = (1 << 28) - 1;

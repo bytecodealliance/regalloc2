@@ -1073,7 +1073,7 @@ impl<'a, F: Function> Env<'a, F> {
                 + bundle.index();
 
             self.ctx.output.stats.process_bundle_reg_probe_start_any += 1;
-            let limit = self.bundles[bundle].limit;
+            let limit = self.bundles[bundle].limit.map(|l| l as usize);
             for preg in RegTraversalIter::new(
                 self.env,
                 class,

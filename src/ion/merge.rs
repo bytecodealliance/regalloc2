@@ -18,6 +18,7 @@ use crate::ion::data_structures::{
 };
 use crate::{Function, Inst, OperandConstraint, OperandKind, PReg, ProgPoint};
 use alloc::format;
+use core::convert::TryFrom;
 
 impl<'a, F: Function> Env<'a, F> {
     fn merge_bundle_properties(&mut self, from: LiveBundleIndex, to: LiveBundleIndex) {
@@ -282,7 +283,7 @@ impl<'a, F: Function> Env<'a, F> {
             let mut fixed = false;
             let mut fixed_def = false;
             let mut stack = false;
-            let mut limit: Option<usize> = None;
+            let mut limit: Option<u8> = None;
             for entry in &self.bundles[bundle].ranges {
                 for u in &self.ranges[entry.index].uses {
                     use OperandConstraint::*;
@@ -294,10 +295,14 @@ impl<'a, F: Function> Env<'a, F> {
                             }
                         }
                         Stack => stack = true,
-                        Limit(current) => match limit {
-                            Some(prev) => limit = Some(prev.min(current)),
-                            None => limit = Some(current),
-                        },
+                        Limit(current) => {
+                            let current = u8::try_from(current)
+                                .expect("the current limit is too large to fit in a u8");
+                            match limit {
+                                Some(prev) => limit = Some(prev.min(current)),
+                                None => limit = Some(current),
+                            }
+                        }
                         Any | Reg | Reuse(_) => {
                             continue;
                         }
@@ -392,16 +397,20 @@ impl<'a, F: Function> Env<'a, F> {
         total
     }
 
-    pub fn compute_bundle_limit(&self, bundle: LiveBundleIndex) -> Option<usize> {
-        let mut limit: Option<usize> = None;
+    pub fn compute_bundle_limit(&self, bundle: LiveBundleIndex) -> Option<u8> {
+        let mut limit: Option<u8> = None;
         for entry in &self.bundles[bundle].ranges {
             for u in &self.ranges[entry.index].uses {
                 use OperandConstraint::*;
                 match u.operand.constraint() {
-                    Limit(current) => match limit {
-                        Some(prev) => limit = Some(prev.min(current)),
-                        None => limit = Some(current),
-                    },
+                    Limit(current) => {
+                        let current = u8::try_from(current)
+                            .expect("the current limit is too large to fit in a u8");
+                        match limit {
+                            Some(prev) => limit = Some(prev.min(current)),
+                            None => limit = Some(current),
+                        }
+                    }
                     FixedReg(_) | Stack => {
                         break;
                     }
