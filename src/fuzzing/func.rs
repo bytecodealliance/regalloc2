@@ -343,18 +343,14 @@ impl Func {
             let succ = *u.choose(&in_blocks[..])?;
             builder.add_edge(Block::new(pred), Block::new(succ));
         }
-
         builder.compute_doms();
 
         for block in 0..num_blocks {
             builder.f.block_preds[block].clear();
-        }
-        for block in 0..num_blocks {
             for &succ in &builder.f.block_succs[block] {
                 builder.f.block_preds[succ.index()].push(Block::new(block));
             }
         }
-
         builder.compute_doms();
 
         let alloc_vreg = |builder: &mut FuncBuilder, u: &mut Unstructured| {
