@@ -104,6 +104,7 @@ use alloc::vec::Vec;
 use alloc::{format, vec};
 use core::default::Default;
 use core::hash::Hash;
+use core::ops::Range;
 use core::result::Result;
 use smallvec::{smallvec, SmallVec};
 
@@ -165,6 +166,12 @@ pub enum CheckerError {
     StackToStackMove {
         into: Allocation,
         from: Allocation,
+    },
+    AllocationOutsideLimit {
+        inst: Inst,
+        op: Operand,
+        alloc: Allocation,
+        range: Range<usize>,
     },
 }
 
@@ -667,6 +674,18 @@ impl CheckerState {
                         alloc,
                         expected_alloc: allocs[idx],
                     });
+                }
+            }
+            OperandConstraint::Limit(max) => {
+                if let Some(preg) = alloc.as_reg() {
+                    if preg.hw_enc() >= max {
+                        return Err(CheckerError::AllocationOutsideLimit {
+                            inst,
+                            op,
+                            alloc,
+                            range: (0..max),
+                        });
+                    }
                 }
             }
         }

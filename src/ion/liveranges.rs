@@ -25,6 +25,7 @@ use crate::{
     OperandPos, PReg, ProgPoint, RegAllocError, VReg, VecExt,
 };
 use core::convert::TryFrom;
+use core::usize;
 use smallvec::{smallvec, SmallVec};
 
 /// A spill weight computed for a certain Use.
@@ -804,6 +805,8 @@ impl<'a, F: Function> Env<'a, F> {
                     let mut num_fixed_stack = 0;
                     let mut first_reg_slot = None;
                     let mut first_stack_slot = None;
+                    let mut min_limit = usize::MAX;
+                    let mut max_fixed_reg = usize::MIN;
                     for u in uses.iter() {
                         match u.operand.constraint() {
                             OperandConstraint::Any => {
@@ -814,7 +817,13 @@ impl<'a, F: Function> Env<'a, F> {
                                 first_reg_slot.get_or_insert(u.slot);
                                 requires_reg = true;
                             }
+                            OperandConstraint::Limit(max) => {
+                                first_reg_slot.get_or_insert(u.slot);
+                                min_limit = min_limit.min(max);
+                                requires_reg = true;
+                            }
                             OperandConstraint::FixedReg(preg) => {
+                                max_fixed_reg = max_fixed_reg.max(preg.hw_enc());
                                 if self.ctx.pregs[preg.index()].is_stack {
                                     num_fixed_stack += 1;
                                     first_stack_slot.get_or_insert(u.slot);
@@ -834,6 +843,7 @@ impl<'a, F: Function> Env<'a, F> {
                     // Fast path if there are no conflicts.
                     if num_fixed_reg + num_fixed_stack <= 1
                         && !(requires_reg && num_fixed_stack != 0)
+                        && max_fixed_reg < min_limit
                     {
                         continue;
                     }
@@ -867,6 +877,7 @@ impl<'a, F: Function> Env<'a, F> {
                             // skip this edit.
                             if !(requires_reg && self.ctx.pregs[preg.index()].is_stack)
                                 && *first_preg.get_or_insert(preg) == preg
+                                && preg.hw_enc() < min_limit
                             {
                                 continue;
                             }

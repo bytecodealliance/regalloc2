@@ -42,7 +42,8 @@ impl<'a, F: Function> Env<'a, F> {
 
             let mut success = false;
             self.ctx.output.stats.spill_bundle_reg_probes += 1;
-            for preg in RegTraversalIter::new(self.env, class, None, hint, bundle.index()) {
+            let limit = self.bundles[bundle].limit.map(|l| l as usize);
+            for preg in RegTraversalIter::new(self.env, class, None, hint, bundle.index(), limit) {
                 trace!("trying bundle {:?} to preg {:?}", bundle, preg);
                 let preg_idx = PRegIndex::new(preg.index());
                 if let AllocRegResult::Allocated(_) =
@@ -53,6 +54,7 @@ impl<'a, F: Function> Env<'a, F> {
                     break;
                 }
             }
+
             if !success {
                 trace!(
                     "spilling bundle {:?}: marking spillset {:?} as required",

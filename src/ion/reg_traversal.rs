@@ -72,6 +72,7 @@ pub struct RegTraversalIter<'a> {
     hint: Option<PReg>,
     preferred: Cursor<'a>,
     non_preferred: Cursor<'a>,
+    limit: Option<usize>,
 }
 
 impl<'a> RegTraversalIter<'a> {
@@ -81,6 +82,7 @@ impl<'a> RegTraversalIter<'a> {
         fixed: Option<PReg>,
         hint: Option<PReg>,
         offset: usize,
+        limit: Option<usize>,
     ) -> Self {
         debug_assert!(fixed != Some(PReg::invalid()));
         debug_assert!(hint != Some(PReg::invalid()));
@@ -96,6 +98,7 @@ impl<'a> RegTraversalIter<'a> {
             hint,
             preferred,
             non_preferred,
+            limit,
         }
     }
 }
@@ -110,21 +113,23 @@ impl<'a> core::iter::Iterator for RegTraversalIter<'a> {
 
         if self.use_hint {
             self.use_hint = false;
-            return self.hint;
+            if self.hint.unwrap().hw_enc() < self.limit.unwrap_or(usize::MAX) {
+                return self.hint;
+            }
         }
 
         while !self.preferred.done() {
             let reg = self.preferred.advance();
-            if Some(reg) == self.hint {
-                continue; // Try again; we already tried the hint.
+            if Some(reg) == self.hint || reg.hw_enc() >= self.limit.unwrap_or(usize::MAX) {
+                continue; // Try again; we already tried the hint or we are outside of the register range limit.
             }
             return Some(reg);
         }
 
         while !self.non_preferred.done() {
             let reg = self.non_preferred.advance();
-            if Some(reg) == self.hint {
-                continue; // Try again; we already tried the hint.
+            if Some(reg) == self.hint || reg.hw_enc() >= self.limit.unwrap_or(usize::MAX) {
+                continue; // Try again; we already tried the hint or we are outside of the register range limit.
             }
             return Some(reg);
         }

@@ -618,6 +618,9 @@ impl<'a, F: Function> Env<'a, F> {
             }
 
             OperandConstraint::Stack => self.edits.is_stack(alloc),
+            OperandConstraint::Limit(_) => {
+                todo!("limit constraints are not yet supported in fastalloc")
+            }
         }
     }
 
@@ -773,6 +776,9 @@ impl<'a, F: Function> Env<'a, F> {
             }
 
             OperandConstraint::Stack => Allocation::stack(self.get_spillslot(op.vreg())),
+            OperandConstraint::Limit(_) => {
+                todo!("limit constraints are not yet supported in fastalloc")
+            }
         };
         self.allocs[(inst.index(), op_idx)] = new_alloc;
         Ok(new_alloc)
