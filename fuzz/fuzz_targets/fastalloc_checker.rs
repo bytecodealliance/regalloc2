@@ -26,6 +26,7 @@ impl Arbitrary<'_> for TestCase {
                     clobbers: true,
                     reftypes: false,
                     callsite_ish_constraints: true,
+                    ..Options::default()
                 },
             )?,
         })
@@ -37,8 +38,8 @@ fuzz_target!(|testcase: TestCase| {
     let _ = env_logger::try_init();
     log::trace!("func:\n{:?}", func);
     let env = regalloc2::fuzzing::func::machine_env();
-    let out =
-        regalloc2::fuzzing::fastalloc::run(&func, &env, true, false).expect("regalloc did not succeed");
+    let out = regalloc2::fuzzing::fastalloc::run(&func, &env, true, false)
+        .expect("regalloc did not succeed");
 
     let mut checker = Checker::new(&func, &env);
     checker.prepare(&out);

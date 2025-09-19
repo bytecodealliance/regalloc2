@@ -26,6 +26,7 @@ impl Arbitrary<'_> for TestCase {
                     clobbers: true,
                     reftypes: true,
                     callsite_ish_constraints: true,
+                    ..Options::default()
                 },
             )?,
         })
