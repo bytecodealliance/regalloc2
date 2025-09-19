@@ -10,6 +10,7 @@ use crate::{
 
 use alloc::vec::Vec;
 use alloc::{format, vec};
+use core::ops::RangeInclusive;
 
 use super::arbitrary::Result as ArbitraryResult;
 use super::arbitrary::{Arbitrary, Unstructured};
@@ -257,7 +258,7 @@ fn choose_dominating_block(
     Ok(block)
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Options {
     pub reused_inputs: bool,
     pub fixed_regs: bool,
@@ -265,6 +266,11 @@ pub struct Options {
     pub clobbers: bool,
     pub reftypes: bool,
     pub callsite_ish_constraints: bool,
+    pub num_blocks: RangeInclusive<usize>,
+    pub num_vregs_per_block: RangeInclusive<usize>,
+    pub num_uses_per_inst: RangeInclusive<usize>,
+    pub num_callsite_ish_vregs_per_inst: RangeInclusive<usize>,
+    pub num_clobbers_per_inst: RangeInclusive<usize>,
 }
 
 impl core::default::Default for Options {
@@ -276,6 +282,11 @@ impl core::default::Default for Options {
             clobbers: false,
             reftypes: false,
             callsite_ish_constraints: false,
+            num_blocks: 1..=100,
+            num_vregs_per_block: 5..=15,
+            num_uses_per_inst: 0..=10,
+            num_callsite_ish_vregs_per_inst: 0..=20,
+            num_clobbers_per_inst: 0..=10,
         }
     }
 }
@@ -298,7 +309,7 @@ impl Func {
         //      or one defined in a dominating block.
 
         let mut builder = FuncBuilder::new();
-        for _ in 0..u.int_in_range(1..=100)? {
+        for _ in 0..u.int_in_range(opts.num_blocks.clone())? {
             builder.add_block();
         }
         let num_blocks = builder.f.blocks.len();
@@ -357,7 +368,7 @@ impl Func {
         let mut block_params = vec![vec![]; num_blocks];
         for block in 0..num_blocks {
             let mut vregs = vec![];
-            for _ in 0..u.int_in_range(5..=15)? {
+            for _ in 0..u.int_in_range(opts.num_vregs_per_block.clone())? {
                 let vreg = alloc_vreg(&mut builder, u)?;
                 vregs.push(vreg);
                 if opts.reftypes && bool::arbitrary(u)? {
@@ -415,7 +426,7 @@ impl Func {
                     def_pos,
                 )];
                 let mut allocations = vec![Allocation::none()];
-                for _ in 0..u.int_in_range(0..=10)? {
+                for _ in 0..u.int_in_range(opts.num_uses_per_inst.clone())? {
                     let vreg = if avail.len() > 0
                         && (remaining_nonlocal_uses == 0 || bool::arbitrary(u)?)
                     {
@@ -507,7 +518,7 @@ impl Func {
                     if opts.callsite_ish_constraints && bool::arbitrary(u)? {
                         // Define some new vregs with `any`
                         // constraints.
-                        for _ in 0..u.int_in_range(0..=20)? {
+                        for _ in 0..u.int_in_range(opts.num_callsite_ish_vregs_per_inst.clone())? {
                             let vreg = alloc_vreg(&mut builder, u)?;
                             operands.push(Operand::new(
                                 vreg,
@@ -524,7 +535,7 @@ impl Func {
                         // than the number of registers in any single
                         // class, so the resulting problem is always
                         // allocatable.
-                        for _ in 0..u.int_in_range(0..=10)? {
+                        for _ in 0..u.int_in_range(opts.num_clobbers_per_inst.clone())? {
                             let reg = u.int_in_range(0..=30)?;
                             let preg = PReg::new(reg, RegClass::arbitrary(u)?);
                             if operands
@@ -542,7 +553,7 @@ impl Func {
                         }
                     }
                 } else if opts.clobbers && bool::arbitrary(u)? {
-                    for _ in 0..u.int_in_range(0..=5)? {
+                    for _ in 0..u.int_in_range(opts.num_clobbers_per_inst.clone())? {
                         let reg = u.int_in_range(0..=30)?;
                         if clobbers.iter().any(|r| r.hw_enc() == reg) {
                             continue;
