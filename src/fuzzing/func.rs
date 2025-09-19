@@ -207,6 +207,27 @@ impl FuncBuilder {
         );
     }
 
+    fn add_arbitrary_debug_labels(
+        &mut self,
+        u: &mut Unstructured<'_>,
+        num_blocks: usize,
+        vreg: VReg,
+    ) -> ArbitraryResult<()> {
+        let assumed_end_inst = 10 * num_blocks;
+        let mut start = u.int_in_range::<usize>(0..=assumed_end_inst)?;
+        Ok(for _ in 0..10 {
+            if start >= assumed_end_inst {
+                break;
+            }
+            let end = u.int_in_range::<usize>(start..=assumed_end_inst)?;
+            let label = u.int_in_range::<u32>(0..=100)?;
+            self.f
+                .debug_value_labels
+                .push((vreg, Inst::new(start), Inst::new(end), label));
+            start = end;
+        })
+    }
+
     fn finalize(mut self) -> Func {
         for (blocknum, blockrange) in self.f.blocks.iter_mut().enumerate() {
             let begin_inst = self.f.insts.len();
@@ -224,6 +245,12 @@ impl FuncBuilder {
 impl Arbitrary<'_> for RegClass {
     fn arbitrary(u: &mut Unstructured) -> ArbitraryResult<Self> {
         Ok(*u.choose(&[RegClass::Int, RegClass::Float, RegClass::Vector])?)
+    }
+}
+
+impl Arbitrary<'_> for OperandPos {
+    fn arbitrary(u: &mut Unstructured) -> ArbitraryResult<Self> {
+        Ok(*u.choose(&[OperandPos::Early, OperandPos::Late])?)
     }
 }
 
@@ -256,6 +283,82 @@ fn choose_dominating_block(
         Block::invalid()
     };
     Ok(block)
+}
+
+fn convert_def_to_reuse(u: &mut Unstructured<'_>, operands: &mut [Operand]) -> ArbitraryResult<()> {
+    let op = operands[0];
+    debug_assert_eq!(op.kind(), OperandKind::Def);
+
+    let reused = u.int_in_range(1..=(operands.len() - 1))?;
+    Ok(if op.class() == operands[reused].class() {
+        // Replace the def with a reuse of an existing input.
+        operands[0] = Operand::new(
+            op.vreg(),
+            OperandConstraint::Reuse(reused),
+            op.kind(),
+            OperandPos::Late,
+        );
+
+        // Make sure reused input is a register.
+        let op = operands[reused];
+        operands[reused] = Operand::new(
+            op.vreg(),
+            OperandConstraint::Reg,
+            op.kind(),
+            OperandPos::Early,
+        );
+    })
+}
+
+fn convert_op_to_fixed(
+    u: &mut Unstructured<'_>,
+    op: &mut Operand,
+    fixed_early: &mut Vec<PReg>,
+    fixed_late: &mut Vec<PReg>,
+) -> ArbitraryResult<()> {
+    let fixed_reg = PReg::new(u.int_in_range(0..=62)?, op.class());
+
+    if op.kind() == OperandKind::Def && op.pos() == OperandPos::Early {
+        // Early-defs with fixed constraints conflict with
+        // any other fixed uses of the same preg.
+        if fixed_late.contains(&fixed_reg) {
+            return Ok(());
+        }
+    }
+
+    if op.kind() == OperandKind::Use && op.pos() == OperandPos::Late {
+        // Late-use with fixed constraints conflict with
+        // any other fixed uses of the same preg.
+        if fixed_early.contains(&fixed_reg) {
+            return Ok(());
+        }
+    }
+
+    // Check that it is not already fixed.
+    let fixed_list = match op.pos() {
+        OperandPos::Early => fixed_early,
+        OperandPos::Late => fixed_late,
+    };
+    if fixed_list.contains(&fixed_reg) {
+        return Ok(());
+    }
+
+    fixed_list.push(fixed_reg);
+    *op = Operand::new(
+        op.vreg(),
+        OperandConstraint::FixedReg(fixed_reg),
+        op.kind(),
+        op.pos(),
+    );
+
+    Ok(())
+}
+
+fn has_fixed_def_with(preg: PReg) -> impl Fn(&Operand) -> bool {
+    move |op| match (op.kind(), op.constraint()) {
+        (OperandKind::Def, OperandConstraint::FixedReg(fixed)) => fixed == preg,
+        _ => false,
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -371,22 +474,7 @@ impl Func {
                     builder.f.reftype_vregs.push(vreg);
                 }
                 if bool::arbitrary(u)? {
-                    let assumed_end_inst = 10 * num_blocks;
-                    let mut start = u.int_in_range::<usize>(0..=assumed_end_inst)?;
-                    for _ in 0..10 {
-                        if start >= assumed_end_inst {
-                            break;
-                        }
-                        let end = u.int_in_range::<usize>(start..=assumed_end_inst)?;
-                        let label = u.int_in_range::<u32>(0..=100)?;
-                        builder.f.debug_value_labels.push((
-                            vreg,
-                            Inst::new(start),
-                            Inst::new(end),
-                            label,
-                        ));
-                        start = end;
-                    }
+                    builder.add_arbitrary_debug_labels(u, num_blocks, vreg)?;
                 }
             }
             vregs_by_block.push(vregs.clone());
@@ -417,9 +505,9 @@ impl Func {
                 };
                 let mut operands = vec![Operand::new(
                     vreg,
-                    def_constraint,
+                    OperandConstraint::arbitrary(u)?,
                     OperandKind::Def,
-                    def_pos,
+                    OperandPos::arbitrary(u)?,
                 )];
                 let mut allocations = vec![Allocation::none()];
                 for _ in 0..u.int_in_range(opts.num_uses_per_inst.clone())? {
@@ -442,10 +530,9 @@ impl Func {
                         remaining_nonlocal_uses -= 1;
                         *u.choose(&vregs_by_block[def_block.index()])?
                     };
-                    let use_constraint = OperandConstraint::arbitrary(u)?;
                     operands.push(Operand::new(
                         vreg,
-                        use_constraint,
+                        OperandConstraint::arbitrary(u)?,
                         OperandKind::Use,
                         OperandPos::Early,
                     ));
@@ -453,62 +540,15 @@ impl Func {
                 }
                 let mut clobbers: Vec<PReg> = vec![];
                 if operands.len() > 1 && opts.reused_inputs && bool::arbitrary(u)? {
-                    // Make the def a reused input.
-                    let op = operands[0];
-                    debug_assert_eq!(op.kind(), OperandKind::Def);
-                    let reused = u.int_in_range(1..=(operands.len() - 1))?;
-                    if op.class() == operands[reused].class() {
-                        operands[0] = Operand::new(
-                            op.vreg(),
-                            OperandConstraint::Reuse(reused),
-                            op.kind(),
-                            OperandPos::Late,
-                        );
-                        // Make sure reused input is a Reg.
-                        let op = operands[reused];
-                        operands[reused] = Operand::new(
-                            op.vreg(),
-                            OperandConstraint::Reg,
-                            op.kind(),
-                            OperandPos::Early,
-                        );
-                    }
+                    convert_def_to_reuse(u, &mut operands)?;
                 } else if opts.fixed_regs && bool::arbitrary(u)? {
                     let mut fixed_early = vec![];
                     let mut fixed_late = vec![];
                     for _ in 0..u.int_in_range(0..=operands.len() - 1)? {
                         // Pick an operand and make it a fixed reg.
                         let i = u.int_in_range(0..=(operands.len() - 1))?;
-                        let op = operands[i];
-                        let fixed_reg = PReg::new(u.int_in_range(0..=62)?, op.class());
-                        if op.kind() == OperandKind::Def && op.pos() == OperandPos::Early {
-                            // Early-defs with fixed constraints conflict with
-                            // any other fixed uses of the same preg.
-                            if fixed_late.contains(&fixed_reg) {
-                                continue;
-                            }
-                        }
-                        if op.kind() == OperandKind::Use && op.pos() == OperandPos::Late {
-                            // Late-use with fixed constraints conflict with
-                            // any other fixed uses of the same preg.
-                            if fixed_early.contains(&fixed_reg) {
-                                continue;
-                            }
-                        }
-                        let fixed_list = match op.pos() {
-                            OperandPos::Early => &mut fixed_early,
-                            OperandPos::Late => &mut fixed_late,
-                        };
-                        if fixed_list.contains(&fixed_reg) {
-                            continue;
-                        }
-                        fixed_list.push(fixed_reg);
-                        operands[i] = Operand::new(
-                            op.vreg(),
-                            OperandConstraint::FixedReg(fixed_reg),
-                            op.kind(),
-                            op.pos(),
-                        );
+                        let op = &mut operands[i];
+                        convert_op_to_fixed(u, op, &mut fixed_early, &mut fixed_late)?;
                     }
 
                     if opts.callsite_ish_constraints && bool::arbitrary(u)? {
@@ -516,12 +556,7 @@ impl Func {
                         // constraints.
                         for _ in 0..u.int_in_range(opts.num_callsite_ish_vregs_per_inst.clone())? {
                             let vreg = alloc_vreg(&mut builder, u)?;
-                            operands.push(Operand::new(
-                                vreg,
-                                OperandConstraint::Any,
-                                OperandKind::Def,
-                                OperandPos::Late,
-                            ));
+                            operands.push(Operand::any_def(vreg));
                         }
 
                         // Create some clobbers, avoiding regs named
@@ -534,15 +569,7 @@ impl Func {
                         for _ in 0..u.int_in_range(opts.num_clobbers_per_inst.clone())? {
                             let reg = u.int_in_range(0..=30)?;
                             let preg = PReg::new(reg, RegClass::arbitrary(u)?);
-                            if operands
-                                .iter()
-                                .any(|op| match (op.kind(), op.constraint()) {
-                                    (OperandKind::Def, OperandConstraint::FixedReg(fixed)) => {
-                                        fixed == preg
-                                    }
-                                    _ => false,
-                                })
-                            {
+                            if operands.iter().any(has_fixed_def_with(preg)) {
                                 continue;
                             }
                             clobbers.push(preg);
