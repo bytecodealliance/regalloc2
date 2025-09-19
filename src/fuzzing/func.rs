@@ -466,6 +466,7 @@ impl Func {
         let mut vregs_by_block_to_be_defined = vec![];
         let mut block_params = vec![vec![]; num_blocks];
         for block in 0..num_blocks {
+            // Calculate the available vregs for this block.
             let mut vregs = vec![];
             for _ in 0..u.int_in_range(opts.num_vregs_per_block.clone())? {
                 let vreg = alloc_vreg(&mut builder, u)?;
@@ -478,6 +479,8 @@ impl Func {
                 }
             }
             vregs_by_block.push(vregs.clone());
+
+            // Choose some of the vregs to be block parameters.
             let mut vregs_to_be_defined = vec![];
             let mut max_block_params = u.int_in_range(0..=core::cmp::min(3, vregs.len() / 3))?;
             for &vreg in &vregs {
@@ -497,18 +500,15 @@ impl Func {
             let mut avail = block_params[block].clone();
             let mut remaining_nonlocal_uses = u.int_in_range(0..=3)?;
             while let Some(vreg) = vregs_by_block_to_be_defined[block].pop() {
-                let def_constraint = OperandConstraint::arbitrary(u)?;
-                let def_pos = if bool::arbitrary(u)? {
-                    OperandPos::Early
-                } else {
-                    OperandPos::Late
-                };
+                // Start with a written-to vreg (`def`).
                 let mut operands = vec![Operand::new(
                     vreg,
                     OperandConstraint::arbitrary(u)?,
                     OperandKind::Def,
                     OperandPos::arbitrary(u)?,
                 )];
+
+                // Then add some read-from vregs (`uses`).
                 let mut allocations = vec![Allocation::none()];
                 for _ in 0..u.int_in_range(opts.num_uses_per_inst.clone())? {
                     let vreg = if avail.len() > 0
@@ -538,6 +538,9 @@ impl Func {
                     ));
                     allocations.push(Allocation::none());
                 }
+
+                // Convert some of the operands to have special constraints:
+                // reuses, fixed, clobbers, etc.
                 let mut clobbers: Vec<PReg> = vec![];
                 if operands.len() > 1 && opts.reused_inputs && bool::arbitrary(u)? {
                     convert_def_to_reuse(u, &mut operands)?;
@@ -552,18 +555,16 @@ impl Func {
                     }
 
                     if opts.callsite_ish_constraints && bool::arbitrary(u)? {
-                        // Define some new vregs with `any`
-                        // constraints.
+                        // Define some new vregs with `any` constraints.
                         for _ in 0..u.int_in_range(opts.num_callsite_ish_vregs_per_inst.clone())? {
                             let vreg = alloc_vreg(&mut builder, u)?;
                             operands.push(Operand::any_def(vreg));
                         }
 
-                        // Create some clobbers, avoiding regs named
-                        // by operand constraints. Note that the sum
-                        // of the maximum clobber count here (10) and
-                        // maximum operand count above (10) is less
-                        // than the number of registers in any single
+                        // Create some clobbers, avoiding regs named by operand
+                        // constraints. Note that the sum of the maximum clobber
+                        // count here (10) and maximum operand count above (10)
+                        // is less than the number of registers in any single
                         // class, so the resulting problem is always
                         // allocatable.
                         for _ in 0..u.int_in_range(opts.num_clobbers_per_inst.clone())? {
