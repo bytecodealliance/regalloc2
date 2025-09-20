@@ -5,9 +5,9 @@
 
 #![no_main]
 use libfuzzer_sys::fuzz_target;
-use regalloc2::fuzzing::moves;
+use regalloc2::fuzzing::fastalloc;
 
-fuzz_target!(|test_case: moves::TestCase| {
+fuzz_target!(|test_case: fastalloc::TestCase| {
     let _ = env_logger::try_init();
-    moves::check(test_case);
+    fastalloc::check(test_case);
 });

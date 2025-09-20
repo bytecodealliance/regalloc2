@@ -26,8 +26,8 @@ test = false
 doc = false
 
 [[bin]]
-name = "ssagen"
-path = "fuzz_targets/ssagen.rs"
+name = "fastalloc"
+path = "fuzz_targets/fastalloc.rs"
 test = false
 doc = false
 
@@ -40,18 +40,6 @@ doc = false
 [[bin]]
 name = "moves"
 path = "fuzz_targets/moves.rs"
-test = false
-doc = false
-
-[[bin]]
-name = "ion_checker"
-path = "fuzz_targets/ion_checker.rs"
-test = false
-doc = false
-
-[[bin]]
-name = "fastalloc_checker"
-path = "fuzz_targets/fastalloc_checker.rs"
 test = false
 doc = false
 
