@@ -27,7 +27,7 @@ jobs:
     - name: Build
       run: cargo build
     - name: Run tests
-      run: cargo test --all --verbose
+      run: cargo test --all --all-features --verbose
 
   # Make sure the code typechecks with non-default features enabled.
   features:
@@ -72,11 +72,7 @@ jobs:
       run: rustup toolchain install nightly
     - name: Install cargo-fuzz
       run: cargo +nightly install cargo-fuzz
-    - name: Build ssagen fuzzing target
-      run: cargo +nightly fuzz build ssagen
-    - name: Build moves fuzzing target
-      run: cargo +nightly fuzz build moves
-    - name: Build ion fuzzing target
-      run: cargo +nightly fuzz build ion
-    - name: Build and smoke-test ion_checker fuzzing target
-      run: cargo +nightly fuzz run ion_checker ./fuzz/smoketest/ion_checker.bin
+    - name: Build all fuzz targets
+      run: cargo +nightly fuzz build
+      # Note: all fuzzers are run with `arbtest` during `cargo test` with the
+      # `fuzzing` feature enabled.
