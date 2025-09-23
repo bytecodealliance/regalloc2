@@ -274,6 +274,7 @@ impl<'a, F: Function> Env<'a, F> {
         let first_range_data = &self.ctx.ranges[first_range];
 
         self.ctx.bundles[bundle].prio = self.compute_bundle_prio(bundle);
+        self.ctx.bundles[bundle].limit = self.compute_bundle_limit(bundle);
 
         if first_range_data.vreg.is_invalid() {
             trace!("  -> no vreg; minimal and fixed");
@@ -1036,7 +1037,7 @@ impl<'a, F: Function> Env<'a, F> {
 
             let fixed_preg = match req {
                 Requirement::FixedReg(preg) | Requirement::FixedStack(preg) => Some(preg),
-                Requirement::Register => None,
+                Requirement::Register | Requirement::Limit(..) => None,
                 Requirement::Stack => {
                     // If we must be on the stack, mark our spillset
                     // as required immediately.
@@ -1072,9 +1073,15 @@ impl<'a, F: Function> Env<'a, F> {
                 + bundle.index();
 
             self.ctx.output.stats.process_bundle_reg_probe_start_any += 1;
-            for preg in
-                RegTraversalIter::new(self.env, class, fixed_preg, hint.as_valid(), scan_offset)
-            {
+            let limit = self.bundles[bundle].limit.map(|l| l as usize);
+            for preg in RegTraversalIter::new(
+                self.env,
+                class,
+                fixed_preg,
+                hint.as_valid(),
+                scan_offset,
+                limit,
+            ) {
                 self.ctx.output.stats.process_bundle_reg_probes_any += 1;
                 let preg_idx = PRegIndex::new(preg.index());
                 trace!("trying preg {:?}", preg_idx);
@@ -1200,7 +1207,7 @@ impl<'a, F: Function> Env<'a, F> {
                     || lowest_cost_evict_conflict_cost.is_none()
                     || lowest_cost_evict_conflict_cost.unwrap() >= our_spill_weight)
             {
-                if let Requirement::Register = req {
+                if matches!(req, Requirement::Register | Requirement::Limit(_)) {
                     // Check if this is a too-many-live-registers situation.
                     let range = self.ctx.bundles[bundle].ranges[0].range;
                     trace!("checking for too many live regs");
@@ -1240,6 +1247,15 @@ impl<'a, F: Function> Env<'a, F> {
                                 fixed_assigned += 1;
                             }
                         }
+
+                        // We also need to discard any registers that do not fit
+                        // under the limit--we cannot allocate to them.
+                        if let Requirement::Limit(limit) = req {
+                            if preg.hw_enc() >= limit as usize {
+                                continue;
+                            }
+                        }
+
                         total_regs += 1;
                     }
                     trace!(
