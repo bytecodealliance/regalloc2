@@ -12,8 +12,8 @@ use alloc::vec::Vec;
 use alloc::{format, vec};
 use core::ops::RangeInclusive;
 
-use super::arbitrary::Result as ArbitraryResult;
-use super::arbitrary::{Arbitrary, Unstructured};
+use arbitrary::Result as ArbitraryResult;
+use arbitrary::{Arbitrary, Unstructured};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InstOpcode {
@@ -376,27 +376,26 @@ pub struct Options {
     pub num_clobbers_per_inst: RangeInclusive<usize>,
 }
 
-impl core::default::Default for Options {
-    fn default() -> Self {
-        Options {
-            reused_inputs: false,
-            fixed_regs: false,
-            fixed_nonallocatable: false,
-            clobbers: false,
-            reftypes: false,
-            callsite_ish_constraints: false,
-            num_blocks: 1..=100,
-            num_vregs_per_block: 5..=15,
-            num_uses_per_inst: 0..=10,
-            num_callsite_ish_vregs_per_inst: 0..=20,
-            num_clobbers_per_inst: 0..=10,
-        }
-    }
+impl Options {
+    /// Default options for generating functions.
+    pub const DEFAULT: Self = Self {
+        reused_inputs: false,
+        fixed_regs: false,
+        fixed_nonallocatable: false,
+        clobbers: false,
+        reftypes: false,
+        callsite_ish_constraints: false,
+        num_blocks: 1..=100,
+        num_vregs_per_block: 5..=15,
+        num_uses_per_inst: 0..=10,
+        num_callsite_ish_vregs_per_inst: 0..=20,
+        num_clobbers_per_inst: 0..=10,
+    };
 }
 
 impl Arbitrary<'_> for Func {
     fn arbitrary(u: &mut Unstructured) -> ArbitraryResult<Func> {
-        Func::arbitrary_with_options(u, &Options::default())
+        Func::arbitrary_with_options(u, &Options::DEFAULT)
     }
 }
 
