@@ -54,3 +54,6 @@ fuzzing = ["arbitrary", "arbtest", "checker", "trace-log"]
 
 # Enables serde for exposed types.
 enable-serde = ["serde"]
+
+# Makes sure crate works with nightly features enabled on the dependencies
+nightly = ["hashbrown/nightly", "bumpalo/allocator_api", "allocator-api2/nightly"]
