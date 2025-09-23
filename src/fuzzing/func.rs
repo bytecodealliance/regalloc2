@@ -448,14 +448,6 @@ impl Func {
         }
         builder.compute_doms();
 
-        for block in 0..num_blocks {
-            builder.f.block_preds[block].clear();
-            for &succ in &builder.f.block_succs[block] {
-                builder.f.block_preds[succ.index()].push(Block::new(block));
-            }
-        }
-        builder.compute_doms();
-
         let alloc_vreg = |builder: &mut FuncBuilder, u: &mut Unstructured| {
             let vreg = VReg::new(builder.f.num_vregs, RegClass::arbitrary(u)?);
             builder.f.num_vregs += 1;
