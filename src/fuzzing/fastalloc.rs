@@ -11,6 +11,7 @@ const OPTIONS: func::Options = func::Options {
     clobbers: true,
     reftypes: false,
     callsite_ish_constraints: true,
+    ..func::Options::DEFAULT
 };
 
 /// A convenience wrapper to generate a [`func::Func`] with `fastalloc`-specific

@@ -13,6 +13,7 @@ const OPTIONS: func::Options = func::Options {
     clobbers: true,
     reftypes: true,
     callsite_ish_constraints: true,
+    ..func::Options::DEFAULT
 };
 
 /// A convenience wrapper to generate a [`func::Func`] with `ion`-specific
@@ -26,15 +27,7 @@ pub struct TestCase {
 
 impl Arbitrary<'_> for TestCase {
     fn arbitrary(u: &mut Unstructured) -> Result<TestCase> {
-        let options = func::Options {
-            reused_inputs: true,
-            fixed_regs: true,
-            fixed_nonallocatable: true,
-            clobbers: true,
-            reftypes: true,
-            callsite_ish_constraints: true,
-        };
-        let func = func::Func::arbitrary_with_options(u, &options)?;
+        let func = func::Func::arbitrary_with_options(u, &OPTIONS)?;
         let annotate = bool::arbitrary(u)?;
         let check_ssa = bool::arbitrary(u)?;
         Ok(TestCase {
