@@ -58,29 +58,36 @@ impl RequirementConflictAt {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Requirement {
-    FixedReg(PReg),
-    FixedStack(PReg),
-    Register,
-    Stack,
     Any,
+    Register,
+    FixedReg(PReg),
+    Limit(usize),
+    Stack,
+    FixedStack(PReg),
 }
 impl Requirement {
     #[inline(always)]
     pub fn merge(self, other: Requirement) -> Result<Requirement, RequirementConflict> {
+        use Requirement::*;
+
         match (self, other) {
-            (other, Requirement::Any) | (Requirement::Any, other) => Ok(other),
-            (Requirement::Register, Requirement::Register) => Ok(self),
-            (Requirement::Stack, Requirement::Stack) => Ok(self),
-            (Requirement::Register, Requirement::FixedReg(preg))
-            | (Requirement::FixedReg(preg), Requirement::Register) => {
-                Ok(Requirement::FixedReg(preg))
+            // `Any` matches anything.
+            (other, Any) | (Any, other) => Ok(other),
+            // Same kinds match.
+            (Register, Register) => Ok(self),
+            (Stack, Stack) => Ok(self),
+            (Limit(a), Limit(b)) => Ok(Limit(a.min(b))),
+            (FixedReg(a), FixedReg(b)) if a == b => Ok(self),
+            (FixedStack(a), FixedStack(b)) if a == b => Ok(self),
+            // Limit a 'Register|FixedReg`.
+            (Limit(a), Register) | (Register, Limit(a)) => Ok(Limit(a)),
+            (Limit(a), FixedReg(b)) | (FixedReg(b), Limit(a)) if usize::from(a) > b.hw_enc() => {
+                Ok(FixedReg(b))
             }
-            (Requirement::Stack, Requirement::FixedStack(preg))
-            | (Requirement::FixedStack(preg), Requirement::Stack) => {
-                Ok(Requirement::FixedStack(preg))
-            }
-            (Requirement::FixedReg(a), Requirement::FixedReg(b)) if a == b => Ok(self),
-            (Requirement::FixedStack(a), Requirement::FixedStack(b)) if a == b => Ok(self),
+            // Constrain `Register|Stack` to `Fixed{Reg|Stack}`.
+            (Register, FixedReg(preg)) | (FixedReg(preg), Register) => Ok(FixedReg(preg)),
+            (Stack, FixedStack(preg)) | (FixedStack(preg), Stack) => Ok(FixedStack(preg)),
+            // Fail otherwise.
             _ => Err(RequirementConflict),
         }
     }
@@ -89,7 +96,7 @@ impl Requirement {
     pub fn is_stack(self) -> bool {
         match self {
             Requirement::Stack | Requirement::FixedStack(..) => true,
-            Requirement::Register | Requirement::FixedReg(..) => false,
+            Requirement::Register | Requirement::FixedReg(..) | Requirement::Limit(..) => false,
             Requirement::Any => false,
         }
     }
@@ -97,7 +104,7 @@ impl Requirement {
     #[inline(always)]
     pub fn is_reg(self) -> bool {
         match self {
-            Requirement::Register | Requirement::FixedReg(..) => true,
+            Requirement::Register | Requirement::FixedReg(..) | Requirement::Limit(..) => true,
             Requirement::Stack | Requirement::FixedStack(..) => false,
             Requirement::Any => false,
         }
@@ -116,6 +123,7 @@ impl<'a, F: Function> Env<'a, F> {
                 }
             }
             OperandConstraint::Reg | OperandConstraint::Reuse(_) => Requirement::Register,
+            OperandConstraint::Limit(max) => Requirement::Limit(max),
             OperandConstraint::Stack => Requirement::Stack,
             OperandConstraint::Any => Requirement::Any,
         }
