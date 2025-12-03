@@ -458,15 +458,14 @@ impl<'a, F: Function> Env<'a, F> {
                 // Does the instruction have any input-reusing
                 // outputs? This is important below to establish
                 // proper interference wrt other inputs. We note the
-                // *vreg* that is reused, not the index.
-                let mut reused_input = None;
+                // *vreg*s that are reused, not the index.
+                let mut reused_inputs: SmallVec<[VReg; 4]> = smallvec![];
                 for op in self.func.inst_operands(inst) {
                     if let OperandConstraint::Reuse(i) = op.constraint() {
                         debug_assert!(self.func.inst_operands(inst)[i]
                             .as_fixed_nonallocatable()
                             .is_none());
-                        reused_input = Some(self.func.inst_operands(inst)[i].vreg());
-                        break;
+                        reused_inputs.push(self.func.inst_operands(inst)[i].vreg())
                     }
                 }
 
@@ -590,8 +589,8 @@ impl<'a, F: Function> Env<'a, F> {
                             // the other inputs and the
                             // input-that-is-reused/output.
                             (OperandKind::Use, OperandPos::Early)
-                                if reused_input.is_some()
-                                    && reused_input.unwrap() != operand.vreg() =>
+                                if !reused_inputs.is_empty()
+                                    && !reused_inputs.contains(&operand.vreg()) =>
                             {
                                 ProgPoint::after(inst)
                             }
