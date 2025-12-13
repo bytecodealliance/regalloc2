@@ -21,6 +21,7 @@ use crate::{
     ion::data_structures::{
         CodeRange, Use, BUNDLE_MAX_NORMAL_SPILL_WEIGHT, MAX_SPLITS_PER_SPILLSET,
         MINIMAL_BUNDLE_SPILL_WEIGHT, MINIMAL_FIXED_BUNDLE_SPILL_WEIGHT,
+        MINIMAL_LIMITED_BUNDLE_SPILL_WEIGHT,
     },
     Allocation, Function, Inst, InstPosition, OperandConstraint, OperandKind, PReg, ProgPoint,
     RegAllocError,
@@ -325,6 +326,9 @@ impl<'a, F: Function> Env<'a, F> {
             if fixed {
                 trace!("  -> fixed and minimal");
                 MINIMAL_FIXED_BUNDLE_SPILL_WEIGHT
+            } else if let Some(limit) = self.ctx.bundles[bundle].limit {
+                trace!("  -> limited({limit}) and minimal");
+                MINIMAL_LIMITED_BUNDLE_SPILL_WEIGHT - u32::from(limit)
             } else {
                 trace!("  -> non-fixed and minimal");
                 MINIMAL_BUNDLE_SPILL_WEIGHT
