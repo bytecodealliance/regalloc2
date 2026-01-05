@@ -14,6 +14,9 @@
 #![allow(clippy::all)]
 #![no_std]
 
+#[cfg(feature = "fuzzing")]
+extern crate std;
+
 extern crate alloc;
 
 // Even when trace logging is disabled, the trace macro has a significant
