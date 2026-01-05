@@ -40,7 +40,8 @@ overflow-checks = true
 [features]
 default = ["std"]
 
-# Enables std-specific features such as the Error trait for RegAllocError.
+# Currently does nothing, but historically enabled some `std` features such as
+# the `Error` trait.
 std = []
 
 # Enables generation of DefAlloc edits for the checker.
