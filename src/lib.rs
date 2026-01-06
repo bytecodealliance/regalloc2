@@ -14,7 +14,7 @@
 #![allow(clippy::all)]
 #![no_std]
 
-#[cfg(feature = "std")]
+#[cfg(feature = "fuzzing")]
 extern crate std;
 
 extern crate alloc;
@@ -1627,8 +1627,7 @@ impl core::fmt::Display for RegAllocError {
     }
 }
 
-#[cfg(feature = "std")]
-impl std::error::Error for RegAllocError {}
+impl core::error::Error for RegAllocError {}
 
 /// Run the allocator.
 pub fn run<F: Function>(
