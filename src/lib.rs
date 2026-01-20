@@ -303,6 +303,15 @@ impl PRegSet {
     pub fn max_preg(&self) -> Option<PReg> {
         self.into_iter().last()
     }
+
+    /// Add all registers from `0..reg` to this set, not including `reg` itself.
+    pub fn add_up_to(&mut self, reg: PReg) {
+        let (index, bit) = Self::split_index(reg);
+        for i in 0..index {
+            self.bits[i] = !0;
+        }
+        self.bits[index] = (1 << bit) - 1;
+    }
 }
 
 impl core::ops::BitAnd<PRegSet> for PRegSet {
@@ -1820,5 +1829,32 @@ mod tests {
 
         set.add(PReg::new(2, Int));
         assert_eq!(set.max_preg(), Some(PReg::new(4, Int)));
+    }
+
+    #[test]
+    fn preg_set_new_up_to() {
+        let p0 = PReg::new(0, Int);
+        let p1 = PReg::new(1, Int);
+        let p2 = PReg::new(2, Int);
+        let p3 = PReg::new(3, Int);
+        {
+            let mut set = PRegSet::empty();
+            set.add_up_to(p1);
+            assert!(set.contains(p0));
+            assert!(!set.contains(p1));
+        }
+        {
+            let mut set = PRegSet::empty();
+            set.add_up_to(p0);
+            assert!(!set.contains(p0));
+        }
+        {
+            let mut set = PRegSet::empty();
+            set.add_up_to(p3);
+            assert!(set.contains(p0));
+            assert!(set.contains(p1));
+            assert!(set.contains(p2));
+            assert!(!set.contains(p3));
+        }
     }
 }

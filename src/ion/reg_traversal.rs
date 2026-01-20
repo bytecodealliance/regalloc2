@@ -10,18 +10,15 @@ struct Cursor {
 
 impl Cursor {
     #[inline]
-    fn new(registers: &PRegSet, offset_hint: usize) -> Self {
-        let first = registers
-            .into_iter()
-            .skip(offset_hint)
-            .collect::<PRegSet>()
-            .into_iter();
-        let second = registers
-            .into_iter()
-            .take(offset_hint)
-            .collect::<PRegSet>()
-            .into_iter();
-        Self { first, second }
+    fn new(registers: &PRegSet, class: RegClass, offset_hint: usize) -> Self {
+        let mut mask = PRegSet::empty();
+        mask.add_up_to(PReg::new(offset_hint % PReg::MAX, class));
+        let first = *registers & mask.invert();
+        let second = *registers & mask;
+        Self {
+            first: first.into_iter(),
+            second: second.into_iter(),
+        }
     }
 
     fn next(&mut self) -> Option<PReg> {
@@ -65,9 +62,10 @@ impl RegTraversalIter {
         debug_assert!(fixed != Some(PReg::invalid()));
         debug_assert!(hint != Some(PReg::invalid()));
 
-        let class = class as u8 as usize;
-        let preferred = Cursor::new(&env.preferred_regs_by_class[class], offset);
-        let non_preferred = Cursor::new(&env.non_preferred_regs_by_class[class], offset);
+        let class_index = class as u8 as usize;
+        let preferred = Cursor::new(&env.preferred_regs_by_class[class_index], class, offset);
+        let non_preferred =
+            Cursor::new(&env.non_preferred_regs_by_class[class_index], class, offset);
 
         Self {
             is_fixed: fixed.is_some(),
