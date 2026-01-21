@@ -1800,7 +1800,7 @@ unsafe impl allocator_api2::alloc::Allocator for Bump {
 
 #[cfg(test)]
 mod tests {
-    use super::{PReg, PRegSet, RegClass::Int};
+    use super::{PReg, PRegSet, RegClass::*};
 
     #[test]
     fn preg_set_len() {
@@ -1833,28 +1833,37 @@ mod tests {
 
     #[test]
     fn preg_set_new_up_to() {
-        let p0 = PReg::new(0, Int);
-        let p1 = PReg::new(1, Int);
-        let p2 = PReg::new(2, Int);
-        let p3 = PReg::new(3, Int);
-        {
-            let mut set = PRegSet::empty();
-            set.add_up_to(p1);
-            assert!(set.contains(p0));
-            assert!(!set.contains(p1));
-        }
-        {
-            let mut set = PRegSet::empty();
-            set.add_up_to(p0);
-            assert!(!set.contains(p0));
-        }
-        {
-            let mut set = PRegSet::empty();
-            set.add_up_to(p3);
-            assert!(set.contains(p0));
-            assert!(set.contains(p1));
-            assert!(set.contains(p2));
-            assert!(!set.contains(p3));
+        for class in [Int, Float, Vector] {
+            let p0 = PReg::new(0, class);
+            let p1 = PReg::new(1, class);
+            let p2 = PReg::new(2, class);
+            let p3 = PReg::new(3, class);
+            {
+                let mut set = PRegSet::empty();
+                set.add_up_to(p1);
+                assert!(set.contains(p0));
+                assert!(!set.contains(p1));
+            }
+            {
+                let mut set = PRegSet::empty();
+                set.add_up_to(p0);
+                assert!(!set.contains(p0));
+            }
+            {
+                let mut set = PRegSet::empty();
+                set.add_up_to(p3);
+                assert!(set.contains(p0));
+                assert!(set.contains(p1));
+                assert!(set.contains(p2));
+                assert!(!set.contains(p3));
+            }
+            for i in 1..64 {
+                let mut set = PRegSet::empty();
+                set.add_up_to(PReg::new(i, class));
+                assert!(set.contains(p0));
+                assert!(set.contains(PReg::new(i - 1, class)));
+                assert!(!set.contains(PReg::new(i, class)));
+            }
         }
     }
 }
