@@ -293,6 +293,25 @@ impl PRegSet {
     pub fn is_empty(&self, regclass: RegClass) -> bool {
         self.bits[regclass as usize] == 0
     }
+
+    /// Returns the number of register in this set.
+    pub fn len(&self) -> u32 {
+        self.bits.iter().map(|s| s.count_ones()).sum()
+    }
+
+    /// Returns the maximum register in this set, with the highest hw_enc value.
+    pub fn max_preg(&self) -> Option<PReg> {
+        self.into_iter().last()
+    }
+
+    /// Add all registers from `0..reg` to this set, not including `reg` itself.
+    pub fn add_up_to(&mut self, reg: PReg) {
+        let (index, bit) = Self::split_index(reg);
+        for i in 0..index {
+            self.bits[i] = !0;
+        }
+        self.bits[index] = (1 << bit) - 1;
+    }
 }
 
 impl core::ops::BitAnd<PRegSet> for PRegSet {
@@ -312,6 +331,14 @@ impl core::ops::BitOr<PRegSet> for PRegSet {
         let mut out = self;
         out.union_from(rhs);
         out
+    }
+}
+
+impl IntoIterator for &PRegSet {
+    type Item = PReg;
+    type IntoIter = PRegSetIter;
+    fn into_iter(self) -> PRegSetIter {
+        (*self).into_iter()
     }
 }
 
@@ -352,15 +379,11 @@ impl From<&MachineEnv> for PRegSet {
         let mut res = Self::default();
 
         for class in env.preferred_regs_by_class.iter() {
-            for preg in class {
-                res.add(*preg)
-            }
+            res.union_from(*class)
         }
 
         for class in env.non_preferred_regs_by_class.iter() {
-            for preg in class {
-                res.add(*preg)
-            }
+            res.union_from(*class)
         }
 
         res
@@ -1483,7 +1506,7 @@ pub struct MachineEnv {
     ///
     /// If an explicit scratch register is provided in `scratch_by_class` then
     /// it must not appear in this list.
-    pub preferred_regs_by_class: [Vec<PReg>; 3],
+    pub preferred_regs_by_class: [PRegSet; 3],
 
     /// Non-preferred physical registers for each class. These are the
     /// registers that will be allocated if a preferred register is
@@ -1492,7 +1515,7 @@ pub struct MachineEnv {
     ///
     /// If an explicit scratch register is provided in `scratch_by_class` then
     /// it must not appear in this list.
-    pub non_preferred_regs_by_class: [Vec<PReg>; 3],
+    pub non_preferred_regs_by_class: [PRegSet; 3],
 
     /// Optional dedicated scratch register per class. This is needed to perform
     /// moves between registers when cyclic move patterns occur. The
@@ -1772,5 +1795,75 @@ unsafe impl allocator_api2::alloc::Allocator for Bump {
         new_layout: core::alloc::Layout,
     ) -> Result<core::ptr::NonNull<[u8]>, allocator_api2::alloc::AllocError> {
         self.0.deref().shrink(ptr, old_layout, new_layout)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PReg, PRegSet, RegClass::*};
+
+    #[test]
+    fn preg_set_len() {
+        let mut set = PRegSet::empty();
+        assert_eq!(set.len(), 0);
+
+        set.add(PReg::new(3, Int));
+        assert_eq!(set.len(), 1);
+        set.add(PReg::new(3, Int));
+        assert_eq!(set.len(), 1);
+
+        set.add(PReg::new(4, Int));
+        assert_eq!(set.len(), 2);
+    }
+
+    #[test]
+    fn preg_set_max_preg() {
+        let mut set = PRegSet::empty();
+        assert_eq!(set.max_preg(), None);
+
+        set.add(PReg::new(3, Int));
+        assert_eq!(set.max_preg(), Some(PReg::new(3, Int)));
+
+        set.add(PReg::new(4, Int));
+        assert_eq!(set.max_preg(), Some(PReg::new(4, Int)));
+
+        set.add(PReg::new(2, Int));
+        assert_eq!(set.max_preg(), Some(PReg::new(4, Int)));
+    }
+
+    #[test]
+    fn preg_set_new_up_to() {
+        for class in [Int, Float, Vector] {
+            let p0 = PReg::new(0, class);
+            let p1 = PReg::new(1, class);
+            let p2 = PReg::new(2, class);
+            let p3 = PReg::new(3, class);
+            {
+                let mut set = PRegSet::empty();
+                set.add_up_to(p1);
+                assert!(set.contains(p0));
+                assert!(!set.contains(p1));
+            }
+            {
+                let mut set = PRegSet::empty();
+                set.add_up_to(p0);
+                assert!(!set.contains(p0));
+            }
+            {
+                let mut set = PRegSet::empty();
+                set.add_up_to(p3);
+                assert!(set.contains(p0));
+                assert!(set.contains(p1));
+                assert!(set.contains(p2));
+                assert!(!set.contains(p3));
+            }
+            for i in 1..64 {
+                let mut set = PRegSet::empty();
+                set.add_up_to(PReg::new(i, class));
+                assert!(set.contains(p0));
+                assert!(set.contains(PReg::new(i - 1, class)));
+                assert!(!set.contains(PReg::new(i, class)));
+            }
+        }
     }
 }
