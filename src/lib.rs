@@ -257,7 +257,7 @@ impl PRegSet {
     }
 
     /// Add a physical register (PReg) to the set.
-    pub fn add(&mut self, reg: PReg) {
+    pub const fn add(&mut self, reg: PReg) {
         let (index, bit) = Self::split_index(reg);
         self.bits[index] |= 1 << bit;
     }
@@ -461,6 +461,11 @@ impl VReg {
     #[inline(always)]
     pub const fn bits(self) -> usize {
         self.bits as usize
+    }
+
+    #[inline(always)]
+    pub const fn from_bits(bits: u32) -> VReg {
+        Self { bits }
     }
 }
 
