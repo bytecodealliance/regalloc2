@@ -426,7 +426,7 @@ pub struct VReg {
 }
 
 impl VReg {
-    pub const MAX_BITS: usize = 21;
+    pub const MAX_BITS: usize = 30;
     pub const MAX: usize = (1 << Self::MAX_BITS) - 1;
 
     #[inline(always)]
@@ -656,9 +656,9 @@ pub enum OperandPos {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "enable-serde", derive(Serialize, Deserialize))]
 pub struct Operand {
-    /// Bit-pack into 32 bits.
+    /// Bit-pack into 64 bits.
     ///
-    /// constraint:7 kind:1 pos:1 class:2 vreg:21
+    /// unused:21 constraint:7 kind:1 pos:1 class:2 vreg:32
     ///
     /// where `constraint` is an `OperandConstraint`, `kind` is an
     /// `OperandKind`, `pos` is an `OperandPos`, `class` is a
@@ -672,10 +672,32 @@ pub struct Operand {
     /// - 0000001 => Reg
     /// - 0000010 => Stack
     /// - _ => Unused for now
-    bits: u32,
+    bits: u64,
 }
 
 impl Operand {
+    const VREG_BITS: usize = 32;
+    const VREG_SHIFT: usize = 0;
+    const VREG_MASK: u64 = (1 << Self::VREG_BITS) - 1;
+
+    const CLASS_BITS: usize = 2;
+    const CLASS_SHIFT: usize = Self::VREG_SHIFT + Self::VREG_BITS;
+    const CLASS_MASK: u64 = (1 << Self::CLASS_BITS) - 1;
+
+    const POS_BITS: usize = 1;
+    const POS_SHIFT: usize = Self::CLASS_SHIFT + Self::CLASS_BITS;
+    const POS_MASK: u64 = (1 << Self::POS_BITS) - 1;
+
+    const KIND_BITS: usize = 1;
+    const KIND_SHIFT: usize = Self::POS_SHIFT + Self::POS_BITS;
+    const KIND_MASK: u64 = (1 << Self::KIND_BITS) - 1;
+
+    const CONSTRAINT_BITS: usize = 7;
+    const CONSTRAINT_SHIFT: usize = Self::KIND_SHIFT + Self::KIND_BITS;
+    const CONSTRAINT_MASK: u64 = (1 << Self::CONSTRAINT_BITS) - 1;
+
+    const TOTAL_BITS: usize = Self::CONSTRAINT_SHIFT + Self::CONSTRAINT_BITS;
+
     /// Construct a new operand.
     #[inline(always)]
     pub fn new(
@@ -690,11 +712,11 @@ impl Operand {
             OperandConstraint::Stack => 2,
             OperandConstraint::FixedReg(preg) => {
                 debug_assert_eq!(preg.class(), vreg.class());
-                0b1000000 | preg.hw_enc() as u32
+                0b1000000 | preg.hw_enc() as u64
             }
             OperandConstraint::Reuse(which) => {
                 debug_assert!(which <= 0b11111);
-                0b0100000 | which as u32
+                0b0100000 | which as u64
             }
             OperandConstraint::Limit(max) => {
                 assert!(max.is_power_of_two());
@@ -704,18 +726,18 @@ impl Operand {
                 );
                 let log2 = max.ilog2();
                 debug_assert!(log2 <= 0b1111);
-                0b0010000 | log2 as u32
+                0b0010000 | log2 as u64
             }
         };
-        let class_field = vreg.class() as u8 as u32;
-        let pos_field = pos as u8 as u32;
-        let kind_field = kind as u8 as u32;
+        let class_field = vreg.class() as u8 as u64;
+        let pos_field = pos as u8 as u64;
+        let kind_field = kind as u8 as u64;
         Operand {
-            bits: vreg.vreg() as u32
-                | (class_field << 21)
-                | (pos_field << 23)
-                | (kind_field << 24)
-                | (constraint_field << 25),
+            bits: ((vreg.vreg() as u64) << Self::VREG_SHIFT)
+                | (class_field << Self::CLASS_SHIFT)
+                | (pos_field << Self::POS_SHIFT)
+                | (kind_field << Self::KIND_SHIFT)
+                | (constraint_field << Self::CONSTRAINT_SHIFT),
         }
     }
 
@@ -915,14 +937,14 @@ impl Operand {
     /// are used to track dataflow.
     #[inline(always)]
     pub fn vreg(self) -> VReg {
-        let vreg_idx = ((self.bits as usize) & VReg::MAX) as usize;
+        let vreg_idx = ((self.bits >> Self::VREG_SHIFT) & Self::VREG_MASK) as usize;
         VReg::new(vreg_idx, self.class())
     }
 
     /// Get the register class used by this operand.
     #[inline(always)]
     pub fn class(self) -> RegClass {
-        let class_field = (self.bits >> 21) & 3;
+        let class_field = (self.bits >> Self::CLASS_SHIFT) & Self::CLASS_MASK;
         match class_field {
             0 => RegClass::Int,
             1 => RegClass::Float,
@@ -935,7 +957,7 @@ impl Operand {
     /// (read).
     #[inline(always)]
     pub fn kind(self) -> OperandKind {
-        let kind_field = (self.bits >> 24) & 1;
+        let kind_field = (self.bits >> Self::KIND_SHIFT) & Self::KIND_MASK;
         match kind_field {
             0 => OperandKind::Def,
             1 => OperandKind::Use,
@@ -949,7 +971,7 @@ impl Operand {
     /// at "after", though there are cases where this is not true.
     #[inline(always)]
     pub fn pos(self) -> OperandPos {
-        let pos_field = (self.bits >> 23) & 1;
+        let pos_field = (self.bits >> Self::POS_SHIFT) & Self::POS_MASK;
         match pos_field {
             0 => OperandPos::Early,
             1 => OperandPos::Late,
@@ -961,7 +983,8 @@ impl Operand {
     /// its allocation must fulfill.
     #[inline(always)]
     pub fn constraint(self) -> OperandConstraint {
-        let constraint_field = ((self.bits >> 25) as usize) & 0b1111111;
+        let constraint_field =
+            ((self.bits >> Self::CONSTRAINT_SHIFT) & Self::CONSTRAINT_MASK) as usize;
         if constraint_field & 0b1000000 != 0 {
             OperandConstraint::FixedReg(PReg::new(constraint_field & 0b0111111, self.class()))
         } else if constraint_field & 0b0100000 != 0 {
@@ -989,17 +1012,17 @@ impl Operand {
         }
     }
 
-    /// Get the raw 32-bit encoding of this operand's fields.
+    /// Get the raw 64-bit encoding of this operand's fields.
     #[inline(always)]
-    pub fn bits(self) -> u32 {
+    pub fn bits(self) -> u64 {
         self.bits
     }
 
-    /// Construct an `Operand` from the raw 32-bit encoding returned
+    /// Construct an `Operand` from the raw 64-bit encoding returned
     /// from `bits()`.
     #[inline(always)]
-    pub fn from_bits(bits: u32) -> Self {
-        debug_assert!(bits >> 29 <= 4);
+    pub fn from_bits(bits: u64) -> Self {
+        debug_assert_eq!(bits >> Self::TOTAL_BITS, 0);
         Operand { bits }
     }
 }
