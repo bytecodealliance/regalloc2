@@ -94,6 +94,7 @@ impl<'a, F: Function> Env<'a, F> {
             self.ctx.pregs[reg.index()].allocations.btree
         );
         let mut first_conflict: Option<ProgPoint> = None;
+        let mut last_conflict_bundle: Option<LiveBundleIndex> = None;
 
         'ranges: for entry in bundle_ranges {
             trace!(" -> range LR {:?}: {:?}", entry.index, entry.range);
@@ -158,6 +159,12 @@ impl<'a, F: Function> Env<'a, F> {
                     // conflicts list.
                     let conflict_bundle = self.ctx.ranges[*preg_range].bundle;
                     trace!("   -> conflict bundle {:?}", conflict_bundle);
+                    // Adjacent preg ranges very often belong to the same
+                    // bundle; skip the dedup-set lookup on repeats.
+                    if last_conflict_bundle == Some(conflict_bundle) {
+                        continue 'alloc;
+                    }
+                    last_conflict_bundle = Some(conflict_bundle);
                     if self.ctx.conflict_set.insert(conflict_bundle) {
                         conflicts.push(conflict_bundle);
                         max_conflict_weight = core::cmp::max(
