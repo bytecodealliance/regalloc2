@@ -447,32 +447,27 @@ impl core::ops::IndexMut<VReg> for VRegs {
 /// A dedup set of `LiveBundleIndex` values that avoids hashing.
 ///
 /// Each bundle index is mapped to a slot in a dense array holding the
-/// generation at which it was last inserted. `clear` simply bumps the
-/// current generation (O(1) in the common case), and `insert` is a
-/// single bounds-checked compare-and-store. This is a drop-in
-/// replacement for the previous `FxHashSet<LiveBundleIndex>` that is
-/// much cheaper when a bundle conflicts with many others (e.g. a
-/// function with many locals).
+/// generation at which it was last inserted. `clear` bumps the current
+/// generation and `insert` updates the stamp for the given bundle and
+/// resizes the array if necessary.
+/// This is a drop-in replacement for the previous `FxHashSet<LiveBundleIndex>`
+/// that is much cheaper when a bundle conflicts with many others (e.g. for
+/// functions with many locals).
 #[derive(Clone, Debug, Default)]
 pub struct ConflictSet {
     // Generation at which each bundle was last inserted. The value `0`
     // means "never inserted"; `generation` is therefore always >= 1
     // after the first `clear`.
-    stamps: Vec<u32>,
-    generation: u32,
+    stamps: Vec<u64>,
+    generation: u64,
 }
 
 impl ConflictSet {
-    /// Empty the set. O(1) except on the rare generation wraparound.
+    /// Empty the set by bumping the generation.
+    /// Every value below the new generation is now stale.
     #[inline]
     pub fn clear(&mut self) {
-        self.generation = self.generation.wrapping_add(1);
-        if self.generation == 0 {
-            // Wrapped around; reset stamps so stale entries don't read
-            // as present, and skip the reserved `0` generation.
-            self.stamps.iter_mut().for_each(|s| *s = 0);
-            self.generation = 1;
-        }
+        self.generation += 1;
     }
 
     /// Insert `bundle`. Returns `true` if it was not already present.
