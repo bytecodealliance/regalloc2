@@ -6,7 +6,6 @@
 //! Index sets: sets of integers that represent indices into a space.
 
 use alloc::vec::Vec;
-use core::cell::Cell;
 
 use crate::FxHashMap;
 
@@ -14,9 +13,6 @@ const SMALL_ELEMS: usize = 12;
 
 /// A hybrid large/small-mode sparse mapping from integer indices to
 /// elements.
-///
-/// The trailing `(u32, u64)` elements in each variant is a one-item
-/// cache to allow fast access when streaming through.
 #[derive(Clone, Debug)]
 enum AdaptiveMap {
     Small {
@@ -182,7 +178,6 @@ impl<'a> core::iter::Iterator for AdaptiveMapIter<'a> {
 #[derive(Clone)]
 pub struct IndexSet {
     elems: AdaptiveMap,
-    cache: Cell<(u32, u64)>,
 }
 
 const BITS_PER_WORD: usize = 64;
@@ -191,36 +186,25 @@ impl IndexSet {
     pub fn new() -> Self {
         Self {
             elems: AdaptiveMap::new(),
-            cache: Cell::new((INVALID, 0)),
         }
     }
 
     #[inline(always)]
     fn elem(&mut self, bit_index: usize) -> &mut u64 {
         let word_index = (bit_index / BITS_PER_WORD) as u32;
-        if self.cache.get().0 == word_index {
-            self.cache.set((INVALID, 0));
-        }
         self.elems.get_or_insert(word_index)
     }
 
     #[inline(always)]
     fn maybe_elem_mut(&mut self, bit_index: usize) -> Option<&mut u64> {
         let word_index = (bit_index / BITS_PER_WORD) as u32;
-        if self.cache.get().0 == word_index {
-            self.cache.set((INVALID, 0));
-        }
         self.elems.get_mut(word_index)
     }
 
     #[inline(always)]
     fn maybe_elem(&self, bit_index: usize) -> Option<u64> {
         let word_index = (bit_index / BITS_PER_WORD) as u32;
-        if self.cache.get().0 == word_index {
-            Some(self.cache.get().1)
-        } else {
-            self.elems.get(word_index)
-        }
+        self.elems.get(word_index)
     }
 
     #[inline(always)]
@@ -235,7 +219,6 @@ impl IndexSet {
 
     pub fn assign(&mut self, other: &Self) {
         self.elems = other.elems.clone();
-        self.cache = other.cache.clone();
     }
 
     #[inline(always)]
