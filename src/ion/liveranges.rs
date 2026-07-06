@@ -125,7 +125,7 @@ impl<'a, F: Function> Env<'a, F> {
             self.ctx.vregs.add(
                 VReg::new(idx, RegClass::Int),
                 VRegData {
-                    ranges: LiveRangeList::new_in(self.ctx.bump()),
+                    ranges: LiveRangeList::new_in(self.ctx.scratch_bump.clone()),
                     blockparam: Block::invalid(),
                     // We'll learn the RegClass as we scan the code.
                     class: None,
@@ -196,7 +196,7 @@ impl<'a, F: Function> Env<'a, F> {
         {
             // Is not contiguous with previously-added (immediately
             // following) range; create a new range.
-            let lr = self.ctx.ranges.add(range, self.ctx.bump());
+            let lr = self.ctx.ranges.add(range, self.ctx.scratch_bump.clone());
             self.ranges[lr].vreg = vreg;
             self.vregs[vreg]
                 .ranges
