@@ -444,7 +444,71 @@ impl core::ops::IndexMut<VReg> for VRegs {
     }
 }
 
-#[derive(Default)]
+/// An unsafe wrapper around a `T` that is always `Send + Sync`, regardless
+/// whether `T` is or not.
+#[repr(transparent)]
+pub(crate) struct UnsafeSendSync<T> {
+    inner: T,
+}
+
+impl<'a, T> IntoIterator for &'a UnsafeSendSync<T>
+where
+    &'a T: IntoIterator,
+{
+    type Item = <&'a T as IntoIterator>::Item;
+
+    type IntoIter = <&'a T as IntoIterator>::IntoIter;
+
+    fn into_iter(self) -> Self::IntoIter {
+        (&self.inner).into_iter()
+    }
+}
+
+impl<'a, T> IntoIterator for &'a mut UnsafeSendSync<T>
+where
+    &'a mut T: IntoIterator,
+{
+    type Item = <&'a mut T as IntoIterator>::Item;
+
+    type IntoIter = <&'a mut T as IntoIterator>::IntoIter;
+
+    fn into_iter(self) -> Self::IntoIter {
+        (&mut self.inner).into_iter()
+    }
+}
+
+// SAFETY: upheld by the invariants callers of `UnsafeSendSync::new` must uphold
+// in turn.
+unsafe impl<T> Send for UnsafeSendSync<T> {}
+unsafe impl<T> Sync for UnsafeSendSync<T> {}
+
+impl<T> Deref for UnsafeSendSync<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl<T> DerefMut for UnsafeSendSync<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner
+    }
+}
+
+impl<T> UnsafeSendSync<T> {
+    /// Create a new `UnsafeSendSync<T>`.
+    ///
+    /// # Safety
+    ///
+    /// The result is `Send` and `Sync` regardless whether `T: Send + Sync`. You
+    /// must ensure that the result is only used in a manner that is compatible
+    /// with whether `T` is `Send + Sync`.
+    pub unsafe fn new(inner: T) -> Self {
+        Self { inner }
+    }
+}
+
 pub struct Ctx {
     pub(crate) cfginfo: CFGInfo,
     pub(crate) cfginfo_ctx: CFGInfoCtx,
@@ -453,10 +517,10 @@ pub struct Ctx {
     pub(crate) blockparam_outs: Vec<BlockparamOut>,
     pub(crate) blockparam_ins: Vec<BlockparamIn>,
 
-    pub(crate) ranges: LiveRanges,
-    pub(crate) bundles: LiveBundles,
+    pub(crate) ranges: UnsafeSendSync<LiveRanges>,
+    pub(crate) bundles: UnsafeSendSync<LiveBundles>,
     pub(crate) spillsets: SpillSets,
-    pub(crate) vregs: VRegs,
+    pub(crate) vregs: UnsafeSendSync<VRegs>,
     pub(crate) pregs: Vec<PRegData>,
     pub(crate) allocation_queue: PrioQueue,
 
@@ -503,7 +567,70 @@ pub struct Ctx {
     pub(crate) scratch_removed_lrs_vregs: FxHashSet<VRegIndex>,
     pub(crate) scratch_workqueue_set: FxHashSet<Block>,
 
-    pub(crate) scratch_bump: Bump,
+    pub(crate) scratch_bump: UnsafeSendSync<Bump>,
+}
+
+const _ASSERT_SEND_SYNC: () = {
+    const fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<Ctx>();
+};
+
+impl Default for Ctx {
+    fn default() -> Self {
+        Self {
+            // SAFETY: These collections use a `Bump` allocator. `Bump` is not
+            // `Send + Sync` because it is a newtype of `Rc<bumpalo::Bump>`,
+            // which leads to two problems:
+            //
+            // 1. `bumpalo::Bump` is `Send` but it is _not_ `Sync` (it internally uses a
+            //    `Cell`), and
+            //
+            // 2. `Rc` is neither `Send` nor `Sync`.
+            //
+            // Nonetheless, we only ever touch a `Bump` (and every clone of it!)
+            // from a single thread at a time: all clones of a given `Bump` live
+            // inside one `Ctx`; a `Ctx` is created, mutated, and dropped by a
+            // single thread at a time; and the returned `Output` is
+            // `Bump`-free, so no clone escapes the `Ctx`. The `Bump` is
+            // therefore never shared between threads and its `Rc` clones are
+            // never split across threads, so treating `Bump` as `Send + Sync`
+            // is sound for our usage.
+            ranges: unsafe { UnsafeSendSync::new(Default::default()) },
+            bundles: unsafe { UnsafeSendSync::new(Default::default()) },
+            scratch_bump: unsafe { UnsafeSendSync::new(Default::default()) },
+            vregs: unsafe { UnsafeSendSync::new(Default::default()) },
+
+            cfginfo: Default::default(),
+            cfginfo_ctx: Default::default(),
+            liveins: Default::default(),
+            liveouts: Default::default(),
+            blockparam_outs: Default::default(),
+            blockparam_ins: Default::default(),
+            spillsets: Default::default(),
+            pregs: Default::default(),
+            allocation_queue: Default::default(),
+            spilled_bundles: Default::default(),
+            spillslots: Default::default(),
+            slots_by_class: Default::default(),
+            extra_spillslots_by_class: Default::default(),
+            preferred_victim_by_class: Default::default(),
+            multi_fixed_reg_fixups: Default::default(),
+            allocated_bundle_count: Default::default(),
+            debug_annotations: Default::default(),
+            annotations_enabled: Default::default(),
+            conflict_set: Default::default(),
+            output: Default::default(),
+            scratch_conflicts: Default::default(),
+            scratch_bundle: Default::default(),
+            scratch_vreg_ranges: Default::default(),
+            scratch_spillset_pool: Default::default(),
+            scratch_workqueue: Default::default(),
+            scratch_operand_rewrites: Default::default(),
+            scratch_removed_lrs: Default::default(),
+            scratch_removed_lrs_vregs: Default::default(),
+            scratch_workqueue_set: Default::default(),
+        }
+    }
 }
 
 impl Ctx {

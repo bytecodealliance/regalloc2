@@ -265,7 +265,7 @@ impl<'a, F: Function> Env<'a, F> {
                 continue;
             }
 
-            let bundle = self.ctx.bundles.add(self.ctx.bump());
+            let bundle = self.ctx.bundles.add(self.ctx.scratch_bump.clone());
             let mut range = self.vregs[vreg].ranges.first().unwrap().range;
 
             self.bundles[bundle].ranges = self.vregs[vreg].ranges.clone();

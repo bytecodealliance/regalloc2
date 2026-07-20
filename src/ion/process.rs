@@ -399,7 +399,7 @@ impl<'a, F: Function> Env<'a, F> {
         if idx.is_valid() {
             Some(idx)
         } else if create_if_absent {
-            let idx = self.ctx.bundles.add(self.ctx.bump());
+            let idx = self.ctx.bundles.add(self.ctx.scratch_bump.clone());
             self.ctx.spillsets[ssidx].spill_bundle = idx;
             self.ctx.bundles[idx].spillset = ssidx;
             self.ctx.spilled_bundles.push(idx);
@@ -592,7 +592,7 @@ impl<'a, F: Function> Env<'a, F> {
                     from: split_at,
                     to: new_lr_list[0].range.to,
                 },
-                self.ctx.bump(),
+                self.ctx.scratch_bump.clone(),
             );
             self.ctx.ranges[new_lr].vreg = self.ranges[orig_lr].vreg;
             trace!(" -> splitting LR {:?} into {:?}", orig_lr, new_lr);
@@ -634,7 +634,7 @@ impl<'a, F: Function> Env<'a, F> {
                 });
         }
 
-        let new_bundle = self.ctx.bundles.add(self.ctx.bump());
+        let new_bundle = self.ctx.bundles.add(self.ctx.scratch_bump.clone());
         trace!(" -> creating new bundle {:?}", new_bundle);
         self.ctx.bundles[new_bundle].spillset = spillset;
         for entry in &new_lr_list {
@@ -683,7 +683,7 @@ impl<'a, F: Function> Env<'a, F> {
                         from: split,
                         to: end,
                     };
-                    let empty_lr = self.ctx.ranges.add(range, self.ctx.bump());
+                    let empty_lr = self.ctx.ranges.add(range, self.ctx.scratch_bump.clone());
                     self.ctx.bundles[spill].ranges.push(LiveRangeListEntry {
                         range,
                         index: empty_lr,
@@ -748,7 +748,7 @@ impl<'a, F: Function> Env<'a, F> {
                         from: start,
                         to: split,
                     };
-                    let empty_lr = self.ctx.ranges.add(range, self.ctx.bump());
+                    let empty_lr = self.ctx.ranges.add(range, self.ctx.scratch_bump.clone());
                     self.ctx.bundles[spill].ranges.push(LiveRangeListEntry {
                         range,
                         index: empty_lr,
@@ -881,13 +881,13 @@ impl<'a, F: Function> Env<'a, F> {
 
                 // Create a new LR.
                 let cr = minimal_range_for_use(&u);
-                let lr = self.ctx.ranges.add(cr, self.ctx.bump());
+                let lr = self.ctx.ranges.add(cr, self.ctx.scratch_bump.clone());
                 new_lrs.push((vreg, lr));
                 self.ctx.ranges[lr].uses.push(u);
                 self.ctx.ranges[lr].vreg = vreg;
 
                 // Create a new bundle that contains only this LR.
-                let new_bundle = self.ctx.bundles.add(self.ctx.bump());
+                let new_bundle = self.ctx.bundles.add(self.ctx.scratch_bump.clone());
                 self.ctx.ranges[lr].bundle = new_bundle;
                 self.ctx.bundles[new_bundle].spillset = spillset;
                 self.ctx.bundles[new_bundle]
@@ -915,7 +915,10 @@ impl<'a, F: Function> Env<'a, F> {
                 // Make one entry in the spill bundle that covers the whole range.
                 // TODO: it might be worth tracking enough state to only create this LR when there is
                 // open space in the original LR.
-                let spill_lr = self.ctx.ranges.add(spill_range, self.ctx.bump());
+                let spill_lr = self
+                    .ctx
+                    .ranges
+                    .add(spill_range, self.ctx.scratch_bump.clone());
                 self.ctx.ranges[spill_lr].vreg = vreg;
                 self.ctx.ranges[spill_lr].bundle = spill;
                 self.ctx.ranges[spill_lr].uses.extend(spill_uses.drain(..));
