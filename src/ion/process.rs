@@ -1214,6 +1214,16 @@ impl<'a, F: Function> Env<'a, F> {
                     || lowest_cost_evict_conflict_cost.is_none()
                     || lowest_cost_evict_conflict_cost.unwrap() >= our_spill_weight)
             {
+                // A minimal bundle pinned to one physical register cannot
+                // move, and a fixed reservation on that register (a clobber
+                // is modeled as one) cannot be evicted. The overlap is
+                // illegal: a clobber must not collide with a fixed def or
+                // late use. Reject it instead of panicking.
+                if matches!(req, Requirement::FixedReg(_))
+                    && lowest_cost_evict_conflict_cost.is_none()
+                {
+                    return Err(RegAllocError::TooManyLiveRegs);
+                }
                 if matches!(req, Requirement::Register | Requirement::Limit(_)) {
                     // Check if this is a too-many-live-registers situation.
                     let range = self.ctx.bundles[bundle].ranges[0].range;
