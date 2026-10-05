@@ -367,6 +367,7 @@ pub struct Options {
     pub fixed_regs: bool,
     pub fixed_nonallocatable: bool,
     pub clobbers: bool,
+    pub fixed_def_clobbers: bool,
     pub reftypes: bool,
     pub callsite_ish_constraints: bool,
     pub num_blocks: RangeInclusive<usize>,
@@ -383,6 +384,7 @@ impl Options {
         fixed_regs: false,
         fixed_nonallocatable: false,
         clobbers: false,
+        fixed_def_clobbers: false,
         reftypes: false,
         callsite_ish_constraints: false,
         num_blocks: 1..=100,
@@ -582,6 +584,19 @@ impl Func {
                     )));
                 }
 
+                if opts.fixed_def_clobbers && bool::arbitrary(u)? {
+                    // Exercise an impossible fixed output, not just allocatable functions.
+                    if let (OperandKind::Def, OperandPos::Late, OperandConstraint::FixedReg(preg)) = (
+                        operands[0].kind(),
+                        operands[0].pos(),
+                        operands[0].constraint(),
+                    ) {
+                        if preg.hw_enc() < 32 {
+                            clobbers.push(preg);
+                        }
+                    }
+                }
+
                 builder.add_inst(
                     Block::new(block),
                     InstData {
@@ -637,6 +652,22 @@ impl Func {
         builder.f.debug_value_labels.sort_unstable();
 
         Ok(builder.finalize())
+    }
+
+    pub fn has_fixed_def_clobber(&self) -> bool {
+        self.insts.iter().any(|inst| {
+            inst.clobbers
+                .iter()
+                .any(|&preg| inst.operands.iter().any(has_fixed_def_with(preg)))
+        })
+    }
+
+    pub fn remove_fixed_def_clobbers(&mut self) {
+        for inst in &mut self.insts {
+            let operands = &inst.operands;
+            inst.clobbers
+                .retain(|&preg| !operands.iter().any(has_fixed_def_with(preg)));
+        }
     }
 }
 

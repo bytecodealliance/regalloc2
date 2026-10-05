@@ -1,6 +1,6 @@
 //! Fuzz the `ion` register allocator.
 
-use crate::{checker, fuzzing::func, ion};
+use crate::{checker, fuzzing::func, ion, RegAllocError};
 use arbitrary::{Arbitrary, Result, Unstructured};
 use core::cell::RefCell;
 use std::thread_local;
@@ -11,6 +11,7 @@ const OPTIONS: func::Options = func::Options {
     fixed_regs: true,
     fixed_nonallocatable: true,
     clobbers: true,
+    fixed_def_clobbers: true,
     reftypes: true,
     callsite_ish_constraints: true,
     ..func::Options::DEFAULT
@@ -53,18 +54,38 @@ pub fn check(t: TestCase) {
     log::trace!("func:\n{func:?}");
 
     let env = func::machine_env();
+    let allocatable_func = if func.has_fixed_def_clobber() {
+        let mut allocatable_func = func.clone();
+        allocatable_func.remove_fixed_def_clobbers();
+        Some(allocatable_func)
+    } else {
+        None
+    };
+    let valid_func = allocatable_func.as_ref().unwrap_or(func);
     thread_local! {
         // We test that ctx is cleared properly between runs.
         static CTX: RefCell<ion::Ctx> = RefCell::default();
     }
 
     CTX.with(|ctx| {
-        ion::run(func, &env, &mut *ctx.borrow_mut(), *annotate, *check_ssa)
+        let mut ctx = ctx.borrow_mut();
+        ion::run(valid_func, &env, &mut ctx, *annotate, *check_ssa)
             .expect("regalloc did not succeed");
 
-        let mut checker = checker::Checker::new(func, &env);
-        checker.prepare(&ctx.borrow().output);
-        checker.run().expect("checker failed");
+        {
+            let mut checker = checker::Checker::new(valid_func, &env);
+            checker.prepare(&ctx.output);
+            checker.run().expect("checker failed");
+        }
+
+        if allocatable_func.is_some() {
+            let result = ion::run(func, &env, &mut ctx, *annotate, *check_ssa);
+            assert!(
+                matches!(result, Err(RegAllocError::TooManyLiveRegs)),
+                "expected TooManyLiveRegs for a fixed-def/clobber conflict, got {:?}",
+                result
+            );
+        }
     });
 }
 
