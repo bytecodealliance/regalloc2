@@ -11,6 +11,7 @@ const OPTIONS: func::Options = func::Options {
     fixed_regs: true,
     fixed_nonallocatable: true,
     clobbers: true,
+    fixed_def_clobbers: true,
     reftypes: true,
     callsite_ish_constraints: true,
     ..func::Options::DEFAULT
@@ -59,12 +60,22 @@ pub fn check(t: TestCase) {
     }
 
     CTX.with(|ctx| {
-        ion::run(func, &env, &mut *ctx.borrow_mut(), *annotate, *check_ssa)
-            .expect("regalloc did not succeed");
-
-        let mut checker = checker::Checker::new(func, &env);
-        checker.prepare(&ctx.borrow().output);
-        checker.run().expect("checker failed");
+        let mut ctx = ctx.borrow_mut();
+        let result = ion::run(func, &env, &mut ctx, *annotate, *check_ssa);
+        if let Some(expected) = func.expected_fail() {
+            // The oracle currently returns only the payload-free TooManyLiveRegs variant.
+            assert!(
+                matches!(&result, Err(actual) if core::mem::discriminant(actual) == core::mem::discriminant(&expected)),
+                "expected {:?}, got {:?}",
+                expected,
+                result
+            );
+        } else {
+            result.expect("regalloc did not succeed");
+            let mut checker = checker::Checker::new(func, &env);
+            checker.prepare(&ctx.output);
+            checker.run().expect("checker failed");
+        }
     });
 }
 

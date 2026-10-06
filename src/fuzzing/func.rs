@@ -5,7 +5,7 @@
 
 use crate::{
     domtree, postorder, Allocation, Block, Function, Inst, InstRange, MachineEnv, Operand,
-    OperandConstraint, OperandKind, OperandPos, PReg, PRegSet, RegClass, VReg,
+    OperandConstraint, OperandKind, OperandPos, PReg, PRegSet, RegAllocError, RegClass, VReg,
 };
 
 use alloc::vec::Vec;
@@ -367,6 +367,7 @@ pub struct Options {
     pub fixed_regs: bool,
     pub fixed_nonallocatable: bool,
     pub clobbers: bool,
+    pub fixed_def_clobbers: bool,
     pub reftypes: bool,
     pub callsite_ish_constraints: bool,
     pub num_blocks: RangeInclusive<usize>,
@@ -383,6 +384,7 @@ impl Options {
         fixed_regs: false,
         fixed_nonallocatable: false,
         clobbers: false,
+        fixed_def_clobbers: false,
         reftypes: false,
         callsite_ish_constraints: false,
         num_blocks: 1..=100,
@@ -582,6 +584,22 @@ impl Func {
                     )));
                 }
 
+                if opts.fixed_def_clobbers && bool::arbitrary(u)? {
+                    // Exercise an impossible fixed output, not just allocatable functions.
+                    for operand in &operands {
+                        if let (
+                            OperandKind::Def,
+                            OperandPos::Late,
+                            OperandConstraint::FixedReg(preg),
+                        ) = (operand.kind(), operand.pos(), operand.constraint())
+                        {
+                            if preg.hw_enc() < 32 {
+                                clobbers.push(preg);
+                            }
+                        }
+                    }
+                }
+
                 builder.add_inst(
                     Block::new(block),
                     InstData {
@@ -637,6 +655,20 @@ impl Func {
         builder.f.debug_value_labels.sort_unstable();
 
         Ok(builder.finalize())
+    }
+
+    /// An allocation error implied by the generated function's constraints.
+    pub fn expected_fail(&self) -> Option<RegAllocError> {
+        let fixed_def_clobber = self.insts.iter().any(|inst| {
+            inst.clobbers
+                .iter()
+                .any(|&preg| inst.operands.iter().any(has_fixed_def_with(preg)))
+        });
+        if fixed_def_clobber {
+            Some(RegAllocError::TooManyLiveRegs)
+        } else {
+            None
+        }
     }
 }
 
