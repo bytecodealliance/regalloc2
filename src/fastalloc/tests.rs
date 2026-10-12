@@ -8,6 +8,88 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 #[test]
+fn ion_limited_operands_and_reuse() {
+    let env = mach_env(32);
+    let function = RealFunction::new(vec![BlockBuildInfo {
+        insts: vec![
+            vec![op(Def, 0, FixedReg(p(31)))],
+            vec![op(Def, 1, Limit(16))],
+            vec![op(Use, 0, Limit(16)), op(Use, 1, Reg), op(Def, 2, Reuse(0))],
+            vec![op(Use, 2, FixedReg(p(30))), op(Use, 1, Limit(8))],
+            vec![op(Use, 0, Limit(1)), op(Use, 2, Limit(16))],
+        ],
+    }]);
+    let options = RegallocOptions {
+        algorithm: Algorithm::Ion,
+        validate_ssa: true,
+        ..RegallocOptions::default()
+    };
+    let output = run(&function, &env, &options).unwrap();
+    for index in 0..function.num_insts() {
+        for (operand, allocation) in function
+            .inst_operands(i(index))
+            .iter()
+            .zip(output.inst_allocs(i(index)))
+        {
+            if let Limit(limit) = operand.constraint() {
+                assert!(
+                    allocation.as_reg().unwrap().hw_enc() < limit,
+                    "instruction {}, {:?} -> {:?}",
+                    index,
+                    operand,
+                    allocation
+                );
+            }
+        }
+    }
+    assert_eq!(output.inst_allocs(i(2))[0], output.inst_allocs(i(2))[2]);
+    #[cfg(feature = "checker")]
+    {
+        let mut checker = crate::checker::Checker::new(&function, &env);
+        checker.prepare(&output);
+        checker.run().unwrap();
+    }
+}
+
+#[test]
+fn ion_limited_operand_with_multiple_fixed_uses() {
+    let mut env = mach_env(32);
+    env.fixed_stack_slots = vec![p(38), p(53)];
+    let mut uses = vec![
+        op(Use, 0, FixedReg(p(16))),
+        op(Use, 0, FixedReg(p(53))),
+        op(Use, 0, Limit(16)),
+        op(Use, 0, FixedReg(p(38))),
+        op(Use, 0, Any),
+    ];
+    for _ in 0..uses.len() {
+        uses.rotate_left(1);
+        let function = RealFunction::new(vec![BlockBuildInfo {
+            insts: vec![vec![op(Def, 0, FixedReg(p(31)))], uses.clone()],
+        }]);
+        let options = RegallocOptions {
+            algorithm: Algorithm::Ion,
+            validate_ssa: true,
+            ..RegallocOptions::default()
+        };
+        let output = run(&function, &env, &options).unwrap();
+        for (operand, allocation) in uses.iter().zip(output.inst_allocs(i(1))) {
+            match operand.constraint() {
+                FixedReg(preg) => assert_eq!(*allocation, alloc(preg)),
+                Limit(limit) => assert!(allocation.as_reg().unwrap().hw_enc() < limit),
+                _ => {}
+            }
+        }
+        #[cfg(feature = "checker")]
+        {
+            let mut checker = crate::checker::Checker::new(&function, &env);
+            checker.prepare(&output);
+            checker.run().unwrap();
+        }
+    }
+}
+
+#[test]
 fn test_debug_locations1() {
     let mach_env = mach_env(10);
     let mut options = RegallocOptions::default();
