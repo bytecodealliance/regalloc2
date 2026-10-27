@@ -73,6 +73,22 @@ impl<'a, F: Function> Env<'a, F> {
         }
     }
 
+    /// The spill slot that also holds `vreg` at the end of `block`, as marked
+    /// by the loop-region pass, if any. Only called when a value in a
+    /// register would be moved to the stack there.
+    fn spill_slot_holding(&self, vreg: VRegIndex, block: Block) -> Option<Allocation> {
+        if !self.ctx.any_in_spill_slot {
+            return None;
+        }
+        let exit = self.ctx.cfginfo.block_exit[block.index()];
+        let entry = self.ctx.vregs[vreg].ranges.iter().find(|entry| {
+            entry.range.contains_point(exit)
+                && self.ctx.ranges[entry.index].has_flag(LiveRangeFlag::InSpillSlot)
+        })?;
+        let spillset = self.ctx.bundles[self.ctx.ranges[entry.index].bundle].spillset;
+        Some(self.ctx.spillslots[self.ctx.spillsets[spillset].slot.index()].alloc)
+    }
+
     pub fn apply_allocations_and_insert_moves(&mut self) -> InsertedMoves {
         trace!("apply_allocations_and_insert_moves");
         trace!("blockparam_ins: {:?}", self.blockparam_ins);
@@ -631,6 +647,21 @@ impl<'a, F: Function> Env<'a, F> {
                 trace!("processing inter-block moves for {}", vreg);
                 for dest in inter_block_dests.drain(..) {
                     let src = inter_block_sources[&dest.from];
+                    if src.is_reg()
+                        && dest.alloc.is_stack()
+                        && self.spill_slot_holding(VRegIndex::new(vreg.vreg()), dest.from)
+                            == Some(dest.alloc)
+                    {
+                        trace!(
+                            " -> {} already holds {} between {:?} and {:?}",
+                            dest.alloc,
+                            vreg,
+                            dest.from,
+                            dest.to
+                        );
+                        self.output.stats.spill_slot_stores_elided += 1;
+                        continue;
+                    }
 
                     trace!(
                         " -> moving from {} to {} between {:?} and {:?}",
@@ -653,9 +684,33 @@ impl<'a, F: Function> Env<'a, F> {
             self.output.stats.halfmoves_count += block_param_dests.len();
 
             trace!("processing block-param moves");
+            let mut block_param_args = FxHashMap::<BlockparamSourceKey, VRegIndex>::default();
             for dest in block_param_dests {
                 let src = dest.source();
                 let src_alloc = block_param_sources.get(&src).unwrap();
+                if self.ctx.any_in_spill_slot && src_alloc.is_reg() && dest.alloc.is_stack() {
+                    // Which value is passed, for the few moves that could
+                    // store one already in its slot.
+                    if block_param_args.is_empty() {
+                        block_param_args.extend(self.blockparam_outs.iter().map(|out| {
+                            (
+                                BlockparamSourceKey::new(out.from_block, out.to_vreg),
+                                out.from_vreg,
+                            )
+                        }));
+                    }
+                    let from_vreg = block_param_args[&src];
+                    if self.spill_slot_holding(from_vreg, dest.from_block) == Some(dest.alloc) {
+                        trace!(
+                            " -> {} already holds the value of v{} from block{}",
+                            dest.alloc,
+                            dest.to_vreg.index(),
+                            dest.from_block.index()
+                        );
+                        self.output.stats.spill_slot_stores_elided += 1;
+                        continue;
+                    }
+                }
                 let (pos, prio) = choose_move_location(self, dest.from_block, dest.to_block);
                 inserted_moves.push(pos, prio, *src_alloc, dest.alloc, self.vreg(dest.to_vreg));
             }

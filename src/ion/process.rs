@@ -689,6 +689,7 @@ impl<'a, F: Function> Env<'a, F> {
                         index: empty_lr,
                     });
                     self.ctx.ranges[empty_lr].bundle = spill;
+                    self.ctx.ranges[empty_lr].vreg = vreg;
                     self.ctx.vregs[vreg].ranges.push(LiveRangeListEntry {
                         range,
                         index: empty_lr,
@@ -754,6 +755,7 @@ impl<'a, F: Function> Env<'a, F> {
                         index: empty_lr,
                     });
                     self.ctx.ranges[empty_lr].bundle = spill;
+                    self.ctx.ranges[empty_lr].vreg = vreg;
                     self.ctx.vregs[vreg].ranges.push(LiveRangeListEntry {
                         range,
                         index: empty_lr,

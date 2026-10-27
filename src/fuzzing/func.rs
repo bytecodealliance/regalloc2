@@ -560,13 +560,31 @@ impl Func {
                         // is less than the number of registers in any single
                         // class, so the resulting problem is always
                         // allocatable.
-                        for _ in 0..u.int_in_range(opts.num_clobbers_per_inst.clone())? {
-                            let reg = u.int_in_range(0..=30)?;
-                            let preg = PReg::new(reg, RegClass::arbitrary(u)?);
-                            if operands.iter().any(has_fixed_def_with(preg)) {
-                                continue;
+                        if bool::arbitrary(u)? {
+                            // Or clobber nearly every register of one class, as a
+                            // call does, so that values live across this
+                            // instruction must be spilled. One register per
+                            // operand of that class stays free, at the top so
+                            // that every preferred register is clobbered, which
+                            // keeps the instruction itself allocatable.
+                            let class = RegClass::arbitrary(u)?;
+                            let free = operands.iter().filter(|op| op.class() == class).count();
+                            for reg in 0..32 - free {
+                                let preg = PReg::new(reg, class);
+                                if operands.iter().any(has_fixed_def_with(preg)) {
+                                    continue;
+                                }
+                                clobbers.push(preg);
                             }
-                            clobbers.push(preg);
+                        } else {
+                            for _ in 0..u.int_in_range(opts.num_clobbers_per_inst.clone())? {
+                                let reg = u.int_in_range(0..=30)?;
+                                let preg = PReg::new(reg, RegClass::arbitrary(u)?);
+                                if operands.iter().any(has_fixed_def_with(preg)) {
+                                    continue;
+                                }
+                                clobbers.push(preg);
+                            }
                         }
                     }
                 } else if opts.clobbers && bool::arbitrary(u)? {

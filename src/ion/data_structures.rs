@@ -130,6 +130,9 @@ pub struct LiveRange {
 #[repr(u32)]
 pub enum LiveRangeFlag {
     StartsAtDef = 1,
+    /// The value is also in its spillset's spill slot throughout the range,
+    /// so moving it there at the end of the range is redundant.
+    InSpillSlot = 2,
 }
 
 impl LiveRange {
@@ -567,6 +570,21 @@ pub struct Ctx {
     pub(crate) scratch_removed_lrs_vregs: FxHashSet<VRegIndex>,
     pub(crate) scratch_workqueue_set: FxHashSet<Block>,
 
+    // For each block, the first and last block of the innermost loop
+    // containing it (see `try_allocating_regs_in_loops`).
+    pub(crate) scratch_loop_runs: Vec<(u32, u32)>,
+    // Per register class, the sorted points at which every allocatable
+    // register of that class is clobbered, and those at which every
+    // preferred one is (calls, when the preferred ones are caller-saved).
+    pub(crate) scratch_full_clobbers: [Vec<ProgPoint>; 3],
+    pub(crate) scratch_call_points: [Vec<ProgPoint>; 3],
+    // Candidate loop regions: (depth, first block, last block).
+    pub(crate) scratch_loop_regions: Vec<(u32, u32, u32)>,
+    // The uses of a spilled bundle's vregs, sorted by vreg and position.
+    pub(crate) scratch_loop_uses: Vec<(VRegIndex, ProgPoint)>,
+    // Whether any range has `LiveRangeFlag::InSpillSlot` in this function.
+    pub(crate) any_in_spill_slot: bool,
+
     pub(crate) scratch_bump: UnsafeSendSync<Bump>,
 }
 
@@ -629,6 +647,12 @@ impl Default for Ctx {
             scratch_removed_lrs: Default::default(),
             scratch_removed_lrs_vregs: Default::default(),
             scratch_workqueue_set: Default::default(),
+            scratch_loop_runs: Default::default(),
+            scratch_full_clobbers: Default::default(),
+            scratch_call_points: Default::default(),
+            scratch_loop_regions: Default::default(),
+            scratch_loop_uses: Default::default(),
+            any_in_spill_slot: false,
         }
     }
 }
@@ -973,6 +997,9 @@ pub struct Stats {
     pub spill_bundle_count: usize,
     pub spill_bundle_reg_probes: usize,
     pub spill_bundle_reg_success: usize,
+    pub spill_bundle_loop_region_probes: usize,
+    pub spill_bundle_loop_region_success: usize,
+    pub spill_slot_stores_elided: usize,
     pub blockparam_ins_count: usize,
     pub blockparam_outs_count: usize,
     pub halfmoves_count: usize,
