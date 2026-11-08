@@ -643,6 +643,8 @@ impl<'a, F: Function> Env<'a, F> {
         self.ctx.bundles[new_bundle].ranges = new_lr_list;
 
         if trim_ends_into_spill_bundle {
+            let split_depth = self.ctx.cfginfo.approx_loop_depth
+                [self.ctx.cfginfo.insn_block[split_at.inst().index()].index()];
             // Finally, handle moving LRs to the spill bundle when
             // appropriate: If the first range in `new_bundle` or last
             // range in `bundle` has "empty space" beyond the first or
@@ -651,6 +653,14 @@ impl<'a, F: Function> Env<'a, F> {
             // def" flag as an implicit first def even if no def-type Use
             // is present.)
             while let Some(entry) = self.ctx.bundles[bundle].ranges.last().cloned() {
+                // Trimming can move the spill away from the split point. Do
+                // not move it into a deeper loop: even an unused range can
+                // carry a block parameter along a hot backedge.
+                let depth = self.ctx.cfginfo.approx_loop_depth
+                    [self.ctx.cfginfo.insn_block[entry.range.from.inst().index()].index()];
+                if depth > split_depth {
+                    break;
+                }
                 let end = entry.range.to;
                 let vreg = self.ctx.ranges[entry.index].vreg;
                 let last_use = self.ctx.ranges[entry.index].uses.last().map(|u| u.pos);
@@ -708,6 +718,11 @@ impl<'a, F: Function> Env<'a, F> {
                 break;
             }
             while let Some(entry) = self.ctx.bundles[new_bundle].ranges.first().cloned() {
+                let depth = self.ctx.cfginfo.approx_loop_depth
+                    [self.ctx.cfginfo.insn_block[entry.range.from.inst().index()].index()];
+                if depth > split_depth {
+                    break;
+                }
                 if self.ctx.ranges[entry.index].has_flag(LiveRangeFlag::StartsAtDef) {
                     break;
                 }
