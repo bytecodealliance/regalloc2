@@ -36,6 +36,8 @@ pub struct CFGInfo {
     pub approx_loop_depth: Vec<u32>,
     /// Whether each block is cold.
     pub cold: Vec<bool>,
+    /// Is any block cold?
+    pub any_cold: bool,
 }
 
 impl CFGInfo {
@@ -66,6 +68,7 @@ impl CFGInfo {
             .repopulate(nb, ProgPoint::before(Inst::invalid()));
         let (backedge_in, backedge_out) = ctx.backedge.repopulate(nb * 2, 0).split_at_mut(nb);
         let cold = self.cold.repopulate(nb, false);
+        let mut any_cold = false;
 
         for block in 0..f.num_blocks() {
             let block = Block::new(block);
@@ -74,7 +77,9 @@ impl CFGInfo {
             }
             block_entry[block.index()] = ProgPoint::before(f.block_insns(block).first());
             block_exit[block.index()] = ProgPoint::after(f.block_insns(block).last());
-            cold[block.index()] = f.is_block_cold(block);
+            let block_is_cold = f.is_block_cold(block);
+            cold[block.index()] = block_is_cold;
+            any_cold |= block_is_cold;
 
             // Check critical edge condition: if there is more than
             // one predecessor, each must have only one successor
@@ -116,6 +121,8 @@ impl CFGInfo {
                 }
             }
         }
+
+        self.any_cold = any_cold;
 
         let approx_loop_depth = self.approx_loop_depth.cleared();
         let mut backedge_stack: SmallVec<[u32; 4]> = smallvec![];
