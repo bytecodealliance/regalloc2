@@ -57,6 +57,7 @@ pub struct Func {
     num_vregs: usize,
     reftype_vregs: Vec<VReg>,
     debug_value_labels: Vec<(VReg, Inst, Inst, u32)>,
+    cold_blocks: Vec<bool>,
 }
 
 impl Function for Func {
@@ -129,6 +130,10 @@ impl Function for Func {
             RegClass::Vector => 2,
         }
     }
+
+    fn is_block_cold(&self, block: Block) -> bool {
+        self.cold_blocks[block.index()]
+    }
 }
 
 struct FuncBuilder {
@@ -153,6 +158,7 @@ impl FuncBuilder {
                 num_vregs: 0,
                 reftype_vregs: vec![],
                 debug_value_labels: vec![],
+                cold_blocks: vec![],
             },
             insts_per_block: vec![],
         }
@@ -167,6 +173,7 @@ impl FuncBuilder {
         self.f.block_succs.push(vec![]);
         self.f.block_params_in.push(vec![]);
         self.f.block_params_out.push(vec![]);
+        self.f.cold_blocks.push(false);
         self.insts_per_block.push(vec![]);
         b
     }
@@ -370,6 +377,7 @@ pub struct Options {
     pub fixed_def_clobbers: bool,
     pub reftypes: bool,
     pub callsite_ish_constraints: bool,
+    pub cold_blocks: bool,
     pub num_blocks: RangeInclusive<usize>,
     pub num_vregs_per_block: RangeInclusive<usize>,
     pub num_uses_per_inst: RangeInclusive<usize>,
@@ -387,6 +395,7 @@ impl Options {
         fixed_def_clobbers: false,
         reftypes: false,
         callsite_ish_constraints: false,
+        cold_blocks: false,
         num_blocks: 1..=100,
         num_vregs_per_block: 5..=15,
         num_uses_per_inst: 0..=10,
@@ -448,6 +457,12 @@ impl Func {
             builder.add_edge(Block::new(pred), Block::new(succ));
         }
         builder.compute_doms();
+
+        if opts.cold_blocks {
+            for block in 0..num_blocks {
+                builder.f.cold_blocks[block] = u.ratio(1, 4)?;
+            }
+        }
 
         let alloc_vreg = |builder: &mut FuncBuilder, u: &mut Unstructured| {
             let vreg = VReg::new(builder.f.num_vregs, RegClass::arbitrary(u)?);
@@ -703,10 +718,11 @@ impl core::fmt::Debug for Func {
                 })
                 .collect::<Vec<_>>()
                 .join(", ");
+            let cold = if self.cold_blocks[i] { " cold" } else { "" };
             write!(
                 f,
-                "  block{}({}): # succs:{:?} preds:{:?}\n",
-                i, params_in, succs, preds
+                "  block{}({}){}: # succs:{:?} preds:{:?}\n",
+                i, params_in, cold, succs, preds
             )?;
             for inst in blockrange.iter() {
                 write!(

@@ -34,6 +34,8 @@ pub struct CFGInfo {
     /// indices. Otherwise, it will be approximate, but should still
     /// be usable for heuristic purposes.
     pub approx_loop_depth: Vec<u32>,
+    /// Whether each block is cold.
+    pub cold: Vec<bool>,
 }
 
 impl CFGInfo {
@@ -63,6 +65,7 @@ impl CFGInfo {
             .block_exit
             .repopulate(nb, ProgPoint::before(Inst::invalid()));
         let (backedge_in, backedge_out) = ctx.backedge.repopulate(nb * 2, 0).split_at_mut(nb);
+        let cold = self.cold.repopulate(nb, false);
 
         for block in 0..f.num_blocks() {
             let block = Block::new(block);
@@ -71,6 +74,7 @@ impl CFGInfo {
             }
             block_entry[block.index()] = ProgPoint::before(f.block_insns(block).first());
             block_exit[block.index()] = ProgPoint::after(f.block_insns(block).last());
+            cold[block.index()] = f.is_block_cold(block);
 
             // Check critical edge condition: if there is more than
             // one predecessor, each must have only one successor
