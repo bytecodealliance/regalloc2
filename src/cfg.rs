@@ -140,4 +140,16 @@ impl CFGInfo {
 
         Ok(())
     }
+
+    /// The loop depth to use when weighing spill costs in `block`.
+    ///
+    /// Cold blocks are weighted as if they were outside of every loop, so that
+    /// their uses don't make hot code pay to keep values in registers.
+    pub fn spill_weight_loop_depth(&self, block: Block) -> u32 {
+        if self.cold[block.index()] {
+            0
+        } else {
+            self.approx_loop_depth[block.index()]
+        }
+    }
 }

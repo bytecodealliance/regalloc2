@@ -1131,10 +1131,9 @@ impl<'a, F: Function> Env<'a, F> {
                             lowest_cost_evict_conflict_set.extend(bundles);
                         }
 
-                        let loop_depth =
-                            self.ctx.cfginfo.approx_loop_depth[self.ctx.cfginfo.insn_block
-                                [first_conflict_point.inst().index()]
-                            .index()];
+                        let loop_depth = self.ctx.cfginfo.spill_weight_loop_depth(
+                            self.ctx.cfginfo.insn_block[first_conflict_point.inst().index()],
+                        );
                         let move_cost = spill_weight_from_constraint(
                             OperandConstraint::Reg,
                             loop_depth as usize,
@@ -1153,8 +1152,9 @@ impl<'a, F: Function> Env<'a, F> {
                     AllocRegResult::ConflictWithFixed(max_cost, point) => {
                         trace!(" -> conflict with fixed alloc; cost of other bundles up to point is {}, conflict at {:?}", max_cost, point);
 
-                        let loop_depth = self.ctx.cfginfo.approx_loop_depth
-                            [self.ctx.cfginfo.insn_block[point.inst().index()].index()];
+                        let loop_depth = self.ctx.cfginfo.spill_weight_loop_depth(
+                            self.ctx.cfginfo.insn_block[point.inst().index()],
+                        );
                         let move_cost = spill_weight_from_constraint(
                             OperandConstraint::Reg,
                             loop_depth as usize,
