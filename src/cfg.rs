@@ -7,13 +7,12 @@
 
 use crate::alloc::vec::Vec;
 
-use crate::{domtree, postorder, Block, Function, Inst, ProgPoint, RegAllocError, VecExt};
+use crate::{postorder, Block, Function, Inst, ProgPoint, RegAllocError, VecExt};
 use smallvec::{smallvec, SmallVec};
 
 #[derive(Debug, Default)]
 pub struct CFGInfoCtx {
     visited: Vec<bool>,
-    block_to_rpo: Vec<Option<u32>>,
     backedge: Vec<u32>,
 }
 
@@ -21,8 +20,6 @@ pub struct CFGInfoCtx {
 pub struct CFGInfo {
     /// Postorder traversal of blocks.
     pub postorder: Vec<Block>,
-    /// Domtree parents, indexed by block.
-    pub domtree: Vec<Block>,
     /// For each instruction, the block it belongs to.
     pub insn_block: Vec<Block>,
     /// For each block, the first instruction.
@@ -57,15 +54,6 @@ impl CFGInfo {
             &mut self.postorder,
             |block| f.block_succs(block),
         )?;
-
-        domtree::calculate(
-            nb,
-            |block| f.block_preds(block),
-            &self.postorder,
-            &mut ctx.block_to_rpo,
-            &mut self.domtree,
-            f.entry_block(),
-        );
 
         let insn_block = self.insn_block.repopulate(f.num_insts(), Block::invalid());
         let block_entry = self
@@ -147,9 +135,5 @@ impl CFGInfo {
         }
 
         Ok(())
-    }
-
-    pub fn dominates(&self, a: Block, b: Block) -> bool {
-        domtree::dominates(&self.domtree[..], a, b)
     }
 }
