@@ -13,21 +13,21 @@
 //! Main allocation loop that processes bundles.
 
 use super::{
-    Env, LiveBundleIndex, LiveBundleVec, LiveRangeFlag, LiveRangeIndex, LiveRangeKey,
-    LiveRangeList, LiveRangeListEntry, PRegIndex, RegTraversalIter, Requirement, SpillWeight,
-    UseList, VRegIndex, spill_weight_from_constraint,
+    spill_weight_from_constraint, Env, LiveBundleIndex, LiveBundleVec, LiveRangeFlag,
+    LiveRangeIndex, LiveRangeKey, LiveRangeList, LiveRangeListEntry, PRegIndex, RegTraversalIter,
+    Requirement, SpillWeight, UseList, VRegIndex,
 };
 use crate::{
+    ion::data_structures::{
+        CodeRange, Use, BUNDLE_MAX_NORMAL_SPILL_WEIGHT, MAX_SPLITS_PER_SPILLSET,
+        MINIMAL_BUNDLE_SPILL_WEIGHT, MINIMAL_FIXED_BUNDLE_SPILL_WEIGHT,
+        MINIMAL_LIMITED_BUNDLE_SPILL_WEIGHT,
+    },
     Allocation, Function, Inst, InstPosition, OperandConstraint, OperandKind, PReg, ProgPoint,
     RegAllocError,
-    ion::data_structures::{
-        BUNDLE_MAX_NORMAL_SPILL_WEIGHT, CodeRange, MAX_SPLITS_PER_SPILLSET,
-        MINIMAL_BUNDLE_SPILL_WEIGHT, MINIMAL_FIXED_BUNDLE_SPILL_WEIGHT,
-        MINIMAL_LIMITED_BUNDLE_SPILL_WEIGHT, Use,
-    },
 };
 use core::fmt::Debug;
-use smallvec::{SmallVec, smallvec};
+use smallvec::{smallvec, SmallVec};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AllocRegResult<'a> {
@@ -214,7 +214,8 @@ impl<'a, F: Function> Env<'a, F> {
     pub fn evict_bundle(&mut self, bundle: LiveBundleIndex) {
         trace!(
             "evicting bundle {:?}: alloc {:?}",
-            bundle, self.ctx.bundles[bundle].allocation
+            bundle,
+            self.ctx.bundles[bundle].allocation
         );
         let preg = match self.ctx.bundles[bundle].allocation.as_reg() {
             Some(preg) => preg,
@@ -347,7 +348,8 @@ impl<'a, F: Function> Env<'a, F> {
                 let final_weight = (total.to_f32() as u32) / self.ctx.bundles[bundle].prio;
                 trace!(
                     " -> dividing by prio {}; final weight {}",
-                    self.ctx.bundles[bundle].prio, final_weight
+                    self.ctx.bundles[bundle].prio,
+                    final_weight
                 );
                 core::cmp::min(BUNDLE_MAX_NORMAL_SPILL_WEIGHT, final_weight)
             } else {
@@ -447,7 +449,8 @@ impl<'a, F: Function> Env<'a, F> {
 
         trace!(
             "bundle_start = {:?} bundle_end = {:?}",
-            bundle_start, bundle_end
+            bundle_start,
+            bundle_end
         );
 
         // Is the bundle at most spanning one instruction? Then
@@ -657,7 +660,9 @@ impl<'a, F: Function> Env<'a, F> {
                         .unwrap();
                     trace!(
                         " -> bundle {:?} range {:?}: no uses; moving to spill bundle {:?}",
-                        bundle, entry.index, spill
+                        bundle,
+                        entry.index,
+                        spill
                     );
                     self.ctx.bundles[spill].ranges.push(entry);
                     self.ctx.bundles[bundle].ranges.pop();
@@ -690,7 +695,9 @@ impl<'a, F: Function> Env<'a, F> {
                     });
                     trace!(
                         " -> bundle {:?} range {:?}: last use implies split point {:?}",
-                        bundle, entry.index, split
+                        bundle,
+                        entry.index,
+                        split
                     );
                     trace!(
                         " -> moving trailing empty region to new spill bundle {:?} with new LR {:?}",
@@ -712,7 +719,9 @@ impl<'a, F: Function> Env<'a, F> {
                         .unwrap();
                     trace!(
                         " -> bundle {:?} range {:?}: no uses; moving to spill bundle {:?}",
-                        new_bundle, entry.index, spill
+                        new_bundle,
+                        entry.index,
+                        spill
                     );
                     self.ctx.bundles[spill].ranges.push(entry);
                     self.ctx.bundles[new_bundle].ranges.drain(..1);
@@ -750,11 +759,14 @@ impl<'a, F: Function> Env<'a, F> {
                     });
                     trace!(
                         " -> bundle {:?} range {:?}: first use implies split point {:?}",
-                        bundle, entry.index, first_use,
+                        bundle,
+                        entry.index,
+                        first_use,
                     );
                     trace!(
                         " -> moving leading empty region to new spill bundle {:?} with new LR {:?}",
-                        spill, empty_lr
+                        spill,
+                        empty_lr
                     );
                 }
                 break;
@@ -1039,7 +1051,9 @@ impl<'a, F: Function> Env<'a, F> {
 
                 trace!(
                     "    -> created new LR {:?} range {:?} with new bundle {:?} for this use",
-                    lr, cr, new_bundle
+                    lr,
+                    cr,
+                    new_bundle
                 );
             }
 
@@ -1067,7 +1081,9 @@ impl<'a, F: Function> Env<'a, F> {
                 self.ctx.ranges[spill_lr].bundle = spill;
                 trace!(
                     "  -> added spill range {:?} in new LR {:?} in spill bundle {:?}",
-                    spill_range, spill_lr, spill
+                    spill_range,
+                    spill_lr,
+                    spill
                 );
             } else {
                 assert!(spill_uses.is_empty());
@@ -1248,7 +1264,8 @@ impl<'a, F: Function> Env<'a, F> {
                     AllocRegResult::Conflict(bundles, first_conflict_point) => {
                         trace!(
                             " -> conflict with bundles {:?}, first conflict at {:?}",
-                            bundles, first_conflict_point
+                            bundles,
+                            first_conflict_point
                         );
 
                         let conflict_cost = self.maximum_spill_weight_in_bundle_set(bundles);
@@ -1321,7 +1338,8 @@ impl<'a, F: Function> Env<'a, F> {
 
             trace!(
                 " -> lowest cost evict: set {:?}, cost {:?}",
-                lowest_cost_evict_conflict_set, lowest_cost_evict_conflict_cost,
+                lowest_cost_evict_conflict_set,
+                lowest_cost_evict_conflict_cost,
             );
             trace!(
                 " -> lowest cost split: cost {:?}, point {:?}, reg {:?}",
@@ -1412,7 +1430,9 @@ impl<'a, F: Function> Env<'a, F> {
                     }
                     trace!(
                         " -> total {}, fixed {}, min {}",
-                        total_regs, fixed_assigned, min_bundles_assigned
+                        total_regs,
+                        fixed_assigned,
+                        min_bundles_assigned
                     );
                     if min_bundles_assigned + fixed_assigned >= total_regs {
                         return Err(RegAllocError::TooManyLiveRegs);
