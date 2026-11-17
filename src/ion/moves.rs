@@ -287,8 +287,16 @@ impl<'a, F: Function> Env<'a, F> {
 
             // For each range in each vreg, insert moves or
             // half-moves.  We also scan over `blockparam_ins` and
-            // `blockparam_outs`, which are sorted by (block, vreg),
+            // `blockparam_outs`, which are sorted by (vreg, block),
             // to fill in allocations.
+            //
+            // `PrevBuffer` moves its cursor only when a later range starts,
+            // so skip the entries of earlier vregs here.
+            while blockparam_in_idx < self.blockparam_ins.len()
+                && self.blockparam_ins[blockparam_in_idx].to_vreg < vreg
+            {
+                blockparam_in_idx += 1;
+            }
             let mut prev = PrevBuffer::new(blockparam_in_idx);
             for range_idx in 0..self.vregs[vreg].ranges.len() {
                 let entry = self.vregs[vreg].ranges[range_idx];
