@@ -186,31 +186,27 @@ impl<'a, F: Function> Env<'a, F> {
         );
 
         let empty_vec = LiveRangeList::new_in(self.ctx.bump());
-        let mut from_list = core::mem::replace(&mut self.bundles[from].ranges, empty_vec);
+        let from_list = core::mem::replace(&mut self.bundles[from].ranges, empty_vec);
         for entry in &from_list {
             self.ranges[entry.index].bundle = to;
         }
 
-        if from_list.len() == 1 {
-            // Optimize for the common case where `from_list` contains a single
-            // item. Using a binary search to find the insertion point and then
-            // calling `insert` is more efficient than re-sorting the entire
-            // list, specially after the changes in sorting algorithms introduced
-            // in rustc 1.81.
-            // See: https://github.com/bytecodealliance/regalloc2/issues/203
-            let single_entry = from_list.pop().unwrap();
-            let pos = self.bundles[to]
-                .ranges
-                .binary_search_by_key(&single_entry.range.from, |entry| entry.range.from)
-                .unwrap_or_else(|pos| pos);
-            self.bundles[to].ranges.insert(pos, single_entry);
+        // Optimize for the common case where `from_list` fits between two
+        // adjacent ranges of `to` (usually a single item). Using a
+        // binary search to find the insertion point and then splicing it in is
+        // more efficient than re-sorting the entire list, specially after the
+        // changes in sorting algorithms introduced in rustc 1.81.
+        // See: https://github.com/bytecodealliance/regalloc2/issues/203
+        let ranges = &mut self.bundles[to].ranges;
+        let pos = ranges.partition_point(|entry| entry.range.from < from_list[0].range.from);
+        if pos == ranges.len() || from_list[from_list.len() - 1].range.from < ranges[pos].range.from
+        {
+            ranges.splice(pos..pos, from_list.iter().copied());
         } else {
-            // Two non-empty lists of LiveRanges: concatenate and sort. This is
+            // Two interleaved lists of LiveRanges: concatenate and sort. This is
             // faster than a mergesort-like merge into a new list, empirically.
-            self.bundles[to].ranges.extend_from_slice(&from_list[..]);
-            self.bundles[to]
-                .ranges
-                .sort_unstable_by_key(|entry| entry.range.from);
+            ranges.extend_from_slice(&from_list[..]);
+            ranges.sort_unstable_by_key(|entry| entry.range.from);
         }
 
         if self.annotations_enabled {
