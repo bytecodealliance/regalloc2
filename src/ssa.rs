@@ -8,9 +8,19 @@
 use alloc::vec;
 
 use crate::cfg::CFGInfo;
-use crate::{Block, Function, FxHashSet, Inst, OperandKind, RegAllocError, VReg};
+use crate::{domtree, Block, Function, FxHashSet, Inst, OperandKind, RegAllocError, VReg};
 
 pub fn validate_ssa<F: Function>(f: &F, cfginfo: &CFGInfo) -> Result<(), RegAllocError> {
+    let mut idom = vec![];
+    domtree::calculate(
+        f.num_blocks(),
+        |block| f.block_preds(block),
+        &cfginfo.postorder,
+        &mut vec![],
+        &mut idom,
+        f.entry_block(),
+    );
+
     // For every block param and inst def, check that this is the only def.
     let mut defined_in = vec![Block::invalid(); f.num_vregs()];
     for block in 0..f.num_blocks() {
@@ -66,7 +76,7 @@ pub fn validate_ssa<F: Function>(f: &F, cfginfo: &CFGInfo) -> Result<(), RegAllo
                             && if def_block == block {
                                 local.contains(&operand.vreg())
                             } else {
-                                cfginfo.dominates(def_block, block)
+                                domtree::dominates(&idom, def_block, block)
                             };
                         if !okay {
                             trace!("Invalid use {:?}", operand.vreg());
