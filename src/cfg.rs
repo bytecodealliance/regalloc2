@@ -34,6 +34,10 @@ pub struct CFGInfo {
     /// indices. Otherwise, it will be approximate, but should still
     /// be usable for heuristic purposes.
     pub approx_loop_depth: Vec<u32>,
+    /// Whether each block is cold.
+    pub cold: Vec<bool>,
+    /// Is any block cold?
+    pub any_cold: bool,
 }
 
 impl CFGInfo {
@@ -63,6 +67,8 @@ impl CFGInfo {
             .block_exit
             .repopulate(nb, ProgPoint::before(Inst::invalid()));
         let (backedge_in, backedge_out) = ctx.backedge.repopulate(nb * 2, 0).split_at_mut(nb);
+        let cold = self.cold.repopulate(nb, false);
+        let mut any_cold = false;
 
         for block in 0..f.num_blocks() {
             let block = Block::new(block);
@@ -71,6 +77,9 @@ impl CFGInfo {
             }
             block_entry[block.index()] = ProgPoint::before(f.block_insns(block).first());
             block_exit[block.index()] = ProgPoint::after(f.block_insns(block).last());
+            let block_is_cold = f.is_block_cold(block);
+            cold[block.index()] = block_is_cold;
+            any_cold |= block_is_cold;
 
             // Check critical edge condition: if there is more than
             // one predecessor, each must have only one successor
@@ -113,6 +122,8 @@ impl CFGInfo {
             }
         }
 
+        self.any_cold = any_cold;
+
         let approx_loop_depth = self.approx_loop_depth.cleared();
         let mut backedge_stack: SmallVec<[u32; 4]> = smallvec![];
         let mut cur_depth = 0;
@@ -135,5 +146,17 @@ impl CFGInfo {
         }
 
         Ok(())
+    }
+
+    /// The loop depth to use when weighing spill costs in `block`.
+    ///
+    /// Cold blocks are weighted as if they were outside of every loop, so that
+    /// their uses don't make hot code pay to keep values in registers.
+    pub fn spill_weight_loop_depth(&self, block: Block) -> u32 {
+        if self.cold[block.index()] {
+            0
+        } else {
+            self.approx_loop_depth[block.index()]
+        }
     }
 }

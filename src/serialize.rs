@@ -50,6 +50,8 @@ pub struct SerializableFunction {
     spillslot_size: Vec<usize>,
     multi_spillslot_named_by_last_slot: bool,
     allow_multiple_vreg_defs: bool,
+    #[serde(default)]
+    cold_blocks: Vec<bool>,
 }
 
 impl SerializableFunction {
@@ -119,6 +121,9 @@ impl SerializableFunction {
             .to_vec(),
             multi_spillslot_named_by_last_slot: func.multi_spillslot_named_by_last_slot(),
             allow_multiple_vreg_defs: func.allow_multiple_vreg_defs(),
+            cold_blocks: (0..func.num_blocks())
+                .map(|i| func.is_block_cold(Block::new(i)))
+                .collect(),
         }
     }
 
@@ -196,6 +201,13 @@ impl Function for SerializableFunction {
     fn allow_multiple_vreg_defs(&self) -> bool {
         self.allow_multiple_vreg_defs
     }
+
+    fn is_block_cold(&self, block: Block) -> bool {
+        self.cold_blocks
+            .get(block.index())
+            .copied()
+            .unwrap_or(false)
+    }
 }
 
 impl fmt::Debug for SerializableFunction {
@@ -255,9 +267,14 @@ impl fmt::Debug for SerializableFunction {
                 })
                 .collect::<Vec<_>>()
                 .join(", ");
+            let cold = if self.is_block_cold(Block::new(i)) {
+                " cold"
+            } else {
+                ""
+            };
             write!(
                 f,
-                "  block{i}({params_in}): # succs:{succs:?} preds:{preds:?}\n",
+                "  block{i}({params_in}){cold}: # succs:{succs:?} preds:{preds:?}\n",
             )?;
             for inst in blockrange.iter() {
                 let ops: Vec<_> = self

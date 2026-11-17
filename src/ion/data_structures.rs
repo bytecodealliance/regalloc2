@@ -968,6 +968,7 @@ pub struct Stats {
     pub splits_conflicts: usize,
     pub splits_defs: usize,
     pub splits_all: usize,
+    pub splits_cold: usize,
     pub final_liverange_count: usize,
     pub final_bundle_count: usize,
     pub spill_bundle_count: usize,

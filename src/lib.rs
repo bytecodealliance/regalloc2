@@ -1352,6 +1352,15 @@ pub trait Function {
     fn allow_multiple_vreg_defs(&self) -> bool {
         false
     }
+
+    /// Is the given block cold, i.e. rarely executed?
+    ///
+    /// The allocator may use this as a hint to keep spills, reloads, and
+    /// other moves out of hot code and in cold blocks instead. It does not
+    /// affect correctness.
+    fn is_block_cold(&self, _block: Block) -> bool {
+        false
+    }
 }
 
 /// A position before or after an instruction at which we can make an

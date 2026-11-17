@@ -700,10 +700,9 @@ impl<'a, F: Function> Env<'a, F> {
                         split
                     );
                     trace!(
-                    " -> moving trailing empty region to new spill bundle {:?} with new LR {:?}",
-                    spill,
-                    empty_lr
-                );
+                        " -> moving trailing empty region to new spill bundle {:?} with new LR {:?}",
+                        spill, empty_lr
+                    );
                 }
                 break;
             }
@@ -788,6 +787,153 @@ impl<'a, F: Function> Env<'a, F> {
                 .allocation_queue
                 .insert(new_bundle, prio as usize, hint);
         }
+    }
+
+    /// Does `bundle` have live ranges in both cold and non-cold blocks?
+    fn bundle_spans_hot_and_cold(&self, bundle: LiveBundleIndex) -> bool {
+        if !self.ctx.cfginfo.any_cold {
+            return false;
+        }
+        let cfg = &self.ctx.cfginfo;
+        let mut seen_hot = false;
+        let mut seen_cold = false;
+        for entry in &self.ctx.bundles[bundle].ranges {
+            let first = cfg.insn_block[entry.range.from.inst().index()].index();
+            let last = cfg.insn_block[entry.range.to.prev().inst().index()].index();
+            for block in first..=last {
+                if cfg.cold[block] {
+                    seen_cold = true;
+                } else {
+                    seen_hot = true;
+                }
+                if seen_hot && seen_cold {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Split off the cold portion of a bundle that spans both cold and non-cold
+    /// blocks into its own bundle, cutting live ranges at block boundaries, and
+    /// requeue both halves.
+    ///
+    /// This keeps a conflict inside a cold block (e.g. the clobbers of a call
+    /// on a slow path) from forcing the hot portion of the bundle to be split
+    /// or spilled: the cold portion is allocated on its own, and any spills and
+    /// reloads it needs stay in cold code.
+    ///
+    /// Splits nothing and returns `false` if the bundle does not cover both hot
+    /// and cold blocks.
+    ///
+    /// This does not count towards `MAX_SPLITS_PER_SPILLSET`. It terminates
+    /// because both resulting bundles are entirely hot or entirely cold, and
+    /// further splits only produce subsets of them.
+    pub fn try_split_off_cold(&mut self, bundle: LiveBundleIndex, hint: PReg) -> bool {
+        if !self.bundle_spans_hot_and_cold(bundle) {
+            return false;
+        }
+
+        trace!("splitting cold portion off of bundle {bundle:?}");
+        self.ctx.output.stats.splits_cold += 1;
+
+        let empty = LiveRangeList::new_in(self.ctx.bump());
+        let ranges = core::mem::replace(&mut self.ctx.bundles[bundle].ranges, empty);
+        let mut hot = LiveRangeList::new_in(self.ctx.bump());
+        let mut cold = LiveRangeList::new_in(self.ctx.bump());
+
+        for entry in &ranges {
+            let end = entry.range.to;
+            let mut lr = entry.index;
+            loop {
+                let from = self.ctx.ranges[lr].range.from;
+                let block = self.ctx.cfginfo.insn_block[from.inst().index()].index();
+                let is_cold = self.ctx.cfginfo.cold[block];
+
+                // Find the end of the run of blocks with the same coldness.
+                let mut next = block + 1;
+                while next < self.ctx.cfginfo.block_entry.len()
+                    && self.ctx.cfginfo.block_entry[next] < end
+                    && self.ctx.cfginfo.cold[next] == is_cold
+                {
+                    next += 1;
+                }
+
+                // The cut point, if the run didn't span to the end of the
+                // range.
+                let cut = if next < self.ctx.cfginfo.block_entry.len()
+                    && self.ctx.cfginfo.block_entry[next] < end
+                {
+                    Some(self.ctx.cfginfo.block_entry[next])
+                } else {
+                    None
+                };
+
+                // Split everything after the run off into a new LR.
+                let rest = cut.map(|cut| {
+                    let new_lr = self.ctx.ranges.add(
+                        CodeRange { from: cut, to: end },
+                        self.ctx.scratch_bump.clone(),
+                    );
+                    let vreg = self.ctx.ranges[lr].vreg;
+                    self.ctx.ranges[new_lr].vreg = vreg;
+                    let first_use = self.ctx.ranges[lr]
+                        .uses
+                        .iter()
+                        .position(|u| u.pos >= cut)
+                        .unwrap_or(self.ctx.ranges[lr].uses.len());
+                    let mut rest_uses = UseList::new_in(self.ctx.bump());
+                    rest_uses.extend(self.ctx.ranges[lr].uses.iter().cloned().skip(first_use));
+                    self.ctx.ranges[new_lr].uses = rest_uses;
+                    self.ctx.ranges[lr].uses.truncate(first_use);
+                    self.ctx.ranges[lr].range.to = cut;
+                    self.recompute_range_properties(lr);
+                    self.recompute_range_properties(new_lr);
+                    self.ctx.vregs[vreg].ranges.push(LiveRangeListEntry {
+                        range: self.ctx.ranges[new_lr].range,
+                        index: new_lr,
+                    });
+                    new_lr
+                });
+
+                let piece = LiveRangeListEntry {
+                    range: self.ctx.ranges[lr].range,
+                    index: lr,
+                };
+                if is_cold {
+                    cold.push(piece);
+                } else {
+                    hot.push(piece);
+                }
+
+                match rest {
+                    Some(rest) => lr = rest,
+                    None => break,
+                }
+            }
+        }
+
+        debug_assert!(!hot.is_empty() && !cold.is_empty());
+
+        let spillset = self.ctx.bundles[bundle].spillset;
+        let cold_bundle = self.ctx.bundles.add(self.ctx.scratch_bump.clone());
+        self.ctx.bundles[cold_bundle].spillset = spillset;
+        for entry in &cold {
+            self.ctx.ranges[entry.index].bundle = cold_bundle;
+        }
+        self.ctx.bundles[cold_bundle].ranges = cold;
+
+        for entry in &hot {
+            self.ctx.ranges[entry.index].bundle = bundle;
+        }
+        self.ctx.bundles[bundle].ranges = hot;
+
+        for b in [bundle, cold_bundle] {
+            self.recompute_bundle_properties(b);
+            let prio = self.ctx.bundles[b].prio;
+            self.ctx.allocation_queue.insert(b, prio as usize, hint);
+        }
+        true
     }
 
     /// Splits the given bundle into minimal bundles per Use, falling
@@ -1066,6 +1212,7 @@ impl<'a, F: Function> Env<'a, F> {
             let mut lowest_cost_split_conflict_cost: Option<u32> = None;
             let mut lowest_cost_split_conflict_point = ProgPoint::before(Inst::new(0));
             let mut lowest_cost_split_conflict_reg = PReg::invalid();
+            let mut cold_fixed_conflict = false;
 
             // Heuristic: start the scan for an available
             // register at an offset influenced both by our
@@ -1131,10 +1278,9 @@ impl<'a, F: Function> Env<'a, F> {
                             lowest_cost_evict_conflict_set.extend(bundles);
                         }
 
-                        let loop_depth =
-                            self.ctx.cfginfo.approx_loop_depth[self.ctx.cfginfo.insn_block
-                                [first_conflict_point.inst().index()]
-                            .index()];
+                        let loop_depth = self.ctx.cfginfo.spill_weight_loop_depth(
+                            self.ctx.cfginfo.insn_block[first_conflict_point.inst().index()],
+                        );
                         let move_cost = spill_weight_from_constraint(
                             OperandConstraint::Reg,
                             loop_depth as usize,
@@ -1151,10 +1297,17 @@ impl<'a, F: Function> Env<'a, F> {
                         }
                     }
                     AllocRegResult::ConflictWithFixed(max_cost, point) => {
-                        trace!(" -> conflict with fixed alloc; cost of other bundles up to point is {}, conflict at {:?}", max_cost, point);
+                        trace!(
+                            " -> conflict with fixed alloc; cost of other bundles up to point is {}, conflict at {:?}",
+                            max_cost, point
+                        );
 
-                        let loop_depth = self.ctx.cfginfo.approx_loop_depth
-                            [self.ctx.cfginfo.insn_block[point.inst().index()].index()];
+                        let point_block = self.ctx.cfginfo.insn_block[point.inst().index()];
+                        cold_fixed_conflict |= self.ctx.cfginfo.cold[point_block.index()];
+
+                        let loop_depth = self.ctx.cfginfo.spill_weight_loop_depth(
+                            self.ctx.cfginfo.insn_block[point.inst().index()],
+                        );
                         let move_cost = spill_weight_from_constraint(
                             OperandConstraint::Reg,
                             loop_depth as usize,
@@ -1286,7 +1439,9 @@ impl<'a, F: Function> Env<'a, F> {
                     }
                 }
 
-                panic!("Could not allocate minimal bundle, but the allocation problem should be possible to solve");
+                panic!(
+                    "Could not allocate minimal bundle, but the allocation problem should be possible to solve"
+                );
             }
 
             // If our bundle's weight is less than or equal to(*) the
@@ -1315,6 +1470,14 @@ impl<'a, F: Function> Env<'a, F> {
                 let mut split_at_point =
                     core::cmp::max(lowest_cost_split_conflict_point, bundle_start);
                 let requeue_with_reg = lowest_cost_split_conflict_reg;
+
+                // If a fixed reservation (e.g. a call's clobbers) in cold
+                // code is in the way, first split off the cold portion of
+                // the bundle, so that the conflict is resolved, and any
+                // resulting spills and reloads placed, within cold code.
+                if cold_fixed_conflict && self.try_split_off_cold(bundle, requeue_with_reg) {
+                    break 'outer;
+                }
 
                 // Adjust `split_at_point` if it is within a deeper loop
                 // than the bundle start -- hoist it to just before the

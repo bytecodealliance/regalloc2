@@ -216,7 +216,7 @@ impl<'a, F: Function> Env<'a, F> {
         let operand = u.operand;
         let constraint = operand.constraint();
         let block = self.cfginfo.insn_block[u.pos.inst().index()];
-        let loop_depth = self.cfginfo.approx_loop_depth[block.index()] as usize;
+        let loop_depth = self.cfginfo.spill_weight_loop_depth(block) as usize;
         let weight = spill_weight_from_constraint(
             constraint,
             loop_depth,
