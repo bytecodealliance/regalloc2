@@ -817,7 +817,7 @@ impl<'a, F: Function> Env<'a, F> {
                                 requires_reg = true;
                             }
                             OperandConstraint::Limit(max) => {
-                                first_reg_slot.get_or_insert(u.slot);
+                                first_reg_slot = Some(u.slot);
                                 min_limit = min_limit.min(max);
                                 requires_reg = true;
                             }

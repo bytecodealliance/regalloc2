@@ -112,9 +112,19 @@ impl Requirement {
 }
 
 impl<'a, F: Function> Env<'a, F> {
+    pub fn operand_constraint(&self, op: Operand, inst: Inst) -> OperandConstraint {
+        if let OperandConstraint::Reuse(input) = op.constraint() {
+            let constraint = self.func.inst_operands(inst)[input].constraint();
+            if matches!(constraint, OperandConstraint::Limit(_)) {
+                return constraint;
+            }
+        }
+        op.constraint()
+    }
+
     #[inline(always)]
-    pub fn requirement_from_operand(&self, op: Operand) -> Requirement {
-        match op.constraint() {
+    pub fn requirement_from_operand(&self, op: Operand, inst: Inst) -> Requirement {
+        match self.operand_constraint(op, inst) {
             OperandConstraint::FixedReg(preg) => {
                 if self.pregs[preg.index()].is_stack {
                     Requirement::FixedStack(preg)
@@ -141,7 +151,7 @@ impl<'a, F: Function> Env<'a, F> {
             trace!(" -> LR {:?}: {:?}", entry.index, entry.range);
             for u in &self.ranges[entry.index].uses {
                 trace!("  -> use {:?}", u);
-                let r = self.requirement_from_operand(u.operand);
+                let r = self.requirement_from_operand(u.operand, u.pos.inst());
                 req = req.merge(r).map_err(|_| {
                     trace!("     -> conflict");
                     if req.is_stack() && r.is_reg() {

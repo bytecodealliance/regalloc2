@@ -287,7 +287,7 @@ impl<'a, F: Function> Env<'a, F> {
             for entry in &self.bundles[bundle].ranges {
                 for u in &self.ranges[entry.index].uses {
                     use OperandConstraint::*;
-                    match u.operand.constraint() {
+                    match self.operand_constraint(u.operand, u.pos.inst()) {
                         FixedReg(_) => {
                             fixed = true;
                             if u.operand.kind() == OperandKind::Def {
@@ -402,7 +402,7 @@ impl<'a, F: Function> Env<'a, F> {
         for entry in &self.bundles[bundle].ranges {
             for u in &self.ranges[entry.index].uses {
                 use OperandConstraint::*;
-                match u.operand.constraint() {
+                match self.operand_constraint(u.operand, u.pos.inst()) {
                     Limit(current) => {
                         let current = u8::try_from(current)
                             .expect("the current limit is too large to fit in a u8");
