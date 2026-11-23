@@ -46,8 +46,10 @@ impl<'a, F: Function> Env<'a, F> {
             for preg in RegTraversalIter::new(self.env, class, None, hint, bundle.index(), limit) {
                 trace!("trying bundle {:?} to preg {:?}", bundle, preg);
                 let preg_idx = PRegIndex::new(preg.index());
+                // Only a conflict-free register is taken, so stop at the
+                // first conflict with a nonzero spill weight.
                 if let AllocRegResult::Allocated(_) =
-                    self.try_to_allocate_bundle_to_reg(bundle, preg_idx, None, &mut scratch)
+                    self.try_to_allocate_bundle_to_reg(bundle, preg_idx, Some(0), &mut scratch)
                 {
                     self.ctx.output.stats.spill_bundle_reg_success += 1;
                     success = true;
