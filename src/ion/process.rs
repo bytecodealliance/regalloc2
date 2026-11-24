@@ -844,7 +844,13 @@ impl<'a, F: Function> Env<'a, F> {
 
         for entry in &ranges {
             let end = entry.range.to;
-            let mut lr = entry.index;
+            let first_lr = entry.index;
+            let mut lr = first_lr;
+            // Walk the range's sorted use list once. The first piece keeps the
+            // list, truncated to its own uses at the end; each later piece gets
+            // a copy of its own uses.
+            let mut next_use = 0;
+            let mut first_piece_uses = 0;
             loop {
                 let from = self.ctx.ranges[lr].range.from;
                 let block = self.ctx.cfginfo.insn_block[from.inst().index()].index();
@@ -869,7 +875,31 @@ impl<'a, F: Function> Env<'a, F> {
                     None
                 };
 
-                // Split everything after the run off into a new LR.
+                // Find the uses of this piece: those before the cut, or all
+                // remaining uses if this is the last piece.
+                let first_use = next_use;
+                let uses = &self.ctx.ranges[first_lr].uses;
+                next_use = match cut {
+                    Some(cut) => {
+                        first_use + uses[first_use..].iter().take_while(|u| u.pos < cut).count()
+                    }
+                    None => uses.len(),
+                };
+                if lr == first_lr {
+                    first_piece_uses = next_use;
+                } else {
+                    let mut piece_uses = UseList::new_in(self.ctx.bump());
+                    piece_uses.extend(
+                        self.ctx.ranges[first_lr].uses[first_use..next_use]
+                            .iter()
+                            .cloned(),
+                    );
+                    self.ctx.ranges[lr].uses = piece_uses;
+                    self.recompute_range_properties(lr);
+                }
+
+                // Split everything after the run off into a new LR. Its uses
+                // are assigned on the next iteration.
                 let rest = cut.map(|cut| {
                     let new_lr = self.ctx.ranges.add(
                         CodeRange { from: cut, to: end },
@@ -877,18 +907,7 @@ impl<'a, F: Function> Env<'a, F> {
                     );
                     let vreg = self.ctx.ranges[lr].vreg;
                     self.ctx.ranges[new_lr].vreg = vreg;
-                    let first_use = self.ctx.ranges[lr]
-                        .uses
-                        .iter()
-                        .position(|u| u.pos >= cut)
-                        .unwrap_or(self.ctx.ranges[lr].uses.len());
-                    let mut rest_uses = UseList::new_in(self.ctx.bump());
-                    rest_uses.extend(self.ctx.ranges[lr].uses.iter().cloned().skip(first_use));
-                    self.ctx.ranges[new_lr].uses = rest_uses;
-                    self.ctx.ranges[lr].uses.truncate(first_use);
                     self.ctx.ranges[lr].range.to = cut;
-                    self.recompute_range_properties(lr);
-                    self.recompute_range_properties(new_lr);
                     self.ctx.vregs[vreg].ranges.push(LiveRangeListEntry {
                         range: self.ctx.ranges[new_lr].range,
                         index: new_lr,
@@ -910,6 +929,12 @@ impl<'a, F: Function> Env<'a, F> {
                     Some(rest) => lr = rest,
                     None => break,
                 }
+            }
+
+            // If the range was cut, its first piece keeps only its own uses.
+            if lr != first_lr {
+                self.ctx.ranges[first_lr].uses.truncate(first_piece_uses);
+                self.recompute_range_properties(first_lr);
             }
         }
 
