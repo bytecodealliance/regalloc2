@@ -479,6 +479,17 @@ impl<'a, F: Function> Env<'a, F> {
                 if self.cfginfo.block_entry[block.index()] < range.from {
                     block = block.next();
                 }
+                // The walk of `blockparam_ins` starts from the buffered
+                // cursor once per range: ranges of one vreg can overlap, so
+                // a later range may need entries that an earlier one already
+                // passed. It must not start again for every block of the
+                // range, though. Blocks are visited in increasing order and
+                // the entries are sorted by (vreg, block), so everything the
+                // walk for one block steps over is below the key of every
+                // later block and cannot match it; starting again only
+                // rescans this vreg's entries once per block the range
+                // covers.
+                let mut idx = prev.blockparam_ins_idx();
                 while block.is_valid() && block.index() < self.func.num_blocks() {
                     if self.cfginfo.block_entry[block.index()] >= range.to {
                         break;
@@ -489,9 +500,8 @@ impl<'a, F: Function> Env<'a, F> {
                         "scanning blockparam_ins at vreg {} block {}: blockparam_in_idx = {}",
                         vreg.index(),
                         block.index(),
-                        prev.prev_ins_idx,
+                        idx,
                     );
-                    let mut idx = prev.blockparam_ins_idx();
                     while idx < self.blockparam_ins.len() {
                         let BlockparamIn {
                             from_block,
